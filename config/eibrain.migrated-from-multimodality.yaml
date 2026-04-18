@@ -1,0 +1,270 @@
+system:
+  project_name: eibrain
+  environment: phase1-migration
+
+deployment:
+  root_dir: /home/${USER}/eibrain
+  body_runtime_dir: ""
+  cognitive_runtime_dir: ""
+  allow_override: true
+
+runtime:
+  protocol: mqtt
+  bridge_mode: mqtt
+  topic_prefix: multimodality
+  timezone: Asia/Shanghai
+  debug:
+    disable_tts: true
+  edge:
+    require_session_id_for_commands: true
+
+deployment:
+  source_project: multimodality
+  source_config: /home/darrow/dev-project/multimodality/config/system.yaml
+  source_edge_repo: /home/darrow/dev-project/multimodality
+  source_brain_repo: /home/darrow/dev-project/multimodality
+  target_edge_deploy_dir: /mnt/ssd/multimodality
+  target_brain_deploy_dir: /home/darrow/multimodality
+
+mqtt:
+  broker: 100.81.78.119:1883
+  host: 100.81.78.119
+  port: 1883
+  qos: 1
+  keepalive: 60
+
+nodes:
+  honjia:
+    role: edge
+    host: 100.81.78.119
+    client_id: phase1-edge
+    publish_topics:
+      audio_asr_text: multimodality/up/audio/asr_text
+      tts_speaking: multimodality/up/tts/speaking
+      device_health: multimodality/up/device/health
+    subscribe_topics:
+      tts_text: multimodality/down/tts/text
+      gimbal_pan: multimodality/down/gimbal/pan
+  honxin:
+    role: brain
+    host: 100.96.5.112
+    client_id: phase1-brain
+    publish_topics:
+      tts_text: multimodality/down/tts/text
+      gimbal_pan: multimodality/down/gimbal/pan
+    subscribe_topics:
+      audio_asr_text: multimodality/up/audio/asr_text
+      device_health: multimodality/up/device/health
+
+body:
+  node_id: honjia
+  foundation:
+    ear: camera_mic
+    eye: camera
+    mouth: speaker
+    neck: gimbal
+  organs:
+    ear:
+      enabled: true
+      capture:
+        driver:
+          kind: noop
+          backend: alsa
+          input_device: "UGREEN Camera 4K: USB Audio (hw:3,0)"
+          sample_rate: 48000
+          channels: 2
+          chunk_bytes: 1024
+      vad:
+        driver:
+          kind: noop
+          provider: silero
+          threshold: 0.03
+          threshold_low: 0.005
+          min_silence_ms: 350
+          max_segment_ms: 2500
+          min_amplitude_cv: 0.08
+          energy_threshold: 0.020
+          energy_threshold_low: 0.006
+      asr:
+        driver:
+          kind: noop
+          provider: sherpa_onnx
+          model_name: Systran/faster-whisper-tiny
+          output_sample_rate: 16000
+    eye:
+      enabled: true
+      camera:
+        driver:
+          kind: noop
+          device: /dev/video0
+          fps: 1
+      detection:
+        driver:
+          kind: noop
+          provider: hailo8
+          device: /dev/hailo0
+      identity:
+        driver:
+          kind: noop
+    mouth:
+      enabled: true
+      tts_plan:
+        driver:
+          kind: noop
+      tts_playback:
+        driver:
+          kind: noop
+          backend: minimax
+          model: speech-2.8-hd
+          voice: female-tianmei
+          output_device: plughw:2,0
+    neck:
+      enabled: true
+      motor:
+        driver:
+          kind: noop
+          provider: raspbot_i2c
+          bus: 1
+          addr: 43
+          servo_id_pan: 1
+          pan_min: 40
+          pan_max: 140
+      tracking:
+        driver:
+          kind: noop
+          engaged_pan_kp: 24.0
+          engaged_pan_ki: 0.5
+          engaged_pan_kd: 0.0
+          engaged_pan_deadband: 0.01
+          observing_pan_kp: 10.0
+          observing_pan_ki: 0.2
+          observing_pan_kd: 0.0
+          observing_pan_deadband: 0.12
+          engaged_tilt_kp: 14.0
+          engaged_tilt_ki: 0.3
+          engaged_tilt_kd: 0.0
+          engaged_tilt_deadband: 0.01
+          observing_tilt_kp: 8.0
+          observing_tilt_ki: 0.1
+          observing_tilt_kd: 0.0
+          observing_tilt_deadband: 0.12
+
+cognition:
+  node_id: honxin
+  llm:
+    provider: anthropic_compatible
+    model: ${ANTHROPIC_MODEL:-MiniMax-M2.7-highspeed}
+    endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
+    api_key: ${ANTHROPIC_AUTH_TOKEN}
+    temperature: 0.2
+    supports_vision: false
+    experimental: false
+  vision_llm:
+    provider: anthropic_compatible
+    model: ${ANTHROPIC_VISION_MODEL:-coding-plan-vlm}
+    endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
+    api_key: ${ANTHROPIC_AUTH_TOKEN}
+    temperature: 0.2
+    supports_vision: true
+    experimental: true
+
+vision:
+  provider: minimax_cli
+  cli:
+    enabled: true
+    command: ${MINIMAX_CLI_COMMAND:-mmx}
+    api_key: ${MINIMAX_API_KEY:-}
+    base_url: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+  mcp:
+    enabled: false
+    command:
+      - uvx
+      - minimax-coding-plan-mcp
+      - -y
+    api_key: ${MINIMAX_API_KEY:-}
+    api_host: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+    base_path: ${MINIMAX_MCP_BASE_PATH:-}
+    resource_mode: ${MINIMAX_API_RESOURCE_MODE:-url}
+
+monitoring:
+  enabled: true
+  host: 0.0.0.0
+  port: 18080
+
+memory:
+  openclaw:
+    provider: in_memory
+    endpoint: ""
+    api_key: ${OPENCLAW_API_KEY}
+    timeout_s: 5.0
+
+legacy_brain:
+  memory_provider: hypermemory
+  multimodal_memory_enabled: false
+  llm_provider: minimax
+  routing_enabled: true
+  learning:
+    active_learning: true
+    self_evolution: true
+
+gimbal_tuning:
+  servo_calibration:
+    pan:
+      min_tick: 120
+      max_tick: 480
+      min_angle: 2.0
+      max_angle: 175.0
+      nonlinearity: quadratic
+      sag_factor: 0.03
+    tilt:
+      min_tick: 110
+      max_tick: 490
+      min_angle: 5.0
+      max_angle: 170.0
+      nonlinearity: quadratic
+      sag_factor: 0.025
+    pan_accel: 125.0
+    tilt_accel: 90.0
+    pan_stiction: 0.3
+    tilt_stiction: 0.3
+  safety:
+    max_vel: 120.0
+    max_acc: 200.0
+  defaults:
+    known_person_gain_bonus: 2.0
+    integral_windup_limit: 20.0
+  phase_gain_multipliers:
+    engaged_kp_multiplier: 1.2
+    engaged_kd_multiplier: 1.1
+    engaged_deadzone_multiplier: 0.9
+    observing_kp_multiplier: 0.7
+    observing_kd_multiplier: 0.85
+    observing_deadzone_multiplier: 1.2
+    approaching_kp_multiplier: 1.05
+    approaching_kd_multiplier: 1.0
+    approaching_deadzone_multiplier: 0.95
+  gain_schedule:
+    idle:
+      kp_multiplier: 1.0
+      deadzone_multiplier: 1.0
+    face:
+      kp_multiplier: 1.2
+      deadzone_multiplier: 0.85
+    person:
+      kp_multiplier: 1.0
+      deadzone_multiplier: 1.0
+    conversation:
+      kp_multiplier: 1.2
+      deadzone_multiplier: 0.85
+    speaker:
+      kp_multiplier: 1.0
+      deadzone_multiplier: 1.0
+    _default:
+      kp_multiplier: 0.6
+      deadzone_multiplier: 1.5
+
+migration_notes:
+  unresolved_items:
+    - "LLM provider in legacy project is minimax, but current eibrain runtime only has echo and openai_compatible adapters."
+    - "Legacy brain used hypermemory; current eibrain memory runtime still needs a concrete OpenClaw or bridge adapter choice."
+    - "Audio capture, VAD, ASR, TTS, camera, Hailo8, and raspbot_i2c values are migrated as concrete device metadata, but driver invocation commands are not inferred automatically."

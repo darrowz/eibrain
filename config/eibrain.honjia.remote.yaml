@@ -1,0 +1,213 @@
+system:
+  project_name: eibrain
+  environment: development
+deployment:
+  root_dir: /home/${USER}/eibrain
+  body_runtime_dir: ''
+  cognitive_runtime_dir: ''
+  allow_override: true
+body:
+  node_id: honjia
+  foundation:
+    ear: camera_mic
+    eye: camera
+    mouth: speaker
+    neck: gimbal
+  organs:
+    ear:
+      enabled: true
+      capture:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - arecord
+          - --device
+          - /dev/snd
+          - --label
+          - audio-input
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - arecord
+          - --device
+          - /dev/snd
+          - --label
+          - audio-input
+      vad:
+        driver:
+          kind: noop
+      asr:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-sherpa-model
+          - --model-dir
+          - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-sherpa-model
+          - --model-dir
+          - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+    eye:
+      enabled: true
+      camera:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - v4l2-ctl
+          - --device
+          - /dev/video0
+          - --label
+          - camera
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - v4l2-ctl
+          - --device
+          - /dev/video0
+          - --label
+          - camera
+      detection:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - python3
+          - --device
+          - /dev/hailo0
+          - --label
+          - hailo8
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - python3
+          - --device
+          - /dev/hailo0
+          - --label
+          - hailo8
+      identity:
+        driver:
+          kind: noop
+    mouth:
+      enabled: true
+      tts_plan:
+        driver:
+          kind: noop
+      tts_playback:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - speak
+          - --output-device
+          - plughw:2,0
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-speaker
+          - --output-device
+          - plughw:2,0
+    neck:
+      enabled: true
+      motor:
+        driver:
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - move-gimbal
+          - --servo-id
+          - '1'
+          - --home-angle
+          - '90'
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - python3
+          - --device
+          - /dev/i2c-1
+          - --label
+          - gimbal
+      tracking:
+        driver:
+          kind: noop
+cognition:
+  node_id: honxin
+  llm:
+    provider: anthropic_compatible
+    model: ${ANTHROPIC_MODEL:-MiniMax-M2.7-highspeed}
+    endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
+    api_key: ${ANTHROPIC_AUTH_TOKEN}
+    temperature: 0.2
+    supports_vision: false
+    experimental: false
+  vision_llm:
+    provider: anthropic_compatible
+    model: ${ANTHROPIC_VISION_MODEL:-coding-plan-vlm}
+    endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
+    api_key: ${ANTHROPIC_AUTH_TOKEN}
+    temperature: 0.2
+    supports_vision: true
+    experimental: true
+vision:
+  provider: minimax_cli
+  cli:
+    enabled: true
+    command: ${MINIMAX_CLI_COMMAND:-mmx}
+    api_key: ${MINIMAX_API_KEY:-}
+    base_url: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+  mcp:
+    enabled: false
+    command:
+    - uvx
+    - minimax-coding-plan-mcp
+    - -y
+    api_key: ${MINIMAX_API_KEY:-}
+    api_host: ${MINIMAX_API_HOST:-https://api.minimaxi.com}
+    base_path: ${MINIMAX_MCP_BASE_PATH:-}
+    resource_mode: ${MINIMAX_API_RESOURCE_MODE:-url}
+monitoring:
+  enabled: true
+  host: 0.0.0.0
+  port: 18080
+memory:
+  openclaw:
+    provider: in_memory
+    endpoint: ''
+    api_key: ${OPENCLAW_API_KEY}
+    timeout_s: 5.0

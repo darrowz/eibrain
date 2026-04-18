@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eibrain"
+version = "0.1.0"
+description = "Kernel-first embodied intelligence system"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6.0"]
+
+[project.scripts]
+eibrain-body = "apps.body_runtime.__main__:main"
+eibrain-cognitive = "apps.cognitive_runtime.__main__:main"
+eibrain-bootstrap = "apps.bootstrap_deployment:main"
+eibrain-monitor = "apps.operator_console.__main__:main"
+eibrain-verify-body = "apps.body_runtime.verify_hardware:main"
+
+[tool.setuptools.packages.find]
+include = ["eibrain*", "apps*"]
+exclude = ["config*", "tests*", "docs*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
