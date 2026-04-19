@@ -208,3 +208,324 @@ def run_hailo_detection(
             "combined_output": combined_output,
         },
     }
+
+
+def parse_hailo_nms_output(
+    raw_output,
+    *,
+    class_labels: list[str] | None = None,
+    score_threshold: float = 0.0,
+) -> list[dict[str, object]]:
+    labels = class_labels or []
+    detections: list[dict[str, object]] = []
+    for batch_index, batch in enumerate(raw_output or []):
+        if not isinstance(batch, list):
+            continue
+        for class_id, class_detections in enumerate(batch):
+            if class_detections is None:
+                continue
+            for row in class_detections:
+                values = row.tolist() if hasattr(row, "tolist") else list(row)
+                if len(values) < 5:
+                    continue
+                y_min, x_min, y_max, x_max, score = (float(value) for value in values[:5])
+                if score < score_threshold:
+                    continue
+                detections.append(
+                    {
+                        "batch_index": batch_index,
+                        "class_id": class_id,
+                        "label": labels[class_id] if class_id < len(labels) else f"class_{class_id}",
+                        "score": round(score, 6),
+                        "bbox": {
+                            "x_min": round(x_min, 6),
+                            "y_min": round(y_min, 6),
+                            "x_max": round(x_max, 6),
+                            "y_max": round(y_max, 6),
+                        },
+                    }
+                )
+    detections.sort(key=lambda item: float(item["score"]), reverse=True)
+    return detections
+
+
+def run_hailo_frame_inference(
+    *,
+    image_path: str | Path,
+    hef_path: str,
+    labels: list[str] | None = None,
+    score_threshold: float = 0.3,
+) -> dict[str, object]:
+    try:
+        import numpy as np  # type: ignore
+        from hailo_platform import (  # type: ignore
+            ConfigureParams,
+            FormatType,
+            HailoStreamInterface,
+            HEF,
+            InferVStreams,
+            InputVStreamParams,
+            OutputVStreamParams,
+            VDevice,
+        )
+    except Exception as exc:
+        return _run_hailo_frame_inference_with_system_python(
+            image_path=image_path,
+            hef_path=hef_path,
+            labels=labels,
+            score_threshold=score_threshold,
+            import_error=str(exc),
+        )
+
+    frame_path = Path(image_path)
+    if not frame_path.exists():
+        return {
+            "status": "error",
+            "details": {
+                "reason": "image_load_failed",
+                "image_path": str(frame_path),
+                "hef_path": hef_path,
+            },
+        }
+
+    hef = HEF(hef_path)
+    input_info = hef.get_input_vstream_infos()[0]
+    height, width = tuple(input_info.shape[:2])
+    decode = subprocess.run(
+        [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(frame_path),
+            "-vf",
+            f"scale={width}:{height}",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgb24",
+            "-",
+        ],
+        capture_output=True,
+        check=False,
+    )
+    expected_size = width * height * 3
+    if decode.returncode != 0 or len(decode.stdout) != expected_size:
+        return {
+            "status": "error",
+            "details": {
+                "reason": "image_decode_failed",
+                "image_path": str(frame_path),
+                "hef_path": hef_path,
+                "returncode": decode.returncode,
+                "stderr": decode.stderr.decode("utf-8", "replace").strip(),
+                "stdout_size": len(decode.stdout),
+                "expected_size": expected_size,
+            },
+        }
+    resized = np.frombuffer(decode.stdout, dtype=np.uint8).reshape((height, width, 3)).astype(np.float32)
+
+    with VDevice() as target:
+        configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
+        network_group = target.configure(hef, configure_params)[0]
+        network_group_params = network_group.create_params()
+        input_params = InputVStreamParams.make_from_network_group(
+            network_group,
+            quantized=False,
+            format_type=FormatType.FLOAT32,
+        )
+        output_params = OutputVStreamParams.make_from_network_group(
+            network_group,
+            quantized=False,
+            format_type=FormatType.FLOAT32,
+        )
+        with InferVStreams(network_group, input_params, output_params) as infer_pipeline:
+            with network_group.activate(network_group_params):
+                result = infer_pipeline.infer({input_info.name: np.expand_dims(resized, axis=0)})
+
+    output_name, raw_output = next(iter(result.items()))
+    detections = parse_hailo_nms_output(
+        raw_output,
+        class_labels=labels or ["person", "face"],
+        score_threshold=score_threshold,
+    )
+    return {
+        "status": "ok",
+        "details": {
+            "image_path": str(frame_path),
+            "hef_path": hef_path,
+            "input_name": input_info.name,
+            "output_name": output_name,
+            "model_shape": [int(height), int(width), int(input_info.shape[2])],
+            "detection_count": len(detections),
+            "detections": detections,
+        },
+    }
+
+
+def _run_hailo_frame_inference_with_system_python(
+    *,
+    image_path: str | Path,
+    hef_path: str,
+    labels: list[str] | None,
+    score_threshold: float,
+    import_error: str,
+) -> dict[str, object]:
+    payload = {
+        "image_path": str(image_path),
+        "hef_path": hef_path,
+        "labels": labels or ["person", "face"],
+        "score_threshold": score_threshold,
+    }
+    script = r"""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+from hailo_platform import (
+    ConfigureParams,
+    FormatType,
+    HailoStreamInterface,
+    HEF,
+    InferVStreams,
+    InputVStreamParams,
+    OutputVStreamParams,
+    VDevice,
+)
+
+
+def parse_hailo_nms_output(raw_output, class_labels, score_threshold):
+    detections = []
+    for batch_index, batch in enumerate(raw_output or []):
+        if not isinstance(batch, list):
+            continue
+        for class_id, class_detections in enumerate(batch):
+            if class_detections is None:
+                continue
+            for row in class_detections:
+                values = row.tolist() if hasattr(row, "tolist") else list(row)
+                if len(values) < 5:
+                    continue
+                y_min, x_min, y_max, x_max, score = (float(value) for value in values[:5])
+                if score < score_threshold:
+                    continue
+                detections.append(
+                    {
+                        "batch_index": batch_index,
+                        "class_id": class_id,
+                        "label": class_labels[class_id] if class_id < len(class_labels) else f"class_{class_id}",
+                        "score": round(score, 6),
+                        "bbox": {
+                            "x_min": round(x_min, 6),
+                            "y_min": round(y_min, 6),
+                            "x_max": round(x_max, 6),
+                            "y_max": round(y_max, 6),
+                        },
+                    }
+                )
+    detections.sort(key=lambda item: float(item["score"]), reverse=True)
+    return detections
+
+
+payload = json.loads(sys.stdin.read())
+frame_path = Path(payload["image_path"])
+hef_path = payload["hef_path"]
+labels = payload["labels"]
+score_threshold = float(payload["score_threshold"])
+
+hef = HEF(hef_path)
+input_info = hef.get_input_vstream_infos()[0]
+height, width = tuple(input_info.shape[:2])
+decode = subprocess.run(
+    [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(frame_path),
+        "-vf",
+        f"scale={width}:{height}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-",
+    ],
+    capture_output=True,
+    check=False,
+)
+expected_size = width * height * 3
+if decode.returncode != 0 or len(decode.stdout) != expected_size:
+    print(
+        json.dumps(
+            {
+                "status": "error",
+                "details": {
+                    "reason": "image_decode_failed",
+                    "image_path": str(frame_path),
+                    "hef_path": hef_path,
+                    "returncode": decode.returncode,
+                    "stderr": decode.stderr.decode("utf-8", "replace").strip(),
+                    "stdout_size": len(decode.stdout),
+                    "expected_size": expected_size,
+                },
+            }
+        )
+    )
+    raise SystemExit(0)
+resized = np.frombuffer(decode.stdout, dtype=np.uint8).reshape((height, width, 3)).astype(np.float32)
+with VDevice() as target:
+    configure_params = ConfigureParams.create_from_hef(hef, interface=HailoStreamInterface.PCIe)
+    network_group = target.configure(hef, configure_params)[0]
+    network_group_params = network_group.create_params()
+    input_params = InputVStreamParams.make_from_network_group(network_group, quantized=False, format_type=FormatType.FLOAT32)
+    output_params = OutputVStreamParams.make_from_network_group(network_group, quantized=False, format_type=FormatType.FLOAT32)
+    with InferVStreams(network_group, input_params, output_params) as infer_pipeline:
+        with network_group.activate(network_group_params):
+            result = infer_pipeline.infer({input_info.name: np.expand_dims(resized, axis=0)})
+output_name, raw_output = next(iter(result.items()))
+print(
+    json.dumps(
+        {
+            "status": "ok",
+            "details": {
+                "image_path": str(frame_path),
+                "hef_path": hef_path,
+                "input_name": input_info.name,
+                "output_name": output_name,
+                "model_shape": [int(height), int(width), int(input_info.shape[2])],
+                "detection_count": len(parse_hailo_nms_output(raw_output, labels, score_threshold)),
+                "detections": parse_hailo_nms_output(raw_output, labels, score_threshold),
+            },
+        }
+    )
+)
+"""
+    completed = subprocess.run(
+        ["/usr/bin/python3", "-c", script],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode == 0:
+        try:
+            return json.loads(completed.stdout)
+        except Exception:
+            pass
+    return {
+        "status": "error",
+        "details": {
+            "reason": "hailo_runtime_unavailable",
+            "error": import_error,
+            "fallback_returncode": completed.returncode,
+            "fallback_stdout": completed.stdout.strip(),
+            "fallback_stderr": completed.stderr.strip(),
+            "image_path": str(image_path),
+            "hef_path": hef_path,
+        },
+    }

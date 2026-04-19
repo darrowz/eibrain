@@ -12,9 +12,16 @@ from eibrain.body.raspbot_driver import RaspbotDriver
 from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
+from eibrain.body.runtime_linux import run_hailo_frame_inference
 from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.infra.config import load_config
-from eibrain.verification import run_ear_stream_check, run_gimbal_frame_check, run_hailo_camera_check, run_vision_frame_check
+from eibrain.verification import (
+    run_ear_stream_check,
+    run_gimbal_frame_check,
+    run_hailo_camera_check,
+    run_hailo_frame_check,
+    run_vision_frame_check,
+)
 
 
 def main() -> None:
@@ -45,6 +52,13 @@ def main() -> None:
         default="/usr/share/rpi-camera-assets/hailo_yolov5_personface.json",
     )
     hailo.add_argument("--timeout-s", type=int, default=8)
+
+    hailo_frame = subparsers.add_parser("hailo-frame-check")
+    hailo_frame.add_argument("--config", default="config/eibrain.yaml")
+    hailo_frame.add_argument("--device", default="")
+    hailo_frame.add_argument("--output-path", required=True)
+    hailo_frame.add_argument("--hef-path", default="/usr/share/hailo-models/yolov5s_personface_h8l.hef")
+    hailo_frame.add_argument("--score-threshold", type=float, default=0.3)
 
     args = parser.parse_args()
     if args.command == "gimbal-frame-check":
@@ -87,6 +101,19 @@ def main() -> None:
         result = run_vision_frame_check(
             image_paths=list(args.images),
             describe_fn=lambda image_path: _describe_frame(runtime, image_path),
+        )
+    elif args.command == "hailo-frame-check":
+        config = load_config(args.config)
+        eye_cfg = config.body.organs.get("eye")
+        camera_cfg = eye_cfg.subfunctions.get("camera") if eye_cfg is not None else None
+        device = args.device or str(camera_cfg.driver.extra.get("device", "/dev/video0")) if camera_cfg is not None else "/dev/video0"
+        result = run_hailo_frame_check(
+            capture_fn=lambda: capture_frame(device=device, output_path=args.output_path),
+            infer_fn=lambda: run_hailo_frame_inference(
+                image_path=args.output_path,
+                hef_path=args.hef_path,
+                score_threshold=args.score_threshold,
+            ),
         )
     else:
         result = run_hailo_camera_check(

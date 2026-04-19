@@ -135,3 +135,27 @@ def test_run_hailo_camera_check_surfaces_reason() -> None:
 
     assert result["status"] == "degraded"
     assert result["issues"] == ["uvc_camera_not_usable_by_rpicam"]
+
+
+def test_run_hailo_frame_check_collects_capture_and_inference() -> None:
+    from eibrain.verification.body_checks import run_hailo_frame_check
+
+    result = run_hailo_frame_check(
+        capture_fn=lambda: {"status": "ok", "details": {"output_path": "frame.jpg"}},
+        infer_fn=lambda: {"status": "ok", "details": {"detection_count": 2}},
+    )
+
+    assert result["status"] == "ok"
+    assert result["issues"] == []
+
+
+def test_run_hailo_frame_check_marks_zero_detections_degraded() -> None:
+    from eibrain.verification.body_checks import run_hailo_frame_check
+
+    result = run_hailo_frame_check(
+        capture_fn=lambda: {"status": "ok", "details": {"output_path": "frame.jpg"}},
+        infer_fn=lambda: {"status": "ok", "details": {"detection_count": 0}},
+    )
+
+    assert result["status"] == "degraded"
+    assert result["issues"] == ["no_detections_found"]

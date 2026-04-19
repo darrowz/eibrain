@@ -122,3 +122,31 @@ def run_hailo_camera_check(
         "issues": issues,
         "detection": detection,
     }
+
+
+def run_hailo_frame_check(
+    *,
+    capture_fn: Callable[[], dict[str, object]],
+    infer_fn: Callable[[], dict[str, object]],
+) -> dict[str, object]:
+    capture = capture_fn()
+    if capture.get("status") != "ok":
+        return {
+            "status": "error",
+            "issues": ["frame_capture_failed"],
+            "capture": capture,
+            "inference": {},
+        }
+    inference = infer_fn()
+    issues: list[str] = []
+    if inference.get("status") != "ok":
+        issues.append("hailo_frame_inference_failed")
+    details = inference.get("details", {})
+    if isinstance(details, dict) and int(details.get("detection_count", 0)) == 0:
+        issues.append("no_detections_found")
+    return {
+        "status": "ok" if not issues else "degraded",
+        "issues": issues,
+        "capture": capture,
+        "inference": inference,
+    }

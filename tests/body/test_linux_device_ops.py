@@ -121,3 +121,24 @@ def test_run_hailo_detection_marks_timeout_as_started() -> None:
 
     assert result["status"] == "ok"
     assert result["details"]["reason"] == "timed_out_after_start"
+
+
+def test_parse_hailo_nms_output_extracts_sorted_detections() -> None:
+    from eibrain.body.runtime_linux import parse_hailo_nms_output
+
+    raw_output = [
+        [
+            [[0.1, 0.2, 0.5, 0.6, 0.55]],
+            [[0.2, 0.3, 0.7, 0.8, 0.91]],
+        ]
+    ]
+
+    detections = parse_hailo_nms_output(
+        raw_output,
+        class_labels=["person", "face"],
+        score_threshold=0.5,
+    )
+
+    assert [item["label"] for item in detections] == ["face", "person"]
+    assert detections[0]["bbox"]["x_min"] == 0.3
+    assert detections[0]["score"] == 0.91

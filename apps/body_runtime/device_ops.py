@@ -11,6 +11,7 @@ from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
 from eibrain.body.runtime_linux import probe_binary_device
+from eibrain.body.runtime_linux import run_hailo_frame_inference
 from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.body.runtime_linux import probe_sherpa_model_dir
 from eibrain.body.runtime_linux import speak_text
@@ -53,6 +54,11 @@ def main() -> None:
     )
     hailo.add_argument("--timeout-s", type=int, default=8)
 
+    hailo_frame = subparsers.add_parser("hailo-frame-infer")
+    hailo_frame.add_argument("--image-path", required=True)
+    hailo_frame.add_argument("--hef-path", default="/usr/share/hailo-models/yolov5s_personface_h8l.hef")
+    hailo_frame.add_argument("--score-threshold", type=float, default=0.3)
+
     args = parser.parse_args()
     if args.command == "probe-binary-device":
         result = probe_binary_device(binary_name=args.binary, device_path=args.device, label=args.label)
@@ -90,6 +96,12 @@ def main() -> None:
         result = run_hailo_detection(
             post_process_file=args.post_process_file,
             timeout_s=args.timeout_s,
+        )
+    elif args.command == "hailo-frame-infer":
+        result = run_hailo_frame_inference(
+            image_path=args.image_path,
+            hef_path=args.hef_path,
+            score_threshold=args.score_threshold,
         )
     else:  # pragma: no cover - argparse enforces
         raise SystemExit(2)
