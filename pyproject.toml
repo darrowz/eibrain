@@ -16,6 +16,7 @@ eibrain-cognitive = "apps.cognitive_runtime.__main__:main"
 eibrain-bootstrap = "apps.bootstrap_deployment:main"
 eibrain-check-deployment = "apps.check_deployment:main"
 eibrain-monitor = "apps.operator_console.__main__:main"
+eibrain-sync-honjia = "apps.sync_honjia:main"
 eibrain-verify-body = "apps.body_runtime.verify_hardware:main"
 
 [tool.setuptools.packages.find]

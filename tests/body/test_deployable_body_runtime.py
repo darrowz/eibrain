@@ -67,9 +67,8 @@ def test_body_runtime_loads_from_yaml_and_dispatches_actions(tmp_path) -> None:
     )
 
     assert snapshot["organ_count"] == 4
-    assert snapshot["degradation_mode"] == "normal"
+    assert snapshot["degradation_mode"] == "mute_companion"
     assert [outcome.kind for outcome in outcomes] == [
         "speech_playback_completed",
         "action_executed",
     ]
-

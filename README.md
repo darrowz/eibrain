@@ -21,6 +21,7 @@ Two CLI entrypoints are available after installation:
 - `eibrain-bootstrap --config config/eibrain.yaml`
 - `eibrain-check-deployment --config config/eibrain.yaml`
 - `eibrain-monitor --config config/eibrain.yaml`
+- `eibrain-sync-honjia --target-host darrow@100.81.78.119 --restart-monitor`
 
 The configuration supports:
 
@@ -50,7 +51,19 @@ The bootstrap step creates:
   - `tokens.txt`
   - `encoder.onnx`
   - `decoder.onnx`
-  - `joiner.onnx`
+- `joiner.onnx`
+
+## Deployment Sync
+
+`honxin` is the only primary Git repository. `honjia` is a deployment target.
+
+Use the sync helper on `honxin` after validated changes:
+
+- `eibrain-sync-honjia --target-host darrow@100.81.78.119 --restart-monitor`
+
+The sync helper deploys `config/eibrain.honjia.yaml` to `honjia` as `config/eibrain.yaml`,
+so the deployment target keeps its real-device configuration instead of inheriting the
+development defaults from the primary repository.
 
 ## honjia Monitoring
 

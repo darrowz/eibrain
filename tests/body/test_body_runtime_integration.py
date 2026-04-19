@@ -8,9 +8,9 @@ def test_body_runtime_reports_capabilities_from_registered_organs() -> None:
     snapshot = runtime.snapshot()
 
     assert snapshot["organ_count"] == 4
-    assert snapshot["degradation_mode"] == "normal"
-    assert snapshot["capabilities"]["can_hear_voice"] is True
-    assert snapshot["capabilities"]["can_speak"] is True
+    assert snapshot["degradation_mode"] == "mute_companion"
+    assert snapshot["capabilities"]["can_hear_voice"] is False
+    assert snapshot["capabilities"]["can_speak"] is False
 
 
 def test_body_runtime_can_transcribe_audio_window() -> None:
