@@ -27,6 +27,7 @@ def test_check_deployment_cli_validates_and_bootstraps(monkeypatch, capsys) -> N
         config_dir = repo_root / "config"
         config_dir.mkdir()
         config_path = config_dir / "eibrain.yaml"
+        honjia_config_path = config_dir / "eibrain.honjia.yaml"
         runtime_dir = tmp_path / "runtime"
         config_path.write_text(
             "\n".join(
@@ -43,6 +44,7 @@ def test_check_deployment_cli_validates_and_bootstraps(monkeypatch, capsys) -> N
             ),
             encoding="utf-8",
         )
+        honjia_config_path.write_text("deployment:\n  root_dir: /tmp/honjia\n", encoding="utf-8")
 
         monkeypatch.setattr(check_deployment, "__file__", str(repo_root / "apps" / "check_deployment.py"))
         monkeypatch.setattr("sys.argv", ["check-deployment", "--config", "config/eibrain.yaml"])
@@ -51,6 +53,7 @@ def test_check_deployment_cli_validates_and_bootstraps(monkeypatch, capsys) -> N
         output = capsys.readouterr().out
         assert "deployment-check=ok" in output
         assert "config=" in output
+        assert "honjia_config=" in output
         assert runtime_dir.exists()
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)

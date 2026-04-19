@@ -40,8 +40,30 @@ def test_run_gimbal_frame_check_collects_changed_frames() -> None:
 
         assert moves == [40, 90, 140]
         assert result["status"] == "ok"
+        assert result["movement_verified"] is True
+        assert result["issues"] == []
         assert len(result["captures"]) == 3
         assert len(result["comparisons"]) == 2
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_run_gimbal_frame_check_marks_unchanged_frames_degraded() -> None:
+    from eibrain.verification.body_checks import run_gimbal_frame_check
+
+    tmp_path = _make_tmp_dir("verification-gimbal-degraded")
+    try:
+        result = run_gimbal_frame_check(
+            angles=[40, 90],
+            output_dir=tmp_path,
+            move_fn=lambda angle: {"status": "ok", "details": {"angle": angle}},
+            capture_fn=lambda angle, frame_path: {"status": "ok", "details": {"output_path": str(frame_path)}},
+            compare_fn=lambda left, right: {"status": "unchanged", "details": {"same_hash": True}},
+        )
+
+        assert result["status"] == "degraded"
+        assert result["movement_verified"] is False
+        assert result["issues"] == ["camera frames did not change after gimbal movement"]
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
 
@@ -62,9 +84,23 @@ def test_run_vision_frame_check_collects_summaries() -> None:
         )
 
         assert result["status"] == "ok"
+        assert result["recognized_frame_count"] == 2
         assert result["frames"][0]["summary"] == "seen:a.jpg"
     finally:
         shutil.rmtree(tmp_path, ignore_errors=True)
+
+
+def test_run_vision_frame_check_marks_blank_frames_degraded() -> None:
+    from eibrain.verification.body_checks import run_vision_frame_check
+
+    result = run_vision_frame_check(
+        image_paths=["a.jpg", "b.jpg"],
+        describe_fn=lambda image_path: {"summary": "", "primary_subject": "", "confidence": 0.0},
+    )
+
+    assert result["status"] == "degraded"
+    assert result["recognized_frame_count"] == 0
+    assert result["issues"] == ["vision recognizer did not return identifiable content for one or more frames"]
 
 
 def test_run_ear_stream_check_returns_transcript() -> None:

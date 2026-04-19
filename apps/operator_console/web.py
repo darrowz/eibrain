@@ -30,8 +30,12 @@ class MonitoringWebServer:
                 )
                 if self.path in {"/status.json", "/healthz"}:
                     body = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
-                    self.send_response(200)
+                    status_code = 200
+                    if self.path == "/healthz" and report.get("system_health") != "healthy":
+                        status_code = 503
+                    self.send_response(status_code)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Cache-Control", "no-store")
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
@@ -39,6 +43,7 @@ class MonitoringWebServer:
                 body = outer._render_html(report).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

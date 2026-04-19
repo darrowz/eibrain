@@ -12,22 +12,33 @@ from eibrain.infra.deployment import bootstrap_default_deployment
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate and bootstrap the eibrain deployment layout.")
     parser.add_argument("--config", default="config/eibrain.yaml", help="Path to unified YAML config")
+    parser.add_argument(
+        "--honjia-config",
+        default="config/eibrain.honjia.yaml",
+        help="Dedicated honjia deployment config that should exist in the primary repo",
+    )
     args = parser.parse_args()
 
     root_dir = Path(__file__).resolve().parents[1]
     config_path = Path(args.config)
     if not config_path.is_absolute():
         config_path = root_dir / config_path
+    honjia_config_path = Path(args.honjia_config)
+    if not honjia_config_path.is_absolute():
+        honjia_config_path = root_dir / honjia_config_path
 
     env_example = root_dir / ".env.example"
     if not config_path.is_file():
         raise SystemExit(f"missing config: {config_path}")
+    if not honjia_config_path.is_file():
+        raise SystemExit(f"missing honjia config: {honjia_config_path}")
     if not env_example.is_file():
         raise SystemExit(f"missing env example: {env_example}")
 
     config = load_config(config_path)
     layout = bootstrap_default_deployment(config)
     print(f"config={config_path}")
+    print(f"honjia_config={honjia_config_path}")
     print(f"env_example={env_example}")
     print(f"root_dir={layout.root_dir}")
     print(f"body_runtime_dir={layout.body_runtime_dir}")

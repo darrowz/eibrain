@@ -12,6 +12,7 @@ from eibrain.body.raspbot_driver import RaspbotDriver
 from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
+from eibrain.infra.config import load_config
 from eibrain.verification import run_ear_stream_check, run_gimbal_frame_check, run_vision_frame_check
 
 
@@ -20,10 +21,11 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     gimbal = subparsers.add_parser("gimbal-frame-check")
-    gimbal.add_argument("--device", required=True)
+    gimbal.add_argument("--config", default="config/eibrain.yaml")
+    gimbal.add_argument("--device", default="")
     gimbal.add_argument("--output-dir", required=True)
     gimbal.add_argument("--angles", nargs="+", type=int, default=[40, 90, 140])
-    gimbal.add_argument("--servo-id", type=int, default=1)
+    gimbal.add_argument("--servo-id", type=int)
 
     ear = subparsers.add_parser("ear-stream-check")
     ear.add_argument("--config", default="config/eibrain.yaml")
@@ -37,17 +39,28 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.command == "gimbal-frame-check":
-        driver = RaspbotDriver(bus=1, addr=0x2B, servo_id=args.servo_id, enabled=True, mock=False)
+        config = load_config(args.config)
+        eye_cfg = config.body.organs.get("eye")
+        neck_cfg = config.body.organs.get("neck")
+        camera_cfg = eye_cfg.subfunctions.get("camera") if eye_cfg is not None else None
+        motor_cfg = neck_cfg.subfunctions.get("motor") if neck_cfg is not None else None
+        device = args.device or str(camera_cfg.driver.extra.get("device", "/dev/video0")) if camera_cfg is not None else "/dev/video0"
+        servo_id = args.servo_id or _extract_servo_id(motor_cfg.driver.command if motor_cfg is not None else [])
+        pan_min = int(motor_cfg.driver.extra.get("pan_min", 40)) if motor_cfg is not None else 40
+        pan_max = int(motor_cfg.driver.extra.get("pan_max", 140)) if motor_cfg is not None else 140
+        driver = RaspbotDriver(bus=1, addr=0x2B, servo_id=servo_id, enabled=True, mock=False)
         result = run_gimbal_frame_check(
             angles=list(args.angles),
             output_dir=args.output_dir,
             move_fn=lambda angle: move_gimbal(
                 target_name=f"angle-{angle}",
-                servo_id=args.servo_id,
+                servo_id=servo_id,
                 home_angle=angle,
+                pan_min=pan_min,
+                pan_max=pan_max,
                 driver=driver,
             ),
-            capture_fn=lambda angle, frame_path: capture_frame(device=args.device, output_path=frame_path),
+            capture_fn=lambda angle, frame_path: capture_frame(device=device, output_path=frame_path),
             compare_fn=compare_frame_hashes,
         )
     elif args.command == "ear-stream-check":
@@ -78,6 +91,16 @@ def _describe_frame(runtime: CognitiveRuntimeApp, image_path: str) -> dict[str, 
         "primary_subject": understanding.primary_subject,
         "confidence": understanding.confidence,
     }
+
+
+def _extract_servo_id(command: list[str]) -> int:
+    for index, token in enumerate(command):
+        if token == "--servo-id" and index + 1 < len(command):
+            try:
+                return int(command[index + 1])
+            except ValueError:
+                break
+    return 1
 
 
 if __name__ == "__main__":

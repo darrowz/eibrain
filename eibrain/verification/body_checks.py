@@ -37,9 +37,26 @@ def run_gimbal_frame_check(
     for left, right in zip(frame_paths, frame_paths[1:]):
         comparisons.append(compare_fn(left, right))
 
+    issues: list[str] = []
     has_error = any(item["move"].get("status") != "ok" or item["capture"].get("status") != "ok" for item in captures)
+    if has_error:
+        issues.append("gimbal move or frame capture failed")
+    unchanged_pairs = [
+        comparison
+        for comparison in comparisons
+        if comparison.get("status") != "changed"
+    ]
+    if unchanged_pairs:
+        issues.append("camera frames did not change after gimbal movement")
+    status = "ok"
+    if has_error:
+        status = "error"
+    elif unchanged_pairs:
+        status = "degraded"
     return {
-        "status": "error" if has_error else "ok",
+        "status": status,
+        "movement_verified": not has_error and not unchanged_pairs,
+        "issues": issues,
         "captures": captures,
         "comparisons": comparisons,
     }
@@ -59,7 +76,21 @@ def run_vision_frame_check(
                 **summary,
             }
         )
-    return {"status": "ok", "frames": frames}
+    weak_frames = [
+        frame
+        for frame in frames
+        if not str(frame.get("summary", "")).strip()
+        and not str(frame.get("primary_subject", "")).strip()
+    ]
+    issues: list[str] = []
+    if weak_frames:
+        issues.append("vision recognizer did not return identifiable content for one or more frames")
+    return {
+        "status": "degraded" if weak_frames else "ok",
+        "recognized_frame_count": len(frames) - len(weak_frames),
+        "issues": issues,
+        "frames": frames,
+    }
 
 
 def run_ear_stream_check(
