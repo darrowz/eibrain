@@ -11,6 +11,7 @@ from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
 from eibrain.body.runtime_linux import probe_binary_device
+from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.body.runtime_linux import probe_sherpa_model_dir
 from eibrain.body.runtime_linux import speak_text
 
@@ -45,6 +46,13 @@ def main() -> None:
     compare.add_argument("--left", required=True)
     compare.add_argument("--right", required=True)
 
+    hailo = subparsers.add_parser("hailo-camera-detect")
+    hailo.add_argument(
+        "--post-process-file",
+        default="/usr/share/rpi-camera-assets/hailo_yolov5_personface.json",
+    )
+    hailo.add_argument("--timeout-s", type=int, default=8)
+
     args = parser.parse_args()
     if args.command == "probe-binary-device":
         result = probe_binary_device(binary_name=args.binary, device_path=args.device, label=args.label)
@@ -78,6 +86,11 @@ def main() -> None:
         result = capture_frame(device=args.device, output_path=args.output_path)
     elif args.command == "compare-frames":
         result = compare_frame_hashes(args.left, args.right)
+    elif args.command == "hailo-camera-detect":
+        result = run_hailo_detection(
+            post_process_file=args.post_process_file,
+            timeout_s=args.timeout_s,
+        )
     else:  # pragma: no cover - argparse enforces
         raise SystemExit(2)
     print(json.dumps(result, ensure_ascii=False))

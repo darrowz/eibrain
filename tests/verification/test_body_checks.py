@@ -113,3 +113,25 @@ def test_run_ear_stream_check_returns_transcript() -> None:
 
     assert result["status"] == "ok"
     assert result["transcript"]["text"] == "heard-3"
+
+
+def test_run_hailo_camera_check_returns_detection() -> None:
+    from eibrain.verification.body_checks import run_hailo_camera_check
+
+    result = run_hailo_camera_check(
+        detect_fn=lambda: {"status": "ok", "details": {"reason": "timed_out_after_start"}},
+    )
+
+    assert result["status"] == "ok"
+    assert result["issues"] == []
+
+
+def test_run_hailo_camera_check_surfaces_reason() -> None:
+    from eibrain.verification.body_checks import run_hailo_camera_check
+
+    result = run_hailo_camera_check(
+        detect_fn=lambda: {"status": "degraded", "details": {"reason": "uvc_camera_not_usable_by_rpicam"}},
+    )
+
+    assert result["status"] == "degraded"
+    assert result["issues"] == ["uvc_camera_not_usable_by_rpicam"]

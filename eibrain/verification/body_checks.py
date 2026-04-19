@@ -104,3 +104,21 @@ def run_ear_stream_check(
         "chunk_count": chunk_count,
         "transcript": transcript,
     }
+
+
+def run_hailo_camera_check(
+    *,
+    detect_fn: Callable[[], dict[str, object]],
+) -> dict[str, object]:
+    detection = detect_fn()
+    status = str(detection.get("status", "error"))
+    details = detection.get("details", {})
+    reason = details.get("reason") if isinstance(details, dict) else ""
+    issues: list[str] = []
+    if status != "ok":
+        issues.append(str(reason or "hailo camera detection failed"))
+    return {
+        "status": status,
+        "issues": issues,
+        "detection": detection,
+    }

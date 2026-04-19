@@ -35,8 +35,12 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "warnings" in payload
     assert "organ_cards" in metrics_payload
     assert "latency_metrics" in metrics_payload
+    assert "runtime_overview" in metrics_payload
+    assert "probe_metrics" in metrics_payload
     assert cache_control == "no-store"
     assert health_payload["system_health"] in {"healthy", "degraded"}
     assert "<title>eibrain honjia monitor</title>" in html
     assert "honjia organ observability" in html
+    assert "Hardware probes" in html
+    assert "Runtime posture" in html
     assert "/metrics.json" in html

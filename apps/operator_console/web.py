@@ -299,10 +299,22 @@ class MonitoringWebServer:
         </table>
       </section>
       <section class="card">
-        <h2>Warnings & degradation</h2>
+        <h2>Runtime posture</h2>
+        <div class="mini-grid" id="runtime-overview"></div>
+        <div class="mini-grid" id="capability-grid" style="margin-top: 14px;"></div>
+        <div class="mini-grid" id="driver-breakdown" style="margin-top: 14px;"></div>
+        <h3 style="margin-top: 18px;">Warnings & degradation</h3>
         <div class="warning-list" id="warning-list"></div>
         <div class="mini-grid" id="event-breakdown"></div>
       </section>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
+      <h2>Hardware probes</h2>
+      <table>
+        <thead><tr><th>Probe</th><th>Status</th><th>Device</th><th>Readiness</th><th>Latency</th></tr></thead>
+        <tbody id="probe-table"></tbody>
+      </table>
     </section>
 
     <section class="card" style="margin-top: 16px;">
@@ -328,6 +340,12 @@ class MonitoringWebServer:
       return typeof value === 'number' ? `${{value.toFixed(2)}} ms` : '—';
     }}
 
+    function fmtBool(value) {{
+      if (value === true) return 'present';
+      if (value === false) return 'missing';
+      return 'n/a';
+    }}
+
     function fmtTime(value) {{
       if (!value) return '—';
       const date = new Date(value * 1000);
@@ -337,12 +355,14 @@ class MonitoringWebServer:
     function renderSummary(report) {{
       const summary = report.summary || {{}};
       const cards = [
+        ['Healthy modules', `${{summary.healthy_subfunction_count ?? 0}} / ${{summary.subfunction_count ?? 0}}`, 'Healthy subfunctions across all organs'],
         ['Enabled capabilities', `${{summary.enabled_capability_count ?? 0}} / ${{summary.capability_count ?? 0}}`, 'Current embodied capability coverage'],
         ['Warning count', String(summary.warning_count ?? 0), 'Active diagnostic warnings'],
         ['Degraded organs', String(summary.degraded_organ_count ?? 0), 'Organs needing attention'],
+        ['Real drivers', String(summary.real_driver_count ?? 0), 'Non-noop driver probes in the live graph'],
+        ['Unavailable probes', String(summary.unavailable_probe_count ?? 0), 'Hardware probes that are currently missing'],
         ['Avg latency', fmtLatency(summary.avg_latency_ms), 'Cross-module average heartbeat latency'],
         ['P95 latency', fmtLatency(summary.p95_latency_ms), 'Tail latency across instrumented modules'],
-        ['Recent traces', String(report.trace_count ?? 0), 'Recent runtime events retained in memory'],
       ];
       document.getElementById('summary-grid').innerHTML = cards.map(([label, value, hint]) => `
         <article class="card">
@@ -378,7 +398,7 @@ class MonitoringWebServer:
                   <span class="health-tag ${{healthClass(sub.health)}}">${{sub.health}}</span>
                 </div>
                 <div class="muted">Driver <span class="driver-tag">${{sub.driver}}</span> · Status ${{sub.status || '—'}}</div>
-                <div class="metric-label">${{sub.error || 'No active error'}}</div>
+                <div class="metric-label">${{sub.probe?.device ? `device=${{sub.probe.device}} · ${{fmtBool(sub.probe.device_exists)}}` : (sub.error || 'No active error')}}</div>
                 <div class="latency-bar"><span style="width:${{Math.min(100, (sub.elapsed_ms || 0) / 2)}}%"></span></div>
                 <div class="metric-label">${{fmtLatency(sub.elapsed_ms)}}</div>
               </div>
@@ -386,6 +406,37 @@ class MonitoringWebServer:
           </div>
         </article>
       `).join('');
+    }}
+
+    function renderRuntime(report) {{
+      const runtime = report.runtime_overview || {{}};
+      const capabilities = report.capability_status || [];
+      const drivers = report.driver_breakdown || [];
+
+      document.getElementById('runtime-overview').innerHTML = [
+        ['Node', runtime.node_id || 'unknown'],
+        ['Degradation', runtime.degradation_mode || 'unknown'],
+        ['Organs', String(runtime.organ_count ?? 0)],
+        ['Recent events', String(runtime.recent_event_count ?? 0)],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:22px;">${{value}}</div></div>`).join('');
+
+      document.getElementById('capability-grid').innerHTML = capabilities.length
+        ? capabilities.map((capability) => `
+            <div class="mini-card">
+              <div class="muted">${{capability.name}}</div>
+              <div class="metric-value" style="font-size:20px;">${{capability.enabled ? 'on' : 'off'}}</div>
+            </div>
+          `).join('')
+        : '<div class="muted">No capability data</div>';
+
+      document.getElementById('driver-breakdown').innerHTML = drivers.length
+        ? drivers.map((driver) => `
+            <div class="mini-card">
+              <div class="muted">driver:${{driver.driver}}</div>
+              <div class="metric-value" style="font-size:20px;">${{driver.count}}</div>
+            </div>
+          `).join('')
+        : '<div class="muted">No driver breakdown</div>';
     }}
 
     function renderLatencies(report) {{
@@ -415,6 +466,24 @@ class MonitoringWebServer:
         : '<div class="muted">No recent event breakdown</div>';
     }}
 
+    function renderProbes(report) {{
+      const probes = report.probe_metrics || [];
+      document.getElementById('probe-table').innerHTML = probes.length
+        ? probes.slice(0, 12).map((probe) => `
+            <tr>
+              <td>
+                <strong>${{probe.id}}</strong>
+                <div class="muted">${{probe.label || probe.driver || 'probe'}}</div>
+              </td>
+              <td><span class="health-tag ${{healthClass(probe.health)}}">${{probe.health}}</span></td>
+              <td>${{probe.device || probe.model_dir || '—'}}</td>
+              <td>${{probe.device ? fmtBool(probe.device_exists) : (probe.missing_file_count ? `missing files:${{probe.missing_file_count}}` : 'ready')}}</td>
+              <td>${{fmtLatency(probe.elapsed_ms)}}</td>
+            </tr>
+          `).join('')
+        : '<tr><td colspan="5" class="muted">No probe metrics yet</td></tr>';
+    }}
+
     function renderTimeline(report) {{
       const events = report.recent_traces || [];
       document.getElementById('recent-events').innerHTML = events.length
@@ -442,8 +511,10 @@ class MonitoringWebServer:
       renderChrome(report);
       renderSummary(report);
       renderOrgans(report);
+      renderRuntime(report);
       renderLatencies(report);
       renderWarnings(report);
+      renderProbes(report);
       renderTimeline(report);
     }}
 

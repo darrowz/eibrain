@@ -76,3 +76,48 @@ def test_move_gimbal_uses_injected_driver() -> None:
 
     assert result["status"] == "ok"
     assert calls == [(1, 90)]
+
+
+def test_run_hailo_detection_reports_uvc_camera_gap() -> None:
+    from eibrain.body.runtime_linux import run_hailo_detection
+
+    def _runner(command: list[str], **kwargs):
+        class _Completed:
+            returncode = 1
+            stdout = "\n".join(
+                [
+                    "Adding camera '/base/axi/pcie.../uvcvideo'",
+                    "ERROR: *** no cameras available ***",
+                ]
+            )
+            stderr = ""
+
+        return _Completed()
+
+    result = run_hailo_detection(
+        post_process_file="/usr/share/rpi-camera-assets/hailo_yolov5_personface.json",
+        runner=_runner,
+    )
+
+    assert result["status"] == "degraded"
+    assert result["details"]["reason"] == "uvc_camera_not_usable_by_rpicam"
+
+
+def test_run_hailo_detection_marks_timeout_as_started() -> None:
+    from eibrain.body.runtime_linux import run_hailo_detection
+
+    def _runner(command: list[str], **kwargs):
+        class _Completed:
+            returncode = 124
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    result = run_hailo_detection(
+        post_process_file="/usr/share/rpi-camera-assets/hailo_yolov5_personface.json",
+        runner=_runner,
+    )
+
+    assert result["status"] == "ok"
+    assert result["details"]["reason"] == "timed_out_after_start"

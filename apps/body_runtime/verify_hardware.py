@@ -12,8 +12,9 @@ from eibrain.body.raspbot_driver import RaspbotDriver
 from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
+from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.infra.config import load_config
-from eibrain.verification import run_ear_stream_check, run_gimbal_frame_check, run_vision_frame_check
+from eibrain.verification import run_ear_stream_check, run_gimbal_frame_check, run_hailo_camera_check, run_vision_frame_check
 
 
 def main() -> None:
@@ -36,6 +37,14 @@ def main() -> None:
     vision = subparsers.add_parser("vision-frame-check")
     vision.add_argument("--config", default="config/eibrain.yaml")
     vision.add_argument("--images", nargs="+", required=True)
+
+    hailo = subparsers.add_parser("hailo-camera-check")
+    hailo.add_argument("--config", default="config/eibrain.yaml")
+    hailo.add_argument(
+        "--post-process-file",
+        default="/usr/share/rpi-camera-assets/hailo_yolov5_personface.json",
+    )
+    hailo.add_argument("--timeout-s", type=int, default=8)
 
     args = parser.parse_args()
     if args.command == "gimbal-frame-check":
@@ -73,11 +82,18 @@ def main() -> None:
                 actor_id=args.actor_id,
             ).to_dict(),
         )
-    else:
+    elif args.command == "vision-frame-check":
         runtime = CognitiveRuntimeApp.from_config_path(args.config)
         result = run_vision_frame_check(
             image_paths=list(args.images),
             describe_fn=lambda image_path: _describe_frame(runtime, image_path),
+        )
+    else:
+        result = run_hailo_camera_check(
+            detect_fn=lambda: run_hailo_detection(
+                post_process_file=args.post_process_file,
+                timeout_s=args.timeout_s,
+            )
         )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

@@ -161,3 +161,50 @@ def compare_frame_hashes(left_path: str | Path, right_path: str | Path) -> dict[
             "right_size": right.stat().st_size,
         },
     }
+
+
+def run_hailo_detection(
+    *,
+    post_process_file: str,
+    timeout_s: int = 8,
+    runner=subprocess.run,
+) -> dict[str, object]:
+    command = [
+        "timeout",
+        f"{timeout_s}s",
+        "rpicam-hello",
+        "--nopreview",
+        "--post-process-file",
+        post_process_file,
+        "--verbose",
+        "2",
+    ]
+    completed = runner(command, capture_output=True, text=True, check=False)
+    combined_output = "\n".join(
+        part.strip()
+        for part in (completed.stdout or "", completed.stderr or "")
+        if part.strip()
+    )
+    lowered = combined_output.lower()
+    status = "ok" if completed.returncode == 0 else "error"
+    reason = ""
+    if "adding camera" in lowered and "no cameras available" in lowered:
+        status = "degraded"
+        reason = "uvc_camera_not_usable_by_rpicam"
+    elif "no cameras available" in lowered:
+        status = "degraded"
+        reason = "rpicam_no_cameras_available"
+    elif completed.returncode == 124:
+        status = "ok"
+        reason = "timed_out_after_start"
+    return {
+        "status": status,
+        "details": {
+            "post_process_file": post_process_file,
+            "returncode": completed.returncode,
+            "reason": reason,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+            "combined_output": combined_output,
+        },
+    }
