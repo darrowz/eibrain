@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
 import threading
+from urllib.parse import urlparse
 
 from apps.operator_console.app import OperatorConsoleApp
 
@@ -23,15 +25,29 @@ class MonitoringWebServer:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
+                request_path = urlparse(self.path).path
                 report = outer.console.build_status_report(
                     body_snapshot=outer.runtime.snapshot(),
                     cognitive_snapshot={},
                     traces=outer.runtime.recent_events(),
                 )
-                if self.path in {"/status.json", "/healthz", "/metrics.json"}:
+                if request_path == "/vision/latest.jpg":
+                    frame_path = outer.runtime.latest_visual_frame_path()
+                    if frame_path and Path(frame_path).exists():
+                        body = Path(frame_path).read_bytes()
+                        self.send_response(200)
+                        self.send_header("Content-Type", "image/jpeg")
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self.send_error(404, "vision frame not available")
+                    return
+                if request_path in {"/status.json", "/healthz", "/metrics.json"}:
                     body = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
                     status_code = 200
-                    if self.path == "/healthz" and report.get("system_health") != "healthy":
+                    if request_path == "/healthz" and report.get("system_health") != "healthy":
                         status_code = 503
                     self.send_response(status_code)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -158,6 +174,12 @@ class MonitoringWebServer:
     .detail-grid {{
       grid-template-columns: 1.4fr 1fr;
     }}
+    .vision-layout {{
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+      gap: 16px;
+      align-items: start;
+    }}
     .card {{
       background: linear-gradient(180deg, rgba(35,38,40,0.96), rgba(29,31,32,0.96));
       border: 1px solid var(--border);
@@ -241,6 +263,50 @@ class MonitoringWebServer:
       border-radius: 999px;
       background: linear-gradient(90deg, var(--orange), #ffcd70);
     }}
+    .vision-stage {{
+      position: relative;
+      border-radius: 18px;
+      overflow: hidden;
+      background: #0d0f10;
+      border: 1px solid var(--border);
+      min-height: 260px;
+    }}
+    .vision-stage img {{
+      display: block;
+      width: 100%;
+      height: auto;
+      object-fit: cover;
+    }}
+    .vision-empty {{
+      min-height: 260px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      padding: 24px;
+      text-align: center;
+    }}
+    .bbox {{
+      position: absolute;
+      border: 2px solid var(--orange);
+      background: rgba(249, 160, 63, 0.08);
+      box-shadow: inset 0 0 0 1px rgba(0,0,0,0.2);
+    }}
+    .bbox.face {{
+      border-color: var(--green);
+      background: rgba(41, 193, 126, 0.10);
+    }}
+    .bbox-label {{
+      position: absolute;
+      top: -24px;
+      left: 0;
+      background: rgba(13, 15, 16, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -270,6 +336,7 @@ class MonitoringWebServer:
     @media (max-width: 960px) {{
       .hero {{ flex-direction: column; }}
       .detail-grid {{ grid-template-columns: 1fr; }}
+      .vision-layout {{ grid-template-columns: 1fr; }}
     }}
   </style>
 </head>
@@ -307,6 +374,17 @@ class MonitoringWebServer:
         <div class="warning-list" id="warning-list"></div>
         <div class="mini-grid" id="event-breakdown"></div>
       </section>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
+      <h2>Visual diagnostics</h2>
+      <div class="vision-layout">
+        <div class="vision-stage" id="vision-stage"></div>
+        <div>
+          <div class="mini-grid" id="vision-summary"></div>
+          <div class="subfunction-list" id="vision-detection-list" style="margin-top: 14px;"></div>
+        </div>
+      </div>
     </section>
 
     <section class="card" style="margin-top: 16px;">
@@ -398,7 +476,7 @@ class MonitoringWebServer:
                   <span class="health-tag ${{healthClass(sub.health)}}">${{sub.health}}</span>
                 </div>
                 <div class="muted">Driver <span class="driver-tag">${{sub.driver}}</span> · Status ${{sub.status || '—'}}</div>
-                <div class="metric-label">${{sub.probe?.device ? `device=${{sub.probe.device}} · ${{fmtBool(sub.probe.device_exists)}}` : (sub.error || 'No active error')}}</div>
+                <div class="metric-label">${{sub.visual_summary || (sub.probe?.device ? `device=${{sub.probe.device}} · ${{fmtBool(sub.probe.device_exists)}}` : (sub.error || 'No active error'))}}</div>
                 <div class="latency-bar"><span style="width:${{Math.min(100, (sub.elapsed_ms || 0) / 2)}}%"></span></div>
                 <div class="metric-label">${{fmtLatency(sub.elapsed_ms)}}</div>
               </div>
@@ -466,6 +544,62 @@ class MonitoringWebServer:
         : '<div class="muted">No recent event breakdown</div>';
     }}
 
+    function renderVision(report) {{
+      const visual = report.visual_diagnostics || {{}};
+      const timestamp = visual.frame_captured_at_ts || report.generated_at_ts || Date.now() / 1000;
+      const detections = visual.detections || [];
+      const identityCandidates = visual.identity_candidates || [];
+      document.getElementById('vision-summary').innerHTML = [
+        ['Frame', visual.frame_available ? 'live' : 'missing'],
+        ['Detection', visual.detection_health || 'unknown'],
+        ['Identity', visual.identity_health || 'unknown'],
+        ['Targets', String(visual.detection_count ?? 0)],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      if (visual.frame_url) {{
+        const boxes = detections.map((detection) => {{
+          const bbox = detection.bbox || {{}};
+          const left = Math.max(0, Math.min(100, (bbox.x_min || 0) * 100));
+          const top = Math.max(0, Math.min(100, (bbox.y_min || 0) * 100));
+          const width = Math.max(1, Math.min(100, ((bbox.x_max || 0) - (bbox.x_min || 0)) * 100));
+          const height = Math.max(1, Math.min(100, ((bbox.y_max || 0) - (bbox.y_min || 0)) * 100));
+          const boxClass = detection.label === 'face' ? 'bbox face' : 'bbox';
+          return `<div class="${{boxClass}}" style="left:${{left}}%;top:${{top}}%;width:${{width}}%;height:${{height}}%;"><span class="bbox-label">${{detection.label}} ${{Number(detection.score || 0).toFixed(2)}}</span></div>`;
+        }}).join('');
+        document.getElementById('vision-stage').innerHTML = `
+          <img src="${{visual.frame_url}}?t=${{timestamp}}" alt="latest honjia frame">
+          ${{boxes}}
+        `;
+      }} else {{
+        document.getElementById('vision-stage').innerHTML = `
+          <div class="vision-empty">
+            <div>
+              <strong>Visual frame unavailable</strong>
+              <div class="metric-label">${{visual.scene_summary || 'waiting for camera pipeline to produce a frame'}}</div>
+            </div>
+          </div>
+        `;
+      }}
+
+      const listItems = [];
+      if (visual.scene_summary) {{
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Scene</strong><span class="health-tag ${{healthClass(visual.detection_health || 'unknown')}}">${{visual.detection_status || visual.detection_health || 'unknown'}}</span></div><div class="metric-label">${{visual.scene_summary}}</div></div>`);
+      }}
+      if (visual.identity_summary) {{
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Identity</strong><span class="health-tag ${{healthClass(visual.identity_health || 'unknown')}}">${{visual.identity_status || visual.identity_health || 'unknown'}}</span></div><div class="metric-label">${{visual.identity_summary}}</div></div>`);
+      }}
+      detections.slice(0, 6).forEach((detection, index) => {{
+        const bbox = detection.bbox || {{}};
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>#${{index + 1}} ${{detection.label || 'target'}}</strong><span class="health-tag healthy">${{Number(detection.score || 0).toFixed(2)}}</span></div><div class="metric-label">bbox x:${{Number(bbox.x_min || 0).toFixed(2)}}-${{Number(bbox.x_max || 0).toFixed(2)}} · y:${{Number(bbox.y_min || 0).toFixed(2)}}-${{Number(bbox.y_max || 0).toFixed(2)}}</div></div>`);
+      }});
+      identityCandidates.slice(0, 4).forEach((candidate) => {{
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{candidate.candidate_id || 'candidate'}}</strong><span class="health-tag degraded">${{candidate.identity || 'unknown'}}</span></div><div class="metric-label">score ${{Number(candidate.score || 0).toFixed(2)}}</div></div>`);
+      }});
+      document.getElementById('vision-detection-list').innerHTML = listItems.length
+        ? listItems.join('')
+        : '<div class="muted">No visual detections yet</div>';
+    }}
+
     function renderProbes(report) {{
       const probes = report.probe_metrics || [];
       document.getElementById('probe-table').innerHTML = probes.length
@@ -514,6 +648,7 @@ class MonitoringWebServer:
       renderRuntime(report);
       renderLatencies(report);
       renderWarnings(report);
+      renderVision(report);
       renderProbes(report);
       renderTimeline(report);
     }}

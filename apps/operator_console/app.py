@@ -55,6 +55,7 @@ class OperatorConsoleApp:
             probe_metrics=probe_metrics,
         )
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
+        visual_diagnostics = self._build_visual_diagnostics(organs)
         summary = self._build_summary(
             capabilities=capabilities,
             warnings=warnings,
@@ -75,6 +76,7 @@ class OperatorConsoleApp:
             "capability_status": capability_status,
             "driver_breakdown": driver_breakdown,
             "probe_metrics": probe_metrics,
+            "visual_diagnostics": visual_diagnostics,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
             "event_breakdown": self._build_event_breakdown(traces),
@@ -103,6 +105,7 @@ class OperatorConsoleApp:
                 elapsed_ms = details.get("elapsed_ms")
                 if isinstance(elapsed_ms, (int, float)):
                     latencies.append(float(elapsed_ms))
+                visual_summary = details.get("scene_summary") or details.get("identity_summary")
                 entries.append(
                     {
                         "name": sub_name,
@@ -111,6 +114,7 @@ class OperatorConsoleApp:
                         "elapsed_ms": elapsed_ms,
                         "status": details.get("status", sub_snapshot.get("health", "unknown")),
                         "error": details.get("error") or details.get("reason") or details.get("stderr", ""),
+                        "visual_summary": visual_summary,
                         "probe": probe_details,
                     }
                 )
@@ -264,6 +268,52 @@ class OperatorConsoleApp:
                 probes.append(probe)
         probes.sort(key=self._probe_sort_key)
         return probes
+
+    def _build_visual_diagnostics(self, organs: dict[str, object]) -> dict[str, object]:
+        eye = organs.get("eye", {})
+        if not isinstance(eye, dict):
+            return {"enabled": False, "detections": [], "identity_candidates": []}
+        subfunctions = eye.get("subfunctions", {})
+        if not isinstance(subfunctions, dict):
+            subfunctions = {}
+        camera = subfunctions.get("camera", {})
+        detection = subfunctions.get("detection", {})
+        identity = subfunctions.get("identity", {})
+        if not isinstance(camera, dict):
+            camera = {}
+        if not isinstance(detection, dict):
+            detection = {}
+        if not isinstance(identity, dict):
+            identity = {}
+        camera_details = dict(camera.get("details", {})) if isinstance(camera.get("details", {}), dict) else {}
+        detection_details = dict(detection.get("details", {})) if isinstance(detection.get("details", {}), dict) else {}
+        identity_details = dict(identity.get("details", {})) if isinstance(identity.get("details", {}), dict) else {}
+        detections = detection_details.get("detections", [])
+        identity_candidates = identity_details.get("identity_candidates", [])
+        if not isinstance(detections, list):
+            detections = []
+        if not isinstance(identity_candidates, list):
+            identity_candidates = []
+        frame_path = detection_details.get("frame_path") or camera_details.get("frame_path")
+        frame_captured_at_ts = detection_details.get("frame_captured_at_ts") or camera_details.get("frame_captured_at_ts")
+        return {
+            "enabled": bool(frame_path or detections or identity_candidates),
+            "frame_available": bool(frame_path),
+            "frame_url": "/vision/latest.jpg" if frame_path else None,
+            "frame_captured_at_ts": frame_captured_at_ts,
+            "camera_health": camera.get("health", "unknown"),
+            "detection_health": detection.get("health", "unknown"),
+            "identity_health": identity.get("health", "unknown"),
+            "detection_status": detection_details.get("status", detection.get("health", "unknown")),
+            "identity_status": identity_details.get("status", identity.get("health", "unknown")),
+            "detection_count": len(detections),
+            "detections": detections,
+            "identity_candidates": identity_candidates,
+            "scene_summary": detection_details.get("scene_summary", "no visual diagnostics yet"),
+            "identity_summary": identity_details.get("identity_summary", "identity chain inactive"),
+            "scene_labels": detection_details.get("scene_labels", []),
+            "top_detection": detection_details.get("top_detection"),
+        }
 
     @staticmethod
     def _probe_sort_key(probe: dict[str, object]) -> tuple[int, str]:

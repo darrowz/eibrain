@@ -125,9 +125,39 @@ body:
             - hailo8
           provider: hailo8
           device: /dev/hailo0
+          hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+          score_threshold: 0.3
+          labels:
+            - person
+            - face
+          refresh_interval_s: 1.5
       identity:
         driver:
-          kind: noop
+          kind: command
+          command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8-identity
+          health_command:
+            - python3
+            - -m
+            - apps.body_runtime.device_ops
+            - probe-binary-device
+            - --binary
+            - /usr/bin/python3
+            - --device
+            - /dev/hailo0
+            - --label
+            - hailo8-identity
+          provider: anonymous_face
+          device: /dev/hailo0
     mouth:
       enabled: true
       tts_plan:

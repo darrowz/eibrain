@@ -120,3 +120,84 @@ def test_operator_console_extracts_probe_details_for_missing_hardware() -> None:
     assert report["probe_metrics"][0]["device"] == "/dev/video0"
     assert report["probe_metrics"][0]["device_exists"] is False
     assert report["probe_metrics"][0]["label"] == "camera"
+
+
+def test_operator_console_exposes_visual_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True, "can_identify_person": False},
+            "organs": {
+                "eye": {
+                    "health": "degraded",
+                    "subfunctions": {
+                        "camera": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "command",
+                                "status": "healthy",
+                                "elapsed_ms": 35.0,
+                                "frame_path": "/tmp/latest.jpg",
+                                "frame_captured_at_ts": 123.0,
+                                "details": {
+                                    "label": "camera",
+                                    "device": "/dev/video0",
+                                    "device_exists": True,
+                                },
+                            },
+                        },
+                        "detection": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "command",
+                                "status": "healthy",
+                                "elapsed_ms": 70.0,
+                                "frame_path": "/tmp/latest.jpg",
+                                "frame_captured_at_ts": 123.0,
+                                "scene_summary": "1 face, 1 person",
+                                "scene_labels": ["face", "person"],
+                                "detections": [
+                                    {
+                                        "label": "face",
+                                        "score": 0.91,
+                                        "bbox": {
+                                            "x_min": 0.2,
+                                            "y_min": 0.1,
+                                            "x_max": 0.6,
+                                            "y_max": 0.7,
+                                        },
+                                    }
+                                ],
+                            },
+                        },
+                        "identity": {
+                            "health": "degraded",
+                            "details": {
+                                "driver": "command",
+                                "status": "observing_unknown_face",
+                                "elapsed_ms": 5.0,
+                                "identity_summary": "1 unknown face candidate(s)",
+                                "identity_candidates": [
+                                    {
+                                        "candidate_id": "unknown-face-1",
+                                        "identity": "unknown",
+                                        "score": 0.91,
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["visual_diagnostics"]["frame_url"] == "/vision/latest.jpg"
+    assert report["visual_diagnostics"]["detection_count"] == 1
+    assert report["visual_diagnostics"]["detections"][0]["label"] == "face"
+    assert report["visual_diagnostics"]["identity_candidates"][0]["candidate_id"] == "unknown-face-1"

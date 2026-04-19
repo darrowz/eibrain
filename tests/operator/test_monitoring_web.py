@@ -43,4 +43,34 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "honjia organ observability" in html
     assert "Hardware probes" in html
     assert "Runtime posture" in html
+    assert "Visual diagnostics" in html
     assert "/metrics.json" in html
+
+
+def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    frame_path = tmp_path / "latest.jpg"
+    frame_path.write_bytes(b"jpeg-bytes")
+
+    class _Runtime:
+        def snapshot(self):
+            return {"node_id": "honjia", "degradation_mode": "normal", "capabilities": {}, "organs": {}}
+
+        def recent_events(self):
+            return []
+
+        def latest_visual_frame_path(self):
+            return str(frame_path)
+
+    server = MonitoringWebServer(runtime=_Runtime(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.port}/vision/latest.jpg?ts=1") as response:
+            payload = response.read()
+            content_type = response.headers.get("Content-Type")
+    finally:
+        server.stop()
+
+    assert payload == b"jpeg-bytes"
+    assert content_type == "image/jpeg"

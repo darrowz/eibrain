@@ -144,3 +144,10 @@ class BodyRuntimeApp:
 
     def recent_events(self) -> list[dict[str, object]]:
         return list(self._recent_events)
+
+    def latest_visual_frame_path(self) -> str | None:
+        for organ in self.organs:
+            frame_path = getattr(organ, "latest_frame_path", None)
+            if isinstance(frame_path, str) and frame_path:
+                return frame_path
+        return None
