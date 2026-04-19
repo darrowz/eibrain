@@ -33,3 +33,34 @@ def test_degradation_manager_derives_capabilities() -> None:
     assert result.capabilities.can_speak is True
     assert result.degradation_mode == "low_confidence_body"
 
+
+def test_degradation_manager_does_not_treat_noop_identity_or_tracking_as_real_capability() -> None:
+    from eibrain.body.health.degradation_manager import DegradationManager
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    manager = DegradationManager()
+    organ_states = [
+        OrganHealth(
+            organ="eye",
+            health="healthy",
+            subfunctions={
+                "camera": SubfunctionHealth(name="camera", health="healthy", details={"driver": "command"}),
+                "detection": SubfunctionHealth(name="detection", health="healthy", details={"driver": "command"}),
+                "identity": SubfunctionHealth(name="identity", health="healthy", details={"driver": "noop"}),
+            },
+        ),
+        OrganHealth(
+            organ="neck",
+            health="healthy",
+            subfunctions={
+                "motor": SubfunctionHealth(name="motor", health="healthy", details={"driver": "command"}),
+                "tracking": SubfunctionHealth(name="tracking", health="healthy", details={"driver": "noop"}),
+            },
+        ),
+    ]
+
+    result = manager.evaluate(organ_states)
+
+    assert result.capabilities.can_see_people is True
+    assert result.capabilities.can_identify_person is False
+    assert result.capabilities.can_orient_head is True
