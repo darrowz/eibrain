@@ -51,6 +51,7 @@ def test_body_runtime_snapshot_includes_subfunction_diagnostics(tmp_path) -> Non
     assert capture["health"] == "healthy"
     assert capture["details"]["device"] == "/dev/video0"
     assert capture["details"]["driver"] == "camera_probe"
+    assert "elapsed_ms" in capture["details"]
 
 
 def test_body_runtime_records_recent_events_for_monitoring() -> None:
@@ -66,6 +67,7 @@ def test_body_runtime_records_recent_events_for_monitoring() -> None:
 
     assert events
     assert events[-1]["kind"] == "speech_playback_completed"
+    assert "recorded_at_ts" in events[-1]
 
 
 def test_body_runtime_marks_command_action_error_from_json_status(tmp_path) -> None:

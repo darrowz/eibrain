@@ -17,6 +17,7 @@ def test_command_driver_heartbeat_degrades_when_binary_missing() -> None:
 
     assert result.status == "unavailable"
     assert result.details["reason"] == "command_not_found"
+    assert "elapsed_ms" in result.details
 
 
 def test_command_driver_invoke_returns_error_when_binary_missing() -> None:
@@ -34,3 +35,4 @@ def test_command_driver_invoke_returns_error_when_binary_missing() -> None:
 
     assert result.status == "error"
     assert result.details["reason"] == "command_not_found"
+    assert "elapsed_ms" in result.details

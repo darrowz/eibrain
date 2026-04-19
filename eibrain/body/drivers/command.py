@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 
 from eibrain.infra.config import DriverConfig
 
@@ -15,11 +16,18 @@ class CommandDriver:
         self.config = config
 
     def heartbeat(self) -> DriverResult:
+        started = time.perf_counter()
         if not self.config.command:
-            return DriverResult(status="unavailable", details={"reason": "missing_command"})
+            return DriverResult(
+                status="unavailable",
+                details={"reason": "missing_command", "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)},
+            )
         health_command = self.config.extra.get("health_command")
         if not health_command:
-            return DriverResult(status="healthy", details={"driver": "command"})
+            return DriverResult(
+                status="healthy",
+                details={"driver": "command", "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)},
+            )
         command = [str(part) for part in health_command]
         try:
             completed = subprocess.run(
@@ -30,14 +38,29 @@ class CommandDriver:
                 timeout=self.config.timeout_s,
             )
         except FileNotFoundError:
-            return DriverResult(status="unavailable", details={"reason": "command_not_found", "command": command})
+            return DriverResult(
+                status="unavailable",
+                details={
+                    "reason": "command_not_found",
+                    "command": command,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
         except subprocess.TimeoutExpired:
-            return DriverResult(status="degraded", details={"reason": "command_timeout", "command": command})
+            return DriverResult(
+                status="degraded",
+                details={
+                    "reason": "command_timeout",
+                    "command": command,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
         details = {
             "driver": "command",
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
             "returncode": completed.returncode,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         }
         parsed = self._parse_json_payload(completed.stdout)
         if isinstance(parsed, dict):
@@ -46,8 +69,12 @@ class CommandDriver:
         return DriverResult(status=status, details=details)
 
     def invoke(self, operation: str, payload: dict[str, object]) -> DriverResult:
+        started = time.perf_counter()
         if not self.config.command:
-            return DriverResult(status="unavailable", details={"reason": "missing_command"})
+            return DriverResult(
+                status="unavailable",
+                details={"reason": "missing_command", "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)},
+            )
         try:
             completed = subprocess.run(
                 self.config.command,
@@ -58,17 +85,30 @@ class CommandDriver:
                 timeout=self.config.timeout_s,
             )
         except FileNotFoundError:
-            return DriverResult(status="error", details={"reason": "command_not_found", "command": self.config.command})
+            return DriverResult(
+                status="error",
+                details={
+                    "reason": "command_not_found",
+                    "command": self.config.command,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
+            )
         except subprocess.TimeoutExpired:
             return DriverResult(
                 status="error",
-                details={"reason": "command_timeout", "command": self.config.command, "operation": operation},
+                details={
+                    "reason": "command_timeout",
+                    "command": self.config.command,
+                    "operation": operation,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                },
             )
         details = {
             "operation": operation,
             "stdout": completed.stdout.strip(),
             "stderr": completed.stderr.strip(),
             "returncode": completed.returncode,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
         }
         parsed = self._parse_json_payload(completed.stdout)
         if isinstance(parsed, dict):

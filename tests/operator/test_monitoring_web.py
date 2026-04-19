@@ -17,6 +17,8 @@ def test_monitoring_web_serves_status_and_html() -> None:
         with urlopen(f"{base_url}/status.json") as response:
             payload = json.loads(response.read().decode("utf-8"))
             cache_control = response.headers.get("Cache-Control")
+        with urlopen(f"{base_url}/metrics.json") as response:
+            metrics_payload = json.loads(response.read().decode("utf-8"))
         try:
             with urlopen(f"{base_url}/healthz") as response:
                 health_payload = json.loads(response.read().decode("utf-8"))
@@ -31,7 +33,10 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert payload["body"]["node_id"] == "honjia"
     assert "degradation_mode" in payload["body"]
     assert "warnings" in payload
+    assert "organ_cards" in metrics_payload
+    assert "latency_metrics" in metrics_payload
     assert cache_control == "no-store"
     assert health_payload["system_health"] in {"healthy", "degraded"}
     assert "<title>eibrain honjia monitor</title>" in html
-    assert "recent-events" in html
+    assert "honjia organ observability" in html
+    assert "/metrics.json" in html

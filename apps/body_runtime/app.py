@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+import time
 
 from eibrain.body.health import DegradationManager
 from eibrain.body.ear_stream import EarStreamProcessor
@@ -134,6 +135,8 @@ class BodyRuntimeApp:
                                 "source": outcome.source,
                                 "status": outcome.status,
                                 "session_id": outcome.session_id,
+                                "recorded_at_ts": time.time(),
+                                "details": dict(getattr(outcome, "details", {}) or {}),
                             }
                         )
                     break

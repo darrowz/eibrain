@@ -15,6 +15,7 @@ def test_operator_console_builds_runtime_status_report() -> None:
     assert report["generated_at_ts"] > 0
     assert report["trace_count"] == 1
     assert report["degraded_organs"] == []
+    assert report["summary"]["warning_count"] == 0
     assert report["body"]["degradation_mode"] == "normal"
 
 
@@ -45,3 +46,4 @@ def test_operator_console_marks_report_degraded_when_capabilities_missing() -> N
     assert "can_transcribe_speech" in report["warnings"][0]
     assert "can_orient_head" in report["warnings"][1]
     assert report["degraded_organs"] == ["neck"]
+    assert report["summary"]["degraded_organ_count"] == 1
