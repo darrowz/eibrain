@@ -72,3 +72,43 @@ def test_minimax_cli_adapter_parses_real_cli_content_shape() -> None:
     )
 
     assert result.summary.startswith("A close-up portrait")
+
+
+def test_minimax_cli_adapter_falls_back_to_plain_text_payload() -> None:
+    from eibrain.infra.config import MiniMaxCLIConfig
+    from eibrain.vision.minimax_cli import MiniMaxCLIAdapter
+
+    def _runner(command: list[str], env: dict[str, str]) -> str:
+        return "chair detected near the back wall"
+
+    adapter = MiniMaxCLIAdapter(
+        MiniMaxCLIConfig(api_key="secret", base_url="https://api.minimaxi.com"),
+        runner=_runner,
+    )
+
+    result = adapter.understand_image(
+        prompt="who is in the frame?",
+        image_url="https://example.com/frame.jpg",
+    )
+
+    assert result.summary == "chair detected near the back wall"
+
+
+def test_minimax_mcp_adapter_falls_back_to_plain_text_payload() -> None:
+    from eibrain.infra.config import MiniMaxMCPConfig
+    from eibrain.vision.minimax_mcp import MiniMaxMCPAdapter
+
+    def _runner(command: list[str], env: dict[str, str], payload: dict[str, object]):
+        return "target detected near window"
+
+    adapter = MiniMaxMCPAdapter(
+        MiniMaxMCPConfig(enabled=True, api_key="secret"),
+        runner=_runner,
+    )
+
+    result = adapter.understand_image(
+        prompt="describe frame",
+        image_url="https://example.com/frame.jpg",
+    )
+
+    assert result.summary == "target detected near window"

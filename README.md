@@ -19,6 +19,8 @@ Two CLI entrypoints are available after installation:
 - `eibrain-body --config config/eibrain.yaml`
 - `eibrain-cognitive --config config/eibrain.yaml --text "hello"`
 - `eibrain-bootstrap --config config/eibrain.yaml`
+- `eibrain-check-deployment --config config/eibrain.yaml`
+- `eibrain-monitor --config config/eibrain.yaml`
 
 The configuration supports:
 
@@ -27,6 +29,7 @@ The configuration supports:
 - MiniMax CLI-backed image understanding and web search configuration
 - MiniMax MCP configuration preserved for optional fallback or later toolchain upgrades
 - OpenClaw memory adapter settings
+- honjia monitoring web settings
 - environment variable expansion through `${VAR_NAME}`
 
 ## Default Deployment Layout
@@ -35,6 +38,7 @@ The default deployment root is `/home/${USER}/eibrain`, shared by both `honjia` 
 You can bootstrap the layout with:
 
 - `eibrain-bootstrap --config config/eibrain.yaml`
+- `eibrain-check-deployment --config config/eibrain.yaml`
 - `scripts/bootstrap-default-deployment.sh`
 - `scripts/check-deployment.sh`
 
@@ -47,6 +51,16 @@ The bootstrap step creates:
   - `encoder.onnx`
   - `decoder.onnx`
   - `joiner.onnx`
+
+## honjia Monitoring
+
+`eibrain-monitor` serves a lightweight monitoring page and JSON status feed for `honjia`.
+
+- `GET /` returns an HTML dashboard
+- `GET /status.json` returns machine-readable status
+- `GET /healthz` returns the same JSON for quick probes
+
+The listener is configured in `monitoring.host` / `monitoring.port`.
 
 ## Model Defaults
 

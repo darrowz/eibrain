@@ -158,6 +158,8 @@ def _expand_env(value: Any) -> Any:
 
 def _parse_driver(raw: dict[str, Any] | None) -> DriverConfig:
     payload = dict(raw or {})
+    if "health_command" in payload:
+        payload["health_command"] = _parse_command(payload["health_command"])
     return DriverConfig(
         kind=str(payload.pop("kind", "noop")),
         command=_parse_command(payload.pop("command", [])),

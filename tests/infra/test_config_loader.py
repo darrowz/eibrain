@@ -111,3 +111,28 @@ def test_load_config_reads_monitoring_settings(tmp_path) -> None:
 
     assert config.monitoring.enabled is True
     assert config.monitoring.port == 18080
+
+
+def test_load_config_normalizes_driver_health_command_string(tmp_path) -> None:
+    from eibrain.infra.config import load_config
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "body:",
+                "  organs:",
+                "    ear:",
+                "      capture:",
+                "        driver:",
+                "          kind: command",
+                "          command: python",
+                "          health_command: python",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.body.organs["ear"].subfunctions["capture"].driver.extra["health_command"] == ["python"]

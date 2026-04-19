@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.error import URLError
 from urllib import parse, request
 
 from eibrain.infra.config import OpenClawConfig
@@ -17,7 +18,10 @@ class OpenClawMemoryAdapter:
 
     def retrieve_context(self, query: MemoryQuery) -> MemoryResult:
         if self.config.provider == "http_json" and self.config.endpoint:
-            return self._retrieve_via_http(query)
+            try:
+                return self._retrieve_via_http(query)
+            except (URLError, OSError, ValueError):
+                pass
         session_summary = self.summarize_session(query.session_id) if query.session_id else ""
         actor_profile = self.load_actor_profile(query.actor_id) if query.actor_id else None
         summary_parts = [f"openclaw-context:{query.query}"]
@@ -33,23 +37,33 @@ class OpenClawMemoryAdapter:
 
     def remember_episode(self, *, session_id: str, summary: str) -> None:
         if self.config.provider == "http_json" and self.config.endpoint:
-            self._post_json("/remember_episode", {"session_id": session_id, "summary": summary})
-            return
+            try:
+                self._post_json("/remember_episode", {"session_id": session_id, "summary": summary})
+                return
+            except (URLError, OSError, ValueError):
+                pass
         self._sessions[session_id] = summary
 
     def remember_preference(self, *, actor_id: str, profile: dict[str, str]) -> None:
         if self.config.provider == "http_json" and self.config.endpoint:
-            self._post_json("/remember_preference", {"actor_id": actor_id, "profile": profile})
-            return
+            try:
+                self._post_json("/remember_preference", {"actor_id": actor_id, "profile": profile})
+                return
+            except (URLError, OSError, ValueError):
+                pass
         self._profiles[actor_id] = dict(profile)
 
     def load_actor_profile(self, actor_id: str | None) -> dict[str, str] | None:
         if actor_id is None:
             return None
         if self.config.provider == "http_json" and self.config.endpoint:
-            payload = self._get_json("/actor_profile", {"actor_id": actor_id})
+            try:
+                payload = self._get_json("/actor_profile", {"actor_id": actor_id})
+            except (URLError, OSError, ValueError):
+                payload = {}
             profile = payload.get("profile")
-            return dict(profile) if isinstance(profile, dict) else None
+            if isinstance(profile, dict):
+                return dict(profile)
         profile = self._profiles.get(actor_id)
         return dict(profile) if profile is not None else None
 
@@ -57,8 +71,13 @@ class OpenClawMemoryAdapter:
         if session_id is None:
             return ""
         if self.config.provider == "http_json" and self.config.endpoint:
-            payload = self._get_json("/session_summary", {"session_id": session_id})
-            return str(payload.get("summary", ""))
+            try:
+                payload = self._get_json("/session_summary", {"session_id": session_id})
+            except (URLError, OSError, ValueError):
+                payload = {}
+            summary = str(payload.get("summary", ""))
+            if summary:
+                return summary
         return self._sessions.get(session_id, "")
 
     def _retrieve_via_http(self, query: MemoryQuery) -> MemoryResult:

@@ -31,6 +31,8 @@ class MiniMaxMCPAdapter:
             },
         }
         result = self.runner(self.config.command, self._env(), payload)
+        if not isinstance(result, dict):
+            result = {"summary": str(result)}
         return VisionUnderstandingResult(
             summary=str(result.get("summary", "")),
             primary_subject=str(result.get("primary_subject", "")),

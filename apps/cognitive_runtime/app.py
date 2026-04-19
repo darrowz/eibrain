@@ -42,9 +42,19 @@ class CognitiveRuntimeApp:
         return self.trace_recorder.snapshot()
 
     def _build_vision_adapter(self):
-        if self.config.vision.provider == "minimax_cli" and self.config.vision.cli.enabled:
+        if (
+            self.config.vision.provider == "minimax_cli"
+            and self.config.vision.cli.enabled
+            and self.config.vision.cli.api_key.strip()
+            and self.config.vision.cli.command
+        ):
             return MiniMaxCLIAdapter(self.config.vision.cli)
-        if self.config.vision.provider == "minimax_mcp" and self.config.vision.mcp.enabled:
+        if (
+            self.config.vision.provider == "minimax_mcp"
+            and self.config.vision.mcp.enabled
+            and self.config.vision.mcp.api_key.strip()
+            and self.config.vision.mcp.command
+        ):
             return MiniMaxMCPAdapter(self.config.vision.mcp)
         return None
 

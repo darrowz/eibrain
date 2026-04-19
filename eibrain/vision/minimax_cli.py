@@ -31,9 +31,9 @@ class MiniMaxCLIAdapter:
             ],
             self._env(),
         )
-        result = json.loads(payload or "{}")
+        result = self._parse_payload(payload)
         return VisionUnderstandingResult(
-            summary=str(result.get("summary") or result.get("content", "")),
+            summary=str(result.get("summary") or result.get("content") or result.get("raw", "")),
             primary_subject=str(result.get("primary_subject", "")),
             confidence=float(result.get("confidence", 0.0)),
         )
@@ -52,7 +52,7 @@ class MiniMaxCLIAdapter:
             ],
             self._env(),
         )
-        return json.loads(payload or "{}")
+        return self._parse_payload(payload)
 
     def _env(self) -> dict[str, str]:
         env = dict(os.environ)
@@ -69,3 +69,13 @@ class MiniMaxCLIAdapter:
             env=env,
         )
         return completed.stdout
+
+    def _parse_payload(self, payload: str) -> dict[str, object]:
+        cleaned = (payload or "").strip()
+        if not cleaned:
+            return {}
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError:
+            return {"raw": cleaned}
+        return parsed if isinstance(parsed, dict) else {"raw": cleaned}

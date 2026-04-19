@@ -21,13 +21,18 @@ class CommandDriver:
         if not health_command:
             return DriverResult(status="healthy", details={"driver": "command"})
         command = [str(part) for part in health_command]
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self.config.timeout_s,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.config.timeout_s,
+            )
+        except FileNotFoundError:
+            return DriverResult(status="unavailable", details={"reason": "command_not_found", "command": command})
+        except subprocess.TimeoutExpired:
+            return DriverResult(status="degraded", details={"reason": "command_timeout", "command": command})
         details = {
             "driver": "command",
             "stdout": completed.stdout.strip(),
@@ -43,14 +48,22 @@ class CommandDriver:
     def invoke(self, operation: str, payload: dict[str, object]) -> DriverResult:
         if not self.config.command:
             return DriverResult(status="unavailable", details={"reason": "missing_command"})
-        completed = subprocess.run(
-            self.config.command,
-            input=json.dumps({"operation": operation, "payload": payload}),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=self.config.timeout_s,
-        )
+        try:
+            completed = subprocess.run(
+                self.config.command,
+                input=json.dumps({"operation": operation, "payload": payload}),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.config.timeout_s,
+            )
+        except FileNotFoundError:
+            return DriverResult(status="error", details={"reason": "command_not_found", "command": self.config.command})
+        except subprocess.TimeoutExpired:
+            return DriverResult(
+                status="error",
+                details={"reason": "command_timeout", "command": self.config.command, "operation": operation},
+            )
         details = {
             "operation": operation,
             "stdout": completed.stdout.strip(),

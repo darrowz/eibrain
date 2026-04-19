@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from urllib.error import URLError
 from urllib import request
 
 from eibrain.infra.config import LLMConfig
@@ -16,9 +17,15 @@ class LLMRouter:
         if not prompt.strip():
             return ""
         if self._uses_anthropic_api():
-            return self._generate_anthropic_compatible(prompt)
+            try:
+                return self._generate_anthropic_compatible(prompt)
+            except (URLError, OSError, ValueError, KeyError):
+                pass
         if self._uses_chat_api():
-            return self._generate_openai_compatible(prompt)
+            try:
+                return self._generate_openai_compatible(prompt)
+            except (URLError, OSError, ValueError, KeyError):
+                pass
         return f"reply: {prompt.splitlines()[-1]}"
 
     def generate_vision(self, prompt: str, image_urls: list[str]) -> str:
@@ -27,9 +34,15 @@ class LLMRouter:
         if not image_urls:
             return self.generate(prompt)
         if self._uses_anthropic_api() and self.config.supports_vision:
-            return self._generate_anthropic_compatible(prompt, image_urls=image_urls)
+            try:
+                return self._generate_anthropic_compatible(prompt, image_urls=image_urls)
+            except (URLError, OSError, ValueError, KeyError):
+                pass
         if self._uses_chat_api() and self.config.supports_vision:
-            return self._generate_openai_compatible(prompt, image_urls=image_urls)
+            try:
+                return self._generate_openai_compatible(prompt, image_urls=image_urls)
+            except (URLError, OSError, ValueError, KeyError):
+                pass
         joined = ", ".join(image_urls)
         return f"vision-reply: {prompt} [{joined}]"
 
@@ -86,7 +99,7 @@ class LLMRouter:
         content: list[dict[str, str]] | str
         if image_urls:
             content = [{"type": "text", "text": prompt}]
-            content.extend({"type": "image_url", "image_url": url} for url in image_urls)
+            content.extend({"type": "image_url", "image_url": {"url": url}} for url in image_urls)
         else:
             content = prompt
         body = json.dumps(

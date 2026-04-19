@@ -86,3 +86,52 @@ def test_cognitive_runtime_prefers_minimax_cli_provider(tmp_path) -> None:
 
     assert runtime.vision is not None
     assert runtime.vision.__class__.__name__ == "MiniMaxCLIAdapter"
+
+
+def test_cognitive_runtime_disables_minimax_cli_without_credentials(tmp_path) -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "vision:",
+                "  provider: minimax_cli",
+                "  cli:",
+                "    enabled: true",
+                "    command: mmx",
+                "    api_key: ''",
+                "    base_url: https://api.minimaxi.com",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = CognitiveRuntimeApp.from_config_path(config_path)
+
+    assert runtime.vision is None
+
+
+def test_cognitive_runtime_disables_minimax_mcp_without_credentials(tmp_path) -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "vision:",
+                "  provider: minimax_mcp",
+                "  mcp:",
+                "    enabled: true",
+                "    command:",
+                "      - uvx",
+                "      - minimax-coding-plan-mcp",
+                "    api_key: ''",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = CognitiveRuntimeApp.from_config_path(config_path)
+
+    assert runtime.vision is None
