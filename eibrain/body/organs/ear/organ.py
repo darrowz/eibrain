@@ -6,6 +6,7 @@ import threading
 import time
 
 from eibrain.body.ear_stream import ArecordStreamCapture, pcm_signal_stats
+from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
 from eibrain.body.organs.base import BaseOrgan
 from eibrain.body.runtime_linux import transcribe_pcm_with_faster_whisper_subprocess
 from eibrain.body.runtime_linux import transcribe_pcm_with_sherpa_subprocess
@@ -25,6 +26,8 @@ class EarOrgan(BaseOrgan):
         self._recognizer = self._build_recognizer()
         self._cached_heartbeat: OrganHealth | None = None
         self._cached_heartbeat_at = 0.0
+        self._cached_asr_probe = None
+        self._cached_asr_probe_at = 0.0
         self._heartbeat_lock = threading.Lock()
 
     def heartbeat(self) -> OrganHealth:
@@ -83,11 +86,21 @@ class EarOrgan(BaseOrgan):
             channels=int(capture_cfg.driver.extra.get("channels", 1)),
         )
 
-    def _build_recognizer(self) -> SherpaOnnxStreamingRecognizer | None:
+    def _build_recognizer(self) -> SherpaOnnxStreamingRecognizer | FasterWhisperRecognizer | None:
         asr_cfg = self.config.subfunctions.get("asr")
         if asr_cfg is None or asr_cfg.driver.kind == "noop":
             return None
-        if str(asr_cfg.driver.extra.get("provider", "sherpa_onnx")) != "sherpa_onnx":
+        provider = str(asr_cfg.driver.extra.get("provider", "sherpa_onnx"))
+        if provider == "faster_whisper":
+            extra = asr_cfg.driver.extra
+            return FasterWhisperRecognizer(
+                model_name=str(extra.get("model_name", "Systran/faster-whisper-tiny")),
+                language=str(extra.get("language", "zh")),
+                compute_type=str(extra.get("compute_type", "int8")),
+                beam_size=int(extra.get("beam_size", 1)),
+                vad_filter=bool(extra.get("vad_filter", False)),
+            )
+        if provider != "sherpa_onnx":
             return None
         return SherpaOnnxStreamingRecognizer(
             model_dir=str(asr_cfg.driver.extra.get("model_dir", "")),
@@ -179,13 +192,15 @@ class EarOrgan(BaseOrgan):
     ) -> SubfunctionHealth:
         if self._driver_kind("asr") == "noop":
             return self._subfunction_health("asr")
-        probe = self.drivers["asr"].heartbeat()
+        probe = self._asr_probe()
         started = time.perf_counter()
         transcript = ""
         error = None
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
+        voice_activity = bool(capture_state.details.get("voice_activity"))
         if (
             chunks
+            and voice_activity
             and self._capture is not None
         ):
             try:
@@ -215,23 +230,31 @@ class EarOrgan(BaseOrgan):
                 elif provider == "faster_whisper":
                     asr_cfg = self.config.subfunctions.get("asr")
                     asr_extra = asr_cfg.driver.extra if asr_cfg is not None else {}
-                    result = transcribe_pcm_with_faster_whisper_subprocess(
-                        pcm_bytes=b"".join(chunks),
-                        model_name=str(asr_extra.get("model_name", "Systran/faster-whisper-tiny")),
-                        sample_rate=self._capture.sample_rate,
-                        channels=self._capture.channels,
-                        language=str(asr_extra.get("language", "zh")),
-                        compute_type=str(asr_extra.get("compute_type", "int8")),
-                        beam_size=int(asr_extra.get("beam_size", 1)),
-                        vad_filter=bool(asr_extra.get("vad_filter", False)),
-                        python_executable=str(asr_extra.get("python_executable", "/usr/bin/python3")),
-                    )
-                    result_details = result.get("details", {})
-                    if result.get("status") == "ok" and isinstance(result_details, dict):
-                        transcript = str(result_details.get("text", "") or "")
+                    if isinstance(self._recognizer, FasterWhisperRecognizer):
+                        transcript = self._recognizer.transcribe(
+                            chunks,
+                            sample_rate=self._capture.sample_rate,
+                            channels=self._capture.channels,
+                        )
                         transcript = self._normalize_transcript(transcript, asr_extra=asr_extra)
-                    elif isinstance(result_details, dict):
-                        error = str(result_details.get("stderr") or result_details.get("reason") or "faster_whisper_failed")
+                    else:
+                        result = transcribe_pcm_with_faster_whisper_subprocess(
+                            pcm_bytes=b"".join(chunks),
+                            model_name=str(asr_extra.get("model_name", "Systran/faster-whisper-tiny")),
+                            sample_rate=self._capture.sample_rate,
+                            channels=self._capture.channels,
+                            language=str(asr_extra.get("language", "zh")),
+                            compute_type=str(asr_extra.get("compute_type", "int8")),
+                            beam_size=int(asr_extra.get("beam_size", 1)),
+                            vad_filter=bool(asr_extra.get("vad_filter", False)),
+                            python_executable=str(asr_extra.get("python_executable", "/usr/bin/python3")),
+                        )
+                        result_details = result.get("details", {})
+                        if result.get("status") == "ok" and isinstance(result_details, dict):
+                            transcript = str(result_details.get("text", "") or "")
+                            transcript = self._normalize_transcript(transcript, asr_extra=asr_extra)
+                        elif isinstance(result_details, dict):
+                            error = str(result_details.get("stderr") or result_details.get("reason") or "faster_whisper_failed")
             except Exception as exc:  # pragma: no cover - hardware dependency
                 error = str(exc)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -274,6 +297,14 @@ class EarOrgan(BaseOrgan):
         if config is None:
             return "disabled"
         return str(config.driver.extra.get("provider", "sherpa_onnx"))
+
+    def _asr_probe(self):
+        now_ts = time.time()
+        if self._cached_asr_probe is not None and now_ts - self._cached_asr_probe_at < 60.0:
+            return self._cached_asr_probe
+        self._cached_asr_probe = self.drivers["asr"].heartbeat()
+        self._cached_asr_probe_at = now_ts
+        return self._cached_asr_probe
 
     @staticmethod
     def _normalize_transcript(transcript: str, *, asr_extra: dict[str, object]) -> str:
