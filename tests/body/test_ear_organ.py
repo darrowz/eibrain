@@ -88,7 +88,10 @@ def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
         def read_window(self, duration_s: int):
             return [b"\x00\x00\x00\x08"] * duration_s
 
+    calls = []
+
     def _fake_transcribe(**kwargs):
+        calls.append(kwargs)
         return {"status": "ok", "details": {"text": "你好 honjia", "language": "zh"}}
 
     monkeypatch.setattr("eibrain.body.organs.ear.organ.transcribe_pcm_with_faster_whisper_subprocess", _fake_transcribe)
@@ -102,7 +105,7 @@ def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
                 driver=DriverConfig(
                     kind="command",
                     command=["python"],
-                    extra={"provider": "faster_whisper", "model_name": "Systran/faster-whisper-tiny", "language": "zh"},
+                    extra={"provider": "faster_whisper", "model_name": "Systran/faster-whisper-tiny", "language": "zh", "vad_filter": False},
                 )
             ),
         },
@@ -115,3 +118,43 @@ def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
 
     assert heartbeat.subfunctions["asr"].details["transcript"] == "你好 honjia"
     assert heartbeat.subfunctions["asr"].health == "healthy"
+    assert calls[0]["vad_filter"] is False
+
+
+def test_ear_organ_reports_capture_failure_diagnostics() -> None:
+    from eibrain.body.organs.ear.organ import EarOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    class _Capture:
+        device = "plughw:CARD=U4K,DEV=0"
+        sample_rate = 48000
+        channels = 2
+        retry_count = 2
+        last_returncode = 1
+        last_stderr = "arecord: Device or resource busy"
+        last_stdout_bytes = 0
+        last_command = ["arecord", "-D", "plughw:CARD=U4K,DEV=0"]
+
+        def read_window(self, duration_s: int):
+            return []
+
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "capture": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"], extra={"chunk_count": 2, "refresh_interval_s": 0.0})),
+            "vad": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+            "asr": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"], extra={"provider": "faster_whisper"})),
+        },
+    )
+    organ = EarOrgan(config=config)
+    organ._capture = _Capture()
+    organ._recognizer = None
+
+    heartbeat = organ.heartbeat()
+
+    details = heartbeat.subfunctions["capture"].details
+    assert heartbeat.subfunctions["capture"].health == "degraded"
+    assert details["capture_returncode"] == 1
+    assert details["capture_stdout_bytes"] == 0
+    assert details["capture_retry_count"] == 2
+    assert details["error"] == "arecord: Device or resource busy"

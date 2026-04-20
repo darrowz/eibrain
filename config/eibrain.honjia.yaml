@@ -99,6 +99,7 @@ body:
           language: zh
           compute_type: int8
           beam_size: 1
+          vad_filter: false
     eye:
       enabled: true
       camera:

@@ -25,6 +25,45 @@ def test_arecord_stream_capture_builds_expected_command() -> None:
     ]
 
 
+def test_arecord_stream_capture_retries_empty_capture(monkeypatch) -> None:
+    from eibrain.body.ear_stream import ArecordStreamCapture
+
+    class _Completed:
+        def __init__(self, *, returncode: int, stdout: bytes, stderr: bytes = b"") -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    calls = []
+    results = [
+        _Completed(returncode=1, stdout=b"", stderr=b"device busy"),
+        _Completed(returncode=0, stdout=b"abcd"),
+    ]
+
+    def _run(command, **kwargs):
+        calls.append((command, kwargs))
+        return results.pop(0)
+
+    monkeypatch.setattr("eibrain.body.ear_stream.subprocess.run", _run)
+    monkeypatch.setattr("eibrain.body.ear_stream.time.sleep", lambda _delay: None)
+
+    capture = ArecordStreamCapture(
+        device="plughw:CARD=U4K,DEV=0",
+        sample_rate=48000,
+        channels=2,
+        retry_count=1,
+    )
+
+    chunks = capture.read_window(1, chunk_bytes=2)
+
+    assert chunks == [b"ab", b"cd"]
+    assert len(calls) == 2
+    assert capture.last_returncode == 0
+    assert capture.last_stderr == ""
+    assert capture.last_stdout_bytes == 4
+    assert capture.last_command == capture.build_command() + ["-d", "1"]
+
+
 def test_ear_stream_processor_emits_audio_transcript_observation() -> None:
     from eibrain.body.ear_stream import EarStreamProcessor
 

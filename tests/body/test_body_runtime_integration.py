@@ -39,6 +39,42 @@ def test_body_runtime_can_transcribe_audio_window() -> None:
     assert observation.text == "streamed text"
 
 
+def test_body_runtime_transcribes_from_ear_organ_heartbeat() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    runtime = BodyRuntimeApp()
+
+    class _Ear:
+        name = "ear"
+        _chunk_count = 1
+        _cached_heartbeat = None
+
+        def heartbeat(self):
+            return OrganHealth(
+                organ="ear",
+                health="healthy",
+                subfunctions={
+                    "asr": SubfunctionHealth(
+                        name="asr",
+                        health="healthy",
+                        details={"transcript": "你好 honjia", "speech_window_summary": "heard speech"},
+                    )
+                },
+            )
+
+    runtime.organs = [_Ear()]
+
+    observation = runtime.transcribe_audio_window(
+        chunk_count=3,
+        session_id="session-2",
+        actor_id="user-2",
+    )
+
+    assert observation.text == "你好 honjia"
+    assert runtime.recent_events()[-1]["status"] == "ok"
+
+
 def test_body_runtime_maps_visual_target_to_move_head_action() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
 

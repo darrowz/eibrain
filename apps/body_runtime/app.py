@@ -85,6 +85,51 @@ class BodyRuntimeApp:
         session_id: str,
         actor_id: str,
     ) -> AudioTranscriptFinal:
+        if self.ear_processor is not None:
+            return self.ear_processor.transcribe_window(
+                chunk_count=chunk_count,
+                session_id=session_id,
+                actor_id=actor_id,
+            )
+        ear = next((organ for organ in self.organs if organ.name == "ear"), None)
+        if ear is not None and hasattr(ear, "heartbeat"):
+            original_chunk_count = getattr(ear, "_chunk_count", None)
+            original_cached_heartbeat = getattr(ear, "_cached_heartbeat", None)
+            if hasattr(ear, "_chunk_count"):
+                ear._chunk_count = chunk_count
+            if hasattr(ear, "_cached_heartbeat"):
+                ear._cached_heartbeat = None
+            try:
+                heartbeat = ear.heartbeat()
+            finally:
+                if hasattr(ear, "_chunk_count") and original_chunk_count is not None:
+                    ear._chunk_count = original_chunk_count
+                if hasattr(ear, "_cached_heartbeat"):
+                    ear._cached_heartbeat = original_cached_heartbeat
+            asr_state = heartbeat.subfunctions.get("asr")
+            details = asr_state.details if asr_state is not None else {}
+            transcript = str(details.get("transcript", "") or "")
+            observation = AudioTranscriptFinal(
+                ts=time.time(),
+                source="ear.asr",
+                text=transcript,
+                session_id=session_id,
+                actor_id=actor_id,
+            )
+            self._recent_events.append(
+                {
+                    "kind": observation.kind,
+                    "source": observation.source,
+                    "status": "ok" if transcript else "degraded",
+                    "session_id": session_id,
+                    "recorded_at_ts": time.time(),
+                    "details": {
+                        "text": transcript,
+                        "speech_window_summary": details.get("speech_window_summary", ""),
+                    },
+                }
+            )
+            return observation
         if self.ear_processor is None:
             self.ear_processor = self.build_default_ear_processor()
         return self.ear_processor.transcribe_window(

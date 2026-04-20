@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from array import array
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import subprocess
+import time
 
 from eibrain.protocol.observations import AudioTranscriptFinal
 
@@ -15,6 +16,14 @@ class ArecordStreamCapture:
     device: str
     sample_rate: int
     channels: int
+    retry_count: int = 2
+    retry_delay_s: float = 1.0
+    lock_path: str = "/tmp/eibrain-arecord.lock"
+    lock_timeout_s: float = 8.0
+    last_returncode: int | None = None
+    last_stderr: str = ""
+    last_stdout_bytes: int = 0
+    last_command: list[str] = field(default_factory=list)
 
     def build_command(self) -> list[str]:
         return [
@@ -33,19 +42,85 @@ class ArecordStreamCapture:
 
     def read_chunks(self, chunk_count: int, *, chunk_bytes: int = 4096) -> list[bytes]:
         command = self.build_command() + ["-d", str(max(1, chunk_count))]
-        completed = subprocess.run(command, capture_output=True, check=False)
-        payload = completed.stdout or b""
+        payload = self._run_arecord(command)
         if chunk_count <= 1:
             return [payload]
         return [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)][:chunk_count]
 
     def read_window(self, duration_s: int, *, chunk_bytes: int = 4096) -> list[bytes]:
         command = self.build_command() + ["-d", str(max(1, duration_s))]
-        completed = subprocess.run(command, capture_output=True, check=False)
-        payload = completed.stdout or b""
+        payload = self._run_arecord(command)
         if not payload:
             return []
         return [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
+
+    def _run_arecord(self, command: list[str]) -> bytes:
+        self.last_command = list(command)
+        attempts = max(1, self.retry_count + 1)
+        payload = b""
+        try:
+            with self._capture_lock():
+                for attempt in range(attempts):
+                    completed = subprocess.run(command, capture_output=True, check=False)
+                    payload = completed.stdout or b""
+                    self._record_result(completed=completed, payload=payload)
+                    if completed.returncode == 0 and payload:
+                        return payload
+                    if attempt + 1 < attempts:
+                        time.sleep(max(0.0, self.retry_delay_s))
+                return payload
+        except TimeoutError as exc:
+            self.last_returncode = None
+            self.last_stderr = str(exc)
+            self.last_stdout_bytes = 0
+            return b""
+
+    def _record_result(self, *, completed: subprocess.CompletedProcess[bytes], payload: bytes) -> None:
+        self.last_returncode = completed.returncode
+        stderr = completed.stderr or b""
+        self.last_stderr = stderr.decode("utf-8", errors="replace").strip()
+        self.last_stdout_bytes = len(payload)
+
+    def _capture_lock(self):
+        class _NoopLock:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - non-Linux developer machines
+            return _NoopLock()
+
+        capture = self
+
+        class _FileLock:
+            def __init__(self) -> None:
+                self._handle = None
+
+            def __enter__(self):
+                started = time.monotonic()
+                self._handle = open(capture.lock_path, "a+", encoding="utf-8")
+                while True:
+                    try:
+                        fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        return self
+                    except BlockingIOError:
+                        if time.monotonic() - started >= capture.lock_timeout_s:
+                            raise TimeoutError(f"timed out waiting for audio capture lock: {capture.lock_path}")
+                        time.sleep(0.1)
+
+            def __exit__(self, exc_type, exc, traceback):
+                if self._handle is not None:
+                    try:
+                        fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+                    finally:
+                        self._handle.close()
+                return False
+
+        return _FileLock()
 
 
 @dataclass(slots=True)

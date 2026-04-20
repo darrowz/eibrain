@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 
 from eibrain.body.ear_stream import ArecordStreamCapture, pcm_signal_stats
@@ -24,31 +25,40 @@ class EarOrgan(BaseOrgan):
         self._recognizer = self._build_recognizer()
         self._cached_heartbeat: OrganHealth | None = None
         self._cached_heartbeat_at = 0.0
+        self._heartbeat_lock = threading.Lock()
 
     def heartbeat(self) -> OrganHealth:
         if not self._audio_runtime_enabled():
             return super().heartbeat()
-        now_ts = time.time()
-        if self._cached_heartbeat is not None and now_ts - self._cached_heartbeat_at < self._cache_ttl_s:
+        lock_acquired = self._heartbeat_lock.acquire(blocking=False)
+        if not lock_acquired and self._cached_heartbeat is not None:
             return self._cached_heartbeat
-        capture_state, chunks = self._capture_health(now_ts=now_ts)
-        vad_state = self._vad_health(capture_state=capture_state, chunks=chunks, now_ts=now_ts)
-        asr_state = self._asr_health(capture_state=capture_state, chunks=chunks, now_ts=now_ts)
-        subfunctions = {
-            "capture": capture_state,
-            "vad": vad_state,
-            "asr": asr_state,
-        }
-        statuses = [state.health for state in subfunctions.values()]
-        if statuses and all(status == "healthy" for status in statuses):
-            health = "healthy"
-        elif any(status == "healthy" for status in statuses) or any(status == "degraded" for status in statuses):
-            health = "degraded"
-        else:
-            health = "unavailable"
-        self._cached_heartbeat = OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
-        self._cached_heartbeat_at = now_ts
-        return self._cached_heartbeat
+        if not lock_acquired:
+            self._heartbeat_lock.acquire()
+        now_ts = time.time()
+        try:
+            if self._cached_heartbeat is not None and now_ts - self._cached_heartbeat_at < self._cache_ttl_s:
+                return self._cached_heartbeat
+            capture_state, chunks = self._capture_health(now_ts=now_ts)
+            vad_state = self._vad_health(capture_state=capture_state, chunks=chunks, now_ts=now_ts)
+            asr_state = self._asr_health(capture_state=capture_state, chunks=chunks, now_ts=now_ts)
+            subfunctions = {
+                "capture": capture_state,
+                "vad": vad_state,
+                "asr": asr_state,
+            }
+            statuses = [state.health for state in subfunctions.values()]
+            if statuses and all(status == "healthy" for status in statuses):
+                health = "healthy"
+            elif any(status == "healthy" for status in statuses) or any(status == "degraded" for status in statuses):
+                health = "degraded"
+            else:
+                health = "unavailable"
+            self._cached_heartbeat = OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
+            self._cached_heartbeat_at = now_ts
+            return self._cached_heartbeat
+        finally:
+            self._heartbeat_lock.release()
 
     def _audio_runtime_enabled(self) -> bool:
         return self._capture is not None and self._asr_provider() in {"sherpa_onnx", "faster_whisper"}
@@ -108,8 +118,20 @@ class EarOrgan(BaseOrgan):
                 **stats,
             }
         )
+        if self._capture is not None:
+            details.update(
+                {
+                    "capture_returncode": getattr(self._capture, "last_returncode", None),
+                    "capture_stderr": getattr(self._capture, "last_stderr", ""),
+                    "capture_stdout_bytes": getattr(self._capture, "last_stdout_bytes", None),
+                    "capture_command": getattr(self._capture, "last_command", []),
+                    "capture_retry_count": getattr(self._capture, "retry_count", None),
+                }
+            )
         if error:
             details["error"] = error
+        elif not chunks and details.get("capture_stderr"):
+            details["error"] = details["capture_stderr"]
         if chunks:
             health = "healthy"
         else:
@@ -191,6 +213,7 @@ class EarOrgan(BaseOrgan):
                         language=str(asr_extra.get("language", "zh")),
                         compute_type=str(asr_extra.get("compute_type", "int8")),
                         beam_size=int(asr_extra.get("beam_size", 1)),
+                        vad_filter=bool(asr_extra.get("vad_filter", False)),
                         python_executable=str(asr_extra.get("python_executable", "/usr/bin/python3")),
                     )
                     result_details = result.get("details", {})

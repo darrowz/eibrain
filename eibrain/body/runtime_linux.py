@@ -1035,6 +1035,7 @@ def transcribe_pcm_with_faster_whisper_subprocess(
     language: str = "zh",
     compute_type: str = "int8",
     beam_size: int = 1,
+    vad_filter: bool = False,
     python_executable: str | None = None,
     timeout_s: int = 30,
 ) -> dict[str, object]:
@@ -1067,7 +1068,7 @@ segments, info = model.transcribe(
     str(wav_path),
     language=payload.get("language") or None,
     beam_size=int(payload.get("beam_size", 1)),
-    vad_filter=True,
+    vad_filter=bool(payload.get("vad_filter", False)),
 )
 text = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
 print(
@@ -1096,8 +1097,9 @@ print(
                     "channels": channels,
                     "language": language,
                     "compute_type": compute_type,
-                    "beam_size": beam_size,
-                },
+                "beam_size": beam_size,
+                "vad_filter": vad_filter,
+            },
                 payload_handle,
                 ensure_ascii=False,
             )

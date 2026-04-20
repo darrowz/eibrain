@@ -128,6 +128,12 @@ class MonitoringWebServer:
       align-items: flex-start;
       margin-bottom: 22px;
     }}
+    .hero-side {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 16px;
+      width: min(100%, 520px);
+    }}
     .headline h1 {{
       margin: 0;
       font-size: 34px;
@@ -335,6 +341,7 @@ class MonitoringWebServer:
     }}
     @media (max-width: 960px) {{
       .hero {{ flex-direction: column; }}
+      .hero-side {{ grid-template-columns: 1fr; width: 100%; }}
       .detail-grid {{ grid-template-columns: 1fr; }}
       .vision-layout {{ grid-template-columns: 1fr; }}
     }}
@@ -348,10 +355,17 @@ class MonitoringWebServer:
         <h1>honjia organ observability</h1>
         <p>PostHog-style live diagnostics for embodied runtime health, response latency, organ capability shifts, and failure triage.</p>
       </div>
-      <div class="card" style="min-width: 260px;">
-        <div class="muted">Refresh cadence</div>
-        <div class="metric-value">2s</div>
-        <div class="metric-label" id="refresh-meta">Polling /metrics.json without WebSocket overhead</div>
+      <div class="hero-side">
+        <div class="card">
+          <div class="muted">Avg latency</div>
+          <div class="metric-value" id="hero-avg-latency">—</div>
+          <div class="metric-label">Cross-module average heartbeat latency</div>
+        </div>
+        <div class="card">
+          <div class="muted">Refresh cadence</div>
+          <div class="metric-value">2s</div>
+          <div class="metric-label" id="refresh-meta">Polling /metrics.json without WebSocket overhead</div>
+        </div>
       </div>
     </section>
 
@@ -438,6 +452,7 @@ class MonitoringWebServer:
 
     function renderSummary(report) {{
       const summary = report.summary || {{}};
+      document.getElementById('hero-avg-latency').textContent = fmtLatency(summary.avg_latency_ms);
       const cards = [
         ['Healthy modules', `${{summary.healthy_subfunction_count ?? 0}} / ${{summary.subfunction_count ?? 0}}`, 'Healthy subfunctions across all organs'],
         ['Enabled capabilities', `${{summary.enabled_capability_count ?? 0}} / ${{summary.capability_count ?? 0}}`, 'Current embodied capability coverage'],
@@ -445,8 +460,6 @@ class MonitoringWebServer:
         ['Degraded organs', String(summary.degraded_organ_count ?? 0), 'Organs needing attention'],
         ['Real drivers', String(summary.real_driver_count ?? 0), 'Non-noop driver probes in the live graph'],
         ['Unavailable probes', String(summary.unavailable_probe_count ?? 0), 'Hardware probes that are currently missing'],
-        ['Avg latency', fmtLatency(summary.avg_latency_ms), 'Cross-module average heartbeat latency'],
-        ['P95 latency', fmtLatency(summary.p95_latency_ms), 'Tail latency across instrumented modules'],
       ];
       document.getElementById('summary-grid').innerHTML = cards.map(([label, value, hint]) => `
         <article class="card">
