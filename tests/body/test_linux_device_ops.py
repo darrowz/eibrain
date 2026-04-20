@@ -18,6 +18,27 @@ def test_probe_sherpa_model_dir_reports_required_files(tmp_path) -> None:
     assert result["details"]["model_dir"] == str(model_dir)
 
 
+def test_probe_faster_whisper_model_reports_cached_model(monkeypatch, tmp_path) -> None:
+    from eibrain.body.runtime_linux import probe_faster_whisper_model
+
+    model_dir = tmp_path / ".cache" / "huggingface" / "hub" / "models--Systran--faster-whisper-tiny" / "snapshots" / "abc123"
+    model_dir.mkdir(parents=True)
+    monkeypatch.setattr("eibrain.body.runtime_linux.Path.home", lambda: tmp_path)
+
+    class _Completed:
+        returncode = 0
+        stdout = "ok\n"
+        stderr = ""
+
+    monkeypatch.setattr("eibrain.body.runtime_linux.subprocess.run", lambda *args, **kwargs: _Completed())
+
+    result = probe_faster_whisper_model(model_name="Systran/faster-whisper-tiny", python_executable="/usr/bin/python3")
+
+    assert result["status"] == "healthy"
+    assert result["details"]["driver"] == "faster_whisper"
+    assert result["details"]["model_exists"] is True
+
+
 def test_probe_binary_device_reports_missing_device() -> None:
     from eibrain.body.runtime_linux import probe_binary_device
 
@@ -146,6 +167,30 @@ def test_move_gimbal_uses_injected_driver() -> None:
 
     assert result["status"] == "ok"
     assert calls == [(1, 90)]
+
+
+def test_move_gimbal_prefers_explicit_target_angle() -> None:
+    from eibrain.body.runtime_linux import move_gimbal
+
+    calls: list[tuple[int, int]] = []
+
+    class _Driver:
+        def ctrl_servo(self, angle: int, servo_id: int | None = None):
+            calls.append((servo_id or 1, angle))
+            return [servo_id or 1, angle]
+
+    result = move_gimbal(
+        target_name="speaker",
+        servo_id=1,
+        target_angle=103,
+        target_x=0.0,
+        pan_min=40,
+        pan_max=140,
+        driver=_Driver(),
+    )
+
+    assert result["status"] == "ok"
+    assert calls == [(1, 103)]
 
 
 def test_raspbot_driver_uses_simple_servo_payload() -> None:

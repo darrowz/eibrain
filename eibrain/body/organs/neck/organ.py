@@ -6,7 +6,7 @@ import time
 
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
 from eibrain.body.organs.base import BaseOrgan
-from eibrain.body.runtime_linux import map_target_x_to_angle
+from eibrain.body.runtime_linux import compute_tracking_pan_angle
 from eibrain.protocol.actions import MoveHeadAction
 from eibrain.protocol.outcomes import ActionExecuted
 
@@ -47,9 +47,22 @@ class NeckOrgan(BaseOrgan):
         extra = config.driver.extra if config is not None else {}
         pan_min = int(extra.get("pan_min", 40))
         pan_max = int(extra.get("pan_max", 140))
+        home_angle = int(extra.get("home_angle", 90))
         target_angle = action.target_angle
         if target_angle is None and action.target_x is not None:
-            target_angle = map_target_x_to_angle(target_x=action.target_x, pan_min=pan_min, pan_max=pan_max)
+            current_angle = self._current_angle(default=home_angle)
+            target_angle = compute_tracking_pan_angle(
+                current_angle=current_angle,
+                target_x=action.target_x,
+                pan_min=pan_min,
+                pan_max=pan_max,
+                deadband=float(extra.get("tracking_deadband", 0.08)),
+                step_gain=float(extra.get("tracking_step_gain", 30.0)),
+                max_step=int(extra.get("tracking_max_step", 12)),
+                invert=self._extra_bool(extra.get("tracking_invert", False)),
+            )
+        elif target_angle is None:
+            target_angle = home_angle
         result = self.drivers["motor"].invoke(
             "move_head",
             {
@@ -105,6 +118,20 @@ class NeckOrgan(BaseOrgan):
         if config is None:
             return "noop"
         return str(config.driver.kind)
+
+    def _current_angle(self, *, default: int) -> int:
+        if self._last_tracking is None:
+            return default
+        try:
+            return int(self._last_tracking.get("target_angle", default))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _extra_bool(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
     @staticmethod
     def _merge_probe_details(probe: dict[str, object]) -> dict[str, object]:

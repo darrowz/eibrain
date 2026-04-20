@@ -6,6 +6,7 @@ import time
 
 from eibrain.body.ear_stream import ArecordStreamCapture, pcm_signal_stats
 from eibrain.body.organs.base import BaseOrgan
+from eibrain.body.runtime_linux import transcribe_pcm_with_faster_whisper_subprocess
 from eibrain.body.runtime_linux import transcribe_pcm_with_sherpa_subprocess
 from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
@@ -50,7 +51,7 @@ class EarOrgan(BaseOrgan):
         return self._cached_heartbeat
 
     def _audio_runtime_enabled(self) -> bool:
-        return self._capture is not None and self._recognizer is not None
+        return self._capture is not None and self._asr_provider() in {"sherpa_onnx", "faster_whisper"}
 
     def _build_capture(self) -> ArecordStreamCapture | None:
         capture_cfg = self.config.subfunctions.get("capture")
@@ -65,6 +66,8 @@ class EarOrgan(BaseOrgan):
     def _build_recognizer(self) -> SherpaOnnxStreamingRecognizer | None:
         asr_cfg = self.config.subfunctions.get("asr")
         if asr_cfg is None or asr_cfg.driver.kind == "noop":
+            return None
+        if str(asr_cfg.driver.extra.get("provider", "sherpa_onnx")) != "sherpa_onnx":
             return None
         return SherpaOnnxStreamingRecognizer(
             model_dir=str(asr_cfg.driver.extra.get("model_dir", "")),
@@ -151,34 +154,50 @@ class EarOrgan(BaseOrgan):
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
         if (
             chunks
-            and self._recognizer is not None
             and self._capture is not None
-            and not (
-                isinstance(self._recognizer, SherpaOnnxStreamingRecognizer)
-                and sample_count < int(self._recognizer.expected_sample_rate * 0.25)
-            )
         ):
             try:
-                if isinstance(self._recognizer, SherpaOnnxStreamingRecognizer):
-                    result = transcribe_pcm_with_sherpa_subprocess(
+                provider = self._asr_provider()
+                if provider == "sherpa_onnx" and self._recognizer is not None:
+                    if isinstance(self._recognizer, SherpaOnnxStreamingRecognizer):
+                        if sample_count >= int(self._recognizer.expected_sample_rate * 0.25):
+                            result = transcribe_pcm_with_sherpa_subprocess(
+                                pcm_bytes=b"".join(chunks),
+                                model_dir=str(self._recognizer.model_dir),
+                                model_type=self._recognizer.model_type,
+                                sample_rate=self._capture.sample_rate,
+                                channels=self._capture.channels,
+                                chunk_bytes=max(1, len(chunks[0])) if chunks else 4096,
+                            )
+                            result_details = result.get("details", {})
+                            if result.get("status") == "ok" and isinstance(result_details, dict):
+                                transcript = str(result_details.get("text", "") or "")
+                            elif isinstance(result_details, dict):
+                                error = str(result_details.get("stderr") or result_details.get("reason") or "sherpa_subprocess_failed")
+                    else:
+                        transcript = self._recognizer.transcribe(
+                            chunks,
+                            sample_rate=self._capture.sample_rate,
+                            channels=self._capture.channels,
+                        )
+                elif provider == "faster_whisper":
+                    asr_cfg = self.config.subfunctions.get("asr")
+                    asr_extra = asr_cfg.driver.extra if asr_cfg is not None else {}
+                    result = transcribe_pcm_with_faster_whisper_subprocess(
                         pcm_bytes=b"".join(chunks),
-                        model_dir=str(self._recognizer.model_dir),
-                        model_type=self._recognizer.model_type,
+                        model_name=str(asr_extra.get("model_name", "Systran/faster-whisper-tiny")),
                         sample_rate=self._capture.sample_rate,
                         channels=self._capture.channels,
-                        chunk_bytes=max(1, len(chunks[0])) if chunks else 4096,
+                        language=str(asr_extra.get("language", "zh")),
+                        compute_type=str(asr_extra.get("compute_type", "int8")),
+                        beam_size=int(asr_extra.get("beam_size", 1)),
+                        python_executable=str(asr_extra.get("python_executable", "/usr/bin/python3")),
                     )
                     result_details = result.get("details", {})
                     if result.get("status") == "ok" and isinstance(result_details, dict):
                         transcript = str(result_details.get("text", "") or "")
                     elif isinstance(result_details, dict):
-                        error = str(result_details.get("stderr") or result_details.get("reason") or "sherpa_subprocess_failed")
-                else:
-                    transcript = self._recognizer.transcribe(
-                        chunks,
-                        sample_rate=self._capture.sample_rate,
-                        channels=self._capture.channels,
-                    )
+                        error = str(result_details.get("stderr") or result_details.get("reason") or "faster_whisper_failed")
             except Exception as exc:  # pragma: no cover - hardware dependency
                 error = str(exc)
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -215,6 +234,12 @@ class EarOrgan(BaseOrgan):
         else:
             health = "unavailable" if probe.status == "unavailable" else "degraded"
         return SubfunctionHealth(name="asr", health=health, details=details)
+
+    def _asr_provider(self) -> str:
+        config = self.config.subfunctions.get("asr")
+        if config is None:
+            return "disabled"
+        return str(config.driver.extra.get("provider", "sherpa_onnx"))
 
     def _driver_kind(self, name: str) -> str:
         config = self.config.subfunctions.get(name)

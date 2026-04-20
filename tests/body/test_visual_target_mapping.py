@@ -9,6 +9,13 @@ def test_map_target_x_to_angle_maps_frame_edges() -> None:
     assert map_target_x_to_angle(target_x=1.0, pan_min=40, pan_max=140) == 140
 
 
+def test_compute_tracking_pan_angle_moves_in_small_steps() -> None:
+    from eibrain.body.runtime_linux import compute_tracking_pan_angle
+
+    assert compute_tracking_pan_angle(current_angle=90, target_x=0.9, pan_min=40, pan_max=140) == 102
+    assert compute_tracking_pan_angle(current_angle=102, target_x=0.52, pan_min=40, pan_max=140) == 102
+
+
 def test_neck_uses_target_x_to_compute_angle() -> None:
     from eibrain.body.organs.neck.organ import NeckOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
@@ -51,4 +58,4 @@ def test_neck_uses_target_x_to_compute_angle() -> None:
         )
     )
 
-    assert outcome.details["payload"]["target_angle"] == 65
+    assert outcome.details["payload"]["target_angle"] == 82

@@ -12,6 +12,7 @@ from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
 from eibrain.body.runtime_linux import probe_binary_device
+from eibrain.body.runtime_linux import probe_faster_whisper_model
 from eibrain.body.runtime_linux import probe_tts_playback
 from eibrain.body.runtime_linux import run_hailo_frame_inference
 from eibrain.body.runtime_linux import run_hailo_detection
@@ -30,6 +31,10 @@ def main() -> None:
 
     sherpa_probe = subparsers.add_parser("probe-sherpa-model")
     sherpa_probe.add_argument("--model-dir", required=True)
+
+    faster_whisper_probe = subparsers.add_parser("probe-faster-whisper-model")
+    faster_whisper_probe.add_argument("--model-name", required=True)
+    faster_whisper_probe.add_argument("--python-executable", default="/usr/bin/python3")
 
     speaker_probe = subparsers.add_parser("probe-speaker")
     speaker_probe.add_argument("--output-device", required=True)
@@ -86,6 +91,8 @@ def main() -> None:
         result = probe_binary_device(binary_name=args.binary, device_path=args.device, label=args.label)
     elif args.command == "probe-sherpa-model":
         result = probe_sherpa_model_dir(args.model_dir)
+    elif args.command == "probe-faster-whisper-model":
+        result = probe_faster_whisper_model(model_name=args.model_name, python_executable=args.python_executable)
     elif args.command == "probe-speaker":
         result = probe_tts_playback(
             output_device=args.output_device,
@@ -125,6 +132,7 @@ def main() -> None:
                 target_name=str(body_payload.get("target_name", "")),
                 servo_id=args.servo_id,
                 home_angle=args.home_angle,
+                target_angle=body_payload.get("target_angle"),
                 target_x=body_payload.get("target_x"),
                 pan_min=int(body_payload.get("pan_min", 40)),
                 pan_max=int(body_payload.get("pan_max", 140)),

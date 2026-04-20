@@ -27,6 +27,35 @@ def probe_sherpa_model_dir(model_dir: str) -> dict[str, object]:
     }
 
 
+def probe_faster_whisper_model(
+    *,
+    model_name: str,
+    python_executable: str = "/usr/bin/python3",
+) -> dict[str, object]:
+    model_path = resolve_faster_whisper_model_path(model_name)
+    exists = Path(model_path).exists()
+    completed = subprocess.run(
+        [python_executable, "-c", "from faster_whisper import WhisperModel; print('ok')"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    status = "healthy" if exists and completed.returncode == 0 else "degraded"
+    return {
+        "status": status,
+        "details": {
+            "driver": "faster_whisper",
+            "model_name": model_name,
+            "model_path": model_path,
+            "model_exists": exists,
+            "python_executable": python_executable,
+            "returncode": completed.returncode,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+        },
+    }
+
+
 def probe_binary_device(*, binary_name: str, device_path: str, label: str) -> dict[str, object]:
     binary = shutil.which(binary_name)
     exists = Path(device_path).exists()
@@ -47,6 +76,30 @@ def probe_binary_device(*, binary_name: str, device_path: str, label: str) -> di
 def map_target_x_to_angle(*, target_x: float, pan_min: int, pan_max: int) -> int:
     clipped = min(max(target_x, 0.0), 1.0)
     return int(round(pan_min + (pan_max - pan_min) * clipped))
+
+
+def compute_tracking_pan_angle(
+    *,
+    current_angle: int,
+    target_x: float,
+    pan_min: int,
+    pan_max: int,
+    deadband: float = 0.08,
+    step_gain: float = 30.0,
+    max_step: int = 12,
+    invert: bool = False,
+) -> int:
+    clipped = min(max(target_x, 0.0), 1.0)
+    error = clipped - 0.5
+    if invert:
+        error = -error
+    if abs(error) <= deadband:
+        return int(max(pan_min, min(pan_max, current_angle)))
+    delta = int(round(error * step_gain))
+    if delta == 0:
+        delta = 1 if error > 0 else -1
+    delta = max(-max_step, min(max_step, delta))
+    return int(max(pan_min, min(pan_max, current_angle + delta)))
 
 
 def speak_text(
@@ -422,6 +475,7 @@ def move_gimbal(
     target_name: str,
     servo_id: int,
     home_angle: int = 90,
+    target_angle: int | None = None,
     target_x: float | None = None,
     pan_min: int = 40,
     pan_max: int = 140,
@@ -429,7 +483,12 @@ def move_gimbal(
 ) -> dict[str, object]:
     if driver is None:
         raise RuntimeError("gimbal driver is required")
-    angle = home_angle if target_x is None else map_target_x_to_angle(target_x=target_x, pan_min=pan_min, pan_max=pan_max)
+    if target_angle is not None:
+        angle = int(max(pan_min, min(pan_max, target_angle)))
+    elif target_x is None:
+        angle = home_angle
+    else:
+        angle = map_target_x_to_angle(target_x=target_x, pan_min=pan_min, pan_max=pan_max)
     payload = driver.ctrl_servo(angle, servo_id=servo_id)
     return {
         "status": "ok",
@@ -952,3 +1011,129 @@ print(json.dumps({"status": "ok", "details": {"text": text}}, ensure_ascii=False
         raw_path.unlink(missing_ok=True)
         if "payload_path" in locals():
             payload_path.unlink(missing_ok=True)
+
+
+def resolve_faster_whisper_model_path(model_name: str) -> str:
+    candidate = Path(model_name).expanduser()
+    if candidate.exists():
+        return str(candidate)
+    repo_dir = Path.home() / ".cache" / "huggingface" / "hub" / f"models--{model_name.replace('/', '--')}"
+    snapshots_dir = repo_dir / "snapshots"
+    if snapshots_dir.exists():
+        snapshots = sorted((path for path in snapshots_dir.iterdir() if path.is_dir()), key=lambda path: path.stat().st_mtime, reverse=True)
+        if snapshots:
+            return str(snapshots[0])
+    return model_name
+
+
+def transcribe_pcm_with_faster_whisper_subprocess(
+    *,
+    pcm_bytes: bytes,
+    model_name: str,
+    sample_rate: int,
+    channels: int,
+    language: str = "zh",
+    compute_type: str = "int8",
+    beam_size: int = 1,
+    python_executable: str | None = None,
+    timeout_s: int = 30,
+) -> dict[str, object]:
+    with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as handle:
+        raw_path = Path(handle.name)
+        handle.write(pcm_bytes)
+    try:
+        script = r"""
+import json
+import wave
+from pathlib import Path
+
+from faster_whisper import WhisperModel
+
+payload = json.loads(Path("__PAYLOAD_PATH__").read_text(encoding="utf-8"))
+pcm_path = Path(payload["pcm_path"])
+wav_path = pcm_path.with_suffix(".wav")
+with wave.open(str(wav_path), "wb") as wav_file:
+    wav_file.setnchannels(int(payload["channels"]))
+    wav_file.setsampwidth(2)
+    wav_file.setframerate(int(payload["sample_rate"]))
+    wav_file.writeframes(pcm_path.read_bytes())
+
+model = WhisperModel(
+    payload["model_path"],
+    device="cpu",
+    compute_type=payload.get("compute_type", "int8"),
+)
+segments, info = model.transcribe(
+    str(wav_path),
+    language=payload.get("language") or None,
+    beam_size=int(payload.get("beam_size", 1)),
+    vad_filter=True,
+)
+text = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
+print(
+    json.dumps(
+        {
+            "status": "ok",
+            "details": {
+                "text": text,
+                "language": getattr(info, "language", payload.get("language", "")),
+                "duration": getattr(info, "duration", 0.0),
+                "duration_after_vad": getattr(info, "duration_after_vad", 0.0),
+                "model_path": payload["model_path"],
+            },
+        },
+        ensure_ascii=False,
+    )
+)
+"""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as payload_handle:
+            payload_path = Path(payload_handle.name)
+            json.dump(
+                {
+                    "pcm_path": str(raw_path),
+                    "model_path": resolve_faster_whisper_model_path(model_name),
+                    "sample_rate": sample_rate,
+                    "channels": channels,
+                    "language": language,
+                    "compute_type": compute_type,
+                    "beam_size": beam_size,
+                },
+                payload_handle,
+                ensure_ascii=False,
+            )
+        script = script.replace("__PAYLOAD_PATH__", str(payload_path))
+        completed = subprocess.run(
+            [python_executable or sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+        if completed.returncode == 0:
+            try:
+                return json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                pass
+        return {
+            "status": "error",
+            "details": {
+                "stdout": (completed.stdout or "").strip(),
+                "stderr": (completed.stderr or "").strip(),
+                "returncode": completed.returncode,
+                "model_path": resolve_faster_whisper_model_path(model_name),
+            },
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "details": {
+                "reason": "faster_whisper_timeout",
+                "timeout_s": timeout_s,
+                "model_path": resolve_faster_whisper_model_path(model_name),
+            },
+        }
+    finally:
+        raw_path.unlink(missing_ok=True)
+        if "payload_path" in locals():
+            payload_path.unlink(missing_ok=True)
+        raw_path.with_suffix(".wav").unlink(missing_ok=True)

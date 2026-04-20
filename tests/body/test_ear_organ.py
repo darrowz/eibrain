@@ -74,3 +74,44 @@ def test_ear_organ_caches_audio_probe_results() -> None:
     organ.heartbeat()
 
     assert capture.calls == 1
+
+
+def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
+    from eibrain.body.organs.ear.organ import EarOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    class _Capture:
+        device = "plughw:CARD=U4K,DEV=0"
+        sample_rate = 48000
+        channels = 2
+
+        def read_window(self, duration_s: int):
+            return [b"\x00\x00\x00\x08"] * duration_s
+
+    def _fake_transcribe(**kwargs):
+        return {"status": "ok", "details": {"text": "你好 honjia", "language": "zh"}}
+
+    monkeypatch.setattr("eibrain.body.organs.ear.organ.transcribe_pcm_with_faster_whisper_subprocess", _fake_transcribe)
+
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "capture": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"], extra={"device": "plughw:CARD=U4K,DEV=0", "chunk_count": 2, "refresh_interval_s": 0.0})),
+            "vad": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+            "asr": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "faster_whisper", "model_name": "Systran/faster-whisper-tiny", "language": "zh"},
+                )
+            ),
+        },
+    )
+    organ = EarOrgan(config=config)
+    organ._capture = _Capture()
+    organ._recognizer = None
+
+    heartbeat = organ.heartbeat()
+
+    assert heartbeat.subfunctions["asr"].details["transcript"] == "你好 honjia"
+    assert heartbeat.subfunctions["asr"].health == "healthy"

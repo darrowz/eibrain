@@ -25,6 +25,7 @@ class BodyRuntimeApp:
         self.degradation_manager = DegradationManager()
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
+        self._visual_tracking_misses = 0
 
     @classmethod
     def from_config_path(cls, path) -> "BodyRuntimeApp":
@@ -113,12 +114,26 @@ class BodyRuntimeApp:
         self,
         *,
         preferred_labels: tuple[str, ...] = ("face", "person"),
+        recenter_after_misses: int = 3,
         session_id: str = "tracking-session",
         actor_id: str = "vision-runtime",
     ):
         target = self._select_visual_tracking_target(preferred_labels=preferred_labels)
         if target is None:
-            return None
+            self._visual_tracking_misses += 1
+            if self._visual_tracking_misses < recenter_after_misses:
+                return None
+            action = MoveHeadAction(
+                ts=1.0,
+                source="eye.tracking",
+                session_id=session_id,
+                actor_id=actor_id,
+                target_name="recenter",
+                target_angle=self._neck_home_angle(),
+            )
+            outcomes = self.dispatch_actions([action])
+            return outcomes[0] if outcomes else None
+        self._visual_tracking_misses = 0
         action = self.plan_visual_tracking_action(
             target_name=str(target.get("label", "target")),
             target_x=float(target["target_x"]),
@@ -217,3 +232,14 @@ class BodyRuntimeApp:
             return None
         ranked.sort(key=lambda item: (item[0], item[1]))
         return ranked[0][2]
+
+    def _neck_home_angle(self) -> int:
+        neck = next((organ for organ in self.organs if organ.name == "neck"), None)
+        if neck is None:
+            return 90
+        motor = getattr(neck.config, "subfunctions", {}).get("motor") if getattr(neck, "config", None) else None
+        extra = motor.driver.extra if motor is not None else {}
+        try:
+            return int(extra.get("home_angle", 90))
+        except (TypeError, ValueError):
+            return 90

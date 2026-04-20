@@ -43,7 +43,7 @@ body:
             - /dev/snd
             - --label
             - audio-input
-          device: hw:3,0
+          device: plughw:CARD=U4K,DEV=0
           sample_rate: 48000
           channels: 2
           chunk_count: 2
@@ -80,20 +80,25 @@ body:
             - python3
             - -m
             - apps.body_runtime.device_ops
-            - probe-sherpa-model
-            - --model-dir
-            - /home/${USER}/eibrain/models/asr/sherpa-onnx-streaming
+            - probe-faster-whisper-model
+            - --model-name
+            - Systran/faster-whisper-tiny
+            - --python-executable
+            - /usr/bin/python3
           health_command:
             - python3
             - -m
             - apps.body_runtime.device_ops
-            - probe-sherpa-model
-            - --model-dir
-            - /home/${USER}/eibrain/models/asr/sherpa-onnx-streaming
-          provider: sherpa_onnx
-          mode: streaming
-          model_dir: /home/${USER}/eibrain/models/asr/sherpa-onnx-streaming
-          model_type: lstm
+            - probe-faster-whisper-model
+            - --model-name
+            - Systran/faster-whisper-tiny
+            - --python-executable
+            - /usr/bin/python3
+          provider: faster_whisper
+          model_name: Systran/faster-whisper-tiny
+          language: zh
+          compute_type: int8
+          beam_size: 1
     eye:
       enabled: true
       camera:
@@ -280,8 +285,12 @@ body:
             - /dev/i2c-1
             - --label
             - gimbal
+          home_angle: 90
           pan_min: 40
           pan_max: 140
+          tracking_deadband: 0.08
+          tracking_step_gain: 30.0
+          tracking_max_step: 12
       tracking:
         driver:
           kind: command
@@ -356,4 +365,3 @@ memory:
     endpoint: ""
     api_key: ${OPENCLAW_API_KEY}
     timeout_s: 5.0
-
