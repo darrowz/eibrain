@@ -50,6 +50,40 @@ def test_operator_console_builds_runtime_status_report() -> None:
     assert report["capability_status"] == [{"name": "can_speak", "enabled": True, "status": "enabled"}]
     assert report["probe_metrics"][0]["device"] == "/dev/snd"
     assert report["probe_metrics"][0]["device_exists"] is True
+    assert report["dialogue_diagnostics"]["last_reply"] == "hello"
+
+
+def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_hear_voice": True, "can_transcribe_speech": True, "can_speak": True},
+            "organs": {},
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "phase": "thinking",
+                "last_status": "transcribed",
+                "turn_count": 3,
+                "last_transcript": "福州小吃",
+                "last_reply": "鱼丸和肉燕很有名。",
+                "last_error": "",
+            },
+        },
+        cognitive_snapshot={"last_reply": "fallback reply", "learning_decision": "keep_policy"},
+        traces=[],
+    )
+
+    dialogue = report["dialogue_diagnostics"]
+
+    assert dialogue["running"] is True
+    assert dialogue["phase"] == "thinking"
+    assert dialogue["turn_count"] == 3
+    assert dialogue["last_transcript"] == "福州小吃"
+    assert dialogue["last_reply"] == "鱼丸和肉燕很有名。"
 
 
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:

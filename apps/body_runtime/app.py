@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import time
 
+from eibrain.protocol.actions import PlaySpeechAction
 from eibrain.body.health import DegradationManager
 from eibrain.body.ear_stream import EarStreamProcessor
 from eibrain.body.ear_stream import ArecordStreamCapture
@@ -26,6 +27,18 @@ class BodyRuntimeApp:
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
         self._visual_tracking_misses = 0
+        self._speech_busy_until = 0.0
+        self.voice_dialogue_state: dict[str, object] = {
+            "enabled": False,
+            "running": False,
+            "phase": "idle",
+            "turn_count": 0,
+            "last_transcript": "",
+            "last_reply": "",
+            "last_status": "idle",
+            "last_error": "",
+            "updated_at_ts": None,
+        }
 
     @classmethod
     def from_config_path(cls, path) -> "BodyRuntimeApp":
@@ -85,6 +98,12 @@ class BodyRuntimeApp:
         session_id: str,
         actor_id: str,
     ) -> AudioTranscriptFinal:
+        if self.is_speaking():
+            return self._empty_transcript(
+                session_id=session_id,
+                actor_id=actor_id,
+                status="speech_playback_active",
+            )
         if self.ear_processor is not None:
             return self.ear_processor.transcribe_window(
                 chunk_count=chunk_count,
@@ -138,6 +157,33 @@ class BodyRuntimeApp:
             actor_id=actor_id,
         )
 
+    def is_speaking(self) -> bool:
+        return time.time() < self._speech_busy_until
+
+    def _empty_transcript(self, *, session_id: str, actor_id: str, status: str) -> AudioTranscriptFinal:
+        observation = AudioTranscriptFinal(
+            ts=time.time(),
+            source="ear.asr",
+            text="",
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        self._recent_events.append(
+            {
+                "kind": observation.kind,
+                "source": observation.source,
+                "status": status,
+                "session_id": session_id,
+                "recorded_at_ts": time.time(),
+                "details": {"text": "", "speech_window_summary": status},
+            }
+        )
+        return observation
+
+    def update_voice_dialogue_state(self, **updates: object) -> None:
+        self.voice_dialogue_state.update(updates)
+        self.voice_dialogue_state["updated_at_ts"] = time.time()
+
     def plan_visual_tracking_action(
         self,
         *,
@@ -189,7 +235,10 @@ class BodyRuntimeApp:
         return outcomes[0] if outcomes else None
 
     def snapshot(self) -> dict[str, object]:
-        organ_states = [organ.heartbeat() for organ in self.organs]
+        organ_states = [
+            self._snapshot_organ(organ)
+            for organ in self.organs
+        ]
         degradation = self.degradation_manager.evaluate(organ_states)
         return {
             "node_id": self.config.body.node_id,
@@ -198,6 +247,7 @@ class BodyRuntimeApp:
             "capabilities": degradation.capabilities.to_dict(),
             "organs": {state.organ: state.to_dict() for state in organ_states},
             "recent_event_count": len(self._recent_events),
+            "voice_dialogue": dict(self.voice_dialogue_state),
         }
 
     def dispatch_actions(self, actions: list[Action]) -> list:
@@ -205,7 +255,13 @@ class BodyRuntimeApp:
         for action in actions:
             for organ in self.organs:
                 if organ.supports_action(action):
-                    outcome = organ.handle_action(action)
+                    if isinstance(action, PlaySpeechAction):
+                        self._speech_busy_until = time.time() + 120.0
+                    try:
+                        outcome = organ.handle_action(action)
+                    finally:
+                        if isinstance(action, PlaySpeechAction):
+                            self._speech_busy_until = time.time() + 0.75
                     if outcome is not None:
                         outcomes.append(outcome)
                         self._recent_events.append(
@@ -220,6 +276,12 @@ class BodyRuntimeApp:
                         )
                     break
         return outcomes
+
+    def _snapshot_organ(self, organ):
+        if organ.name == "ear" and (self.is_speaking() or self.voice_dialogue_state.get("enabled")):
+            if hasattr(organ, "passive_heartbeat"):
+                return organ.passive_heartbeat()
+        return organ.heartbeat()
 
     def recent_events(self) -> list[dict[str, object]]:
         return list(self._recent_events)

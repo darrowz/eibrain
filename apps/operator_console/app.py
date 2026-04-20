@@ -57,6 +57,10 @@ class OperatorConsoleApp:
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
         audio_diagnostics = self._build_audio_diagnostics(organs)
         visual_diagnostics = self._build_visual_diagnostics(organs)
+        dialogue_diagnostics = self._build_dialogue_diagnostics(
+            body_snapshot=body_snapshot,
+            cognitive_snapshot=cognitive_snapshot,
+        )
         summary = self._build_summary(
             capabilities=capabilities,
             warnings=warnings,
@@ -79,6 +83,7 @@ class OperatorConsoleApp:
             "probe_metrics": probe_metrics,
             "audio_diagnostics": audio_diagnostics,
             "visual_diagnostics": visual_diagnostics,
+            "dialogue_diagnostics": dialogue_diagnostics,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
             "event_breakdown": self._build_event_breakdown(traces),
@@ -360,6 +365,29 @@ class OperatorConsoleApp:
             "speech_window_summary": asr_details.get("speech_window_summary")
             or vad_details.get("speech_window_summary")
             or capture_details.get("speech_window_summary"),
+        }
+
+    @staticmethod
+    def _build_dialogue_diagnostics(
+        *,
+        body_snapshot: dict[str, object],
+        cognitive_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        loop = body_snapshot.get("voice_dialogue", {})
+        if not isinstance(loop, dict):
+            loop = {}
+        return {
+            "enabled": bool(loop.get("enabled")),
+            "running": bool(loop.get("running")),
+            "phase": loop.get("phase", "idle"),
+            "last_status": loop.get("last_status", "idle"),
+            "turn_count": loop.get("turn_count", 0),
+            "last_transcript": loop.get("last_transcript", ""),
+            "last_reply": loop.get("last_reply") or cognitive_snapshot.get("last_reply", ""),
+            "last_error": loop.get("last_error", ""),
+            "updated_at_ts": loop.get("updated_at_ts"),
+            "learning_decision": cognitive_snapshot.get("learning_decision", ""),
+            "last_review": cognitive_snapshot.get("last_review", {}),
         }
 
     @staticmethod

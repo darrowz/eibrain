@@ -160,6 +160,26 @@ def test_ear_organ_reports_capture_failure_diagnostics() -> None:
     assert details["error"] == "arecord: Device or resource busy"
 
 
+def test_ear_organ_does_not_capture_when_asr_is_noop() -> None:
+    from eibrain.body.organs.ear.organ import EarOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "capture": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+            "vad": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+            "asr": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+        },
+    )
+    organ = EarOrgan(config=config)
+
+    heartbeat = organ.heartbeat()
+
+    assert heartbeat.subfunctions["capture"].health == "healthy"
+    assert "capture_command" not in heartbeat.subfunctions["capture"].details
+
+
 def test_ear_organ_applies_transcript_replacements(monkeypatch) -> None:
     from eibrain.body.organs.ear.organ import EarOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig

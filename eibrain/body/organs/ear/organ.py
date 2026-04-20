@@ -60,8 +60,18 @@ class EarOrgan(BaseOrgan):
         finally:
             self._heartbeat_lock.release()
 
+    def passive_heartbeat(self) -> OrganHealth:
+        if self._cached_heartbeat is not None:
+            return self._cached_heartbeat
+        return super().heartbeat()
+
     def _audio_runtime_enabled(self) -> bool:
-        return self._capture is not None and self._asr_provider() in {"sherpa_onnx", "faster_whisper"}
+        return (
+            self._capture is not None
+            and self._driver_kind("capture") != "noop"
+            and self._driver_kind("asr") != "noop"
+            and self._asr_provider() in {"sherpa_onnx", "faster_whisper"}
+        )
 
     def _build_capture(self) -> ArecordStreamCapture | None:
         capture_cfg = self.config.subfunctions.get("capture")

@@ -12,8 +12,9 @@ from apps.operator_console.app import OperatorConsoleApp
 
 
 class MonitoringWebServer:
-    def __init__(self, *, runtime, host: str = "0.0.0.0", port: int = 8080) -> None:
+    def __init__(self, *, runtime, cognitive_runtime=None, host: str = "0.0.0.0", port: int = 8080) -> None:
         self.runtime = runtime
+        self.cognitive_runtime = cognitive_runtime
         self.host = host
         self.port = port
         self._server: ThreadingHTTPServer | None = None
@@ -28,7 +29,7 @@ class MonitoringWebServer:
                 request_path = urlparse(self.path).path
                 report = outer.console.build_status_report(
                     body_snapshot=outer.runtime.snapshot(),
-                    cognitive_snapshot={},
+                    cognitive_snapshot=outer.cognitive_runtime.snapshot() if outer.cognitive_runtime is not None else {},
                     traces=outer.runtime.recent_events(),
                 )
                 if request_path == "/vision/latest.jpg":
@@ -397,6 +398,12 @@ class MonitoringWebServer:
     </section>
 
     <section class="card" style="margin-top: 16px;">
+      <h2>Dialogue loop</h2>
+      <div class="mini-grid" id="dialogue-summary"></div>
+      <div class="subfunction-list" id="dialogue-events" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
       <h2>Visual diagnostics</h2>
       <div class="vision-layout">
         <div class="vision-stage" id="vision-stage"></div>
@@ -637,6 +644,28 @@ class MonitoringWebServer:
       document.getElementById('audio-events').innerHTML = items.join('');
     }}
 
+    function renderDialogue(report) {{
+      const dialogue = report.dialogue_diagnostics || {{}};
+      document.getElementById('dialogue-summary').innerHTML = [
+        ['Loop', dialogue.running ? 'running' : (dialogue.enabled ? 'stopped' : 'off')],
+        ['Phase', dialogue.phase || 'idle'],
+        ['Status', dialogue.last_status || 'idle'],
+        ['Turns', String(dialogue.turn_count ?? 0)],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      const transcript = dialogue.last_transcript || 'No transcript yet';
+      const reply = dialogue.last_reply || 'No reply yet';
+      const error = dialogue.last_error || '';
+      const items = [
+        `<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{dialogue.last_transcript ? 'healthy' : 'degraded'}}">${{dialogue.phase || 'idle'}}</span></div><div class="metric-label">${{transcript}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>Last reply</strong><span class="health-tag ${{dialogue.last_reply ? 'healthy' : 'degraded'}}">${{dialogue.learning_decision || 'pending'}}</span></div><div class="metric-label">${{reply}}</div></div>`,
+      ];
+      if (error) {{
+        items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Loop error</strong><span class="health-tag unavailable">error</span></div><div class="metric-label">${{error}}</div></div>`);
+      }}
+      document.getElementById('dialogue-events').innerHTML = items.join('');
+    }}
+
     function renderProbes(report) {{
       const probes = report.probe_metrics || [];
       document.getElementById('probe-table').innerHTML = probes.length
@@ -686,6 +715,7 @@ class MonitoringWebServer:
       renderLatencies(report);
       renderWarnings(report);
       renderAudio(report);
+      renderDialogue(report);
       renderVision(report);
       renderProbes(report);
       renderTimeline(report);

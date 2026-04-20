@@ -70,6 +70,71 @@ def test_body_runtime_records_recent_events_for_monitoring() -> None:
     assert "recorded_at_ts" in events[-1]
 
 
+def test_body_runtime_skips_transcription_during_speech_playback() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime._speech_busy_until = 9999999999.0
+
+    observation = runtime.transcribe_audio_window(
+        chunk_count=6,
+        session_id="s1",
+        actor_id="user-1",
+    )
+
+    assert observation.text == ""
+    assert runtime.recent_events()[-1]["status"] == "speech_playback_active"
+
+
+def test_body_runtime_snapshot_includes_voice_dialogue_state() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.update_voice_dialogue_state(running=True, phase="listening", last_transcript="hello")
+
+    snapshot = runtime.snapshot()
+
+    assert snapshot["voice_dialogue"]["running"] is True
+    assert snapshot["voice_dialogue"]["phase"] == "listening"
+    assert snapshot["voice_dialogue"]["last_transcript"] == "hello"
+
+
+def test_body_runtime_snapshot_uses_passive_ear_when_voice_loop_enabled() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    class _Ear:
+        name = "ear"
+
+        def __init__(self) -> None:
+            self.passive_calls = 0
+
+        def passive_heartbeat(self):
+            self.passive_calls += 1
+            return type(
+                "Health",
+                (),
+                {
+                    "organ": "ear",
+                    "health": "healthy",
+                    "subfunctions": {},
+                    "to_dict": lambda self: {"organ": "ear", "health": "healthy", "subfunctions": {}},
+                },
+            )()
+
+        def heartbeat(self):  # pragma: no cover - should not be called
+            raise AssertionError("active ear heartbeat should not run during voice loop")
+
+    runtime = BodyRuntimeApp()
+    ear = _Ear()
+    runtime.organs = [ear]
+    runtime.update_voice_dialogue_state(enabled=True, running=True)
+
+    snapshot = runtime.snapshot()
+
+    assert ear.passive_calls == 1
+    assert snapshot["organs"]["ear"]["organ"] == "ear"
+
+
 def test_body_runtime_marks_command_action_error_from_json_status(tmp_path) -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.protocol.actions import MoveHeadAction
