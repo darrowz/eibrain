@@ -55,6 +55,7 @@ class OperatorConsoleApp:
             probe_metrics=probe_metrics,
         )
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
+        audio_diagnostics = self._build_audio_diagnostics(organs)
         visual_diagnostics = self._build_visual_diagnostics(organs)
         summary = self._build_summary(
             capabilities=capabilities,
@@ -76,6 +77,7 @@ class OperatorConsoleApp:
             "capability_status": capability_status,
             "driver_breakdown": driver_breakdown,
             "probe_metrics": probe_metrics,
+            "audio_diagnostics": audio_diagnostics,
             "visual_diagnostics": visual_diagnostics,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
@@ -313,6 +315,51 @@ class OperatorConsoleApp:
             "identity_summary": identity_details.get("identity_summary", "identity chain inactive"),
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
+        }
+
+    def _build_audio_diagnostics(self, organs: dict[str, object]) -> dict[str, object]:
+        ear = organs.get("ear", {})
+        if not isinstance(ear, dict):
+            return {"enabled": False}
+        subfunctions = ear.get("subfunctions", {})
+        if not isinstance(subfunctions, dict):
+            subfunctions = {}
+        capture = subfunctions.get("capture", {})
+        vad = subfunctions.get("vad", {})
+        asr = subfunctions.get("asr", {})
+        if not isinstance(capture, dict):
+            capture = {}
+        if not isinstance(vad, dict):
+            vad = {}
+        if not isinstance(asr, dict):
+            asr = {}
+        capture_details = dict(capture.get("details", {})) if isinstance(capture.get("details", {}), dict) else {}
+        vad_details = dict(vad.get("details", {})) if isinstance(vad.get("details", {}), dict) else {}
+        asr_details = dict(asr.get("details", {})) if isinstance(asr.get("details", {}), dict) else {}
+        transcript = str(asr_details.get("transcript", "") or "")
+        return {
+            "enabled": bool(capture_details or asr_details),
+            "capture_health": capture.get("health", "unknown"),
+            "vad_health": vad.get("health", "unknown"),
+            "asr_health": asr.get("health", "unknown"),
+            "capture_status": capture_details.get("status", capture.get("health", "unknown")),
+            "vad_status": vad_details.get("status", vad.get("health", "unknown")),
+            "asr_status": asr_details.get("status", asr.get("health", "unknown")),
+            "capture_device": capture_details.get("capture_device") or capture_details.get("device"),
+            "sample_rate": capture_details.get("sample_rate"),
+            "channels": capture_details.get("channels"),
+            "chunk_count": capture_details.get("chunk_count"),
+            "payload_bytes": capture_details.get("payload_bytes"),
+            "dbfs": capture_details.get("dbfs"),
+            "rms_level": capture_details.get("rms_level"),
+            "peak_level": capture_details.get("peak_level"),
+            "voice_activity": bool(asr_details.get("voice_activity", capture_details.get("voice_activity"))),
+            "captured_at_ts": asr_details.get("captured_at_ts") or capture_details.get("captured_at_ts"),
+            "transcript": transcript,
+            "transcript_char_count": len(transcript),
+            "speech_window_summary": asr_details.get("speech_window_summary")
+            or vad_details.get("speech_window_summary")
+            or capture_details.get("speech_window_summary"),
         }
 
     @staticmethod

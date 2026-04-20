@@ -201,3 +201,64 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
     assert report["visual_diagnostics"]["detection_count"] == 1
     assert report["visual_diagnostics"]["detections"][0]["label"] == "face"
     assert report["visual_diagnostics"]["identity_candidates"][0]["candidate_id"] == "unknown-face-1"
+
+
+def test_operator_console_exposes_audio_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_hear_voice": True, "can_transcribe_speech": True},
+            "organs": {
+                "ear": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "capture": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "command",
+                                "status": "healthy",
+                                "elapsed_ms": 25.0,
+                                "capture_device": "hw:3,0",
+                                "sample_rate": 48000,
+                                "channels": 2,
+                                "chunk_count": 2,
+                                "payload_bytes": 8192,
+                                "dbfs": -22.1,
+                                "rms_level": 0.08,
+                                "peak_level": 0.2,
+                                "voice_activity": True,
+                            },
+                        },
+                        "vad": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "noop",
+                                "status": "observed",
+                                "speech_window_summary": "voice activity detected at -22.1 dBFS",
+                            },
+                        },
+                        "asr": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "command",
+                                "status": "transcribed",
+                                "elapsed_ms": 90.0,
+                                "transcript": "ni hao honjia",
+                                "voice_activity": True,
+                                "speech_window_summary": "heard speech at -22.1 dBFS: ni hao honjia",
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["audio_diagnostics"]["capture_device"] == "hw:3,0"
+    assert report["audio_diagnostics"]["voice_activity"] is True
+    assert report["audio_diagnostics"]["transcript"] == "ni hao honjia"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -55,6 +56,75 @@ def test_speak_text_uses_espeak_and_aplay_commands(tmp_path) -> None:
     assert result["status"] == "ok"
     assert calls[0][0] == "espeak"
     assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
+
+
+def test_speak_text_uses_minimax_t2a_and_aplay(tmp_path) -> None:
+    from eibrain.body.runtime_linux import speak_text
+
+    calls: list[list[str]] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "data": {"audio": "52494646", "status": 2},
+                    "extra_info": {
+                        "audio_size": 4,
+                        "audio_length": 100,
+                        "audio_sample_rate": 32000,
+                        "audio_format": "wav",
+                        "audio_channel": 1,
+                    },
+                    "trace_id": "trace-1",
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                }
+            ).encode("utf-8")
+
+    def _runner(command: list[str], **kwargs):
+        calls.append(command)
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    result = speak_text(
+        text="hello honjia",
+        output_device="plughw:2,0",
+        backend="minimax",
+        api_key="secret",
+        runner=_runner,
+        urlopen=lambda req, timeout=0: _Response(),
+        temp_dir=tmp_path,
+    )
+
+    assert result["status"] == "ok"
+    assert result["details"]["backend"] == "minimax"
+    assert result["details"]["trace_id"] == "trace-1"
+    assert calls[0][:3] == ["aplay", "-D", "plughw:2,0"]
+
+
+def test_probe_tts_playback_requires_minimax_api_key(monkeypatch) -> None:
+    from eibrain.body.runtime_linux import probe_tts_playback
+
+    monkeypatch.setattr("eibrain.body.runtime_linux.shutil.which", lambda name: "/usr/bin/aplay")
+
+    result = probe_tts_playback(
+        output_device="plughw:2,0",
+        backend="minimax",
+        api_key="",
+    )
+
+    assert result["status"] in {"degraded", "unavailable"}
+    assert result["details"]["reason"] == "missing_minimax_api_key"
 
 
 def test_move_gimbal_uses_injected_driver() -> None:

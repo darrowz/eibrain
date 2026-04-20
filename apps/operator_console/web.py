@@ -377,6 +377,12 @@ class MonitoringWebServer:
     </section>
 
     <section class="card" style="margin-top: 16px;">
+      <h2>Audio diagnostics</h2>
+      <div class="mini-grid" id="audio-summary"></div>
+      <div class="subfunction-list" id="audio-events" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
       <h2>Visual diagnostics</h2>
       <div class="vision-layout">
         <div class="vision-stage" id="vision-stage"></div>
@@ -600,6 +606,24 @@ class MonitoringWebServer:
         : '<div class="muted">No visual detections yet</div>';
     }}
 
+    function renderAudio(report) {{
+      const audio = report.audio_diagnostics || {{}};
+      const dbfs = typeof audio.dbfs === 'number' ? `${{audio.dbfs.toFixed(2)}} dBFS` : '—';
+      const rms = typeof audio.rms_level === 'number' ? audio.rms_level.toFixed(3) : '—';
+      document.getElementById('audio-summary').innerHTML = [
+        ['Capture', audio.capture_health || 'unknown'],
+        ['ASR', audio.asr_health || 'unknown'],
+        ['Voice', audio.voice_activity ? 'active' : 'idle'],
+        ['Level', dbfs],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      const items = [];
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Input device</strong><span class="health-tag ${{healthClass(audio.capture_health || 'unknown')}}">${{audio.capture_status || audio.capture_health || 'unknown'}}</span></div><div class="metric-label">${{audio.capture_device || 'unknown device'}} · ${{audio.sample_rate || '—'}} Hz · ${{audio.channels || '—'}} ch · chunks=${{audio.chunk_count ?? '—'}} · bytes=${{audio.payload_bytes ?? '—'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Speech window</strong><span class="health-tag ${{healthClass(audio.vad_health || 'unknown')}}">${{audio.vad_status || audio.vad_health || 'unknown'}}</span></div><div class="metric-label">${{audio.speech_window_summary || 'waiting for audio sample'}} · rms=${{rms}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{healthClass(audio.asr_health || 'unknown')}}">${{audio.asr_status || audio.asr_health || 'unknown'}}</span></div><div class="metric-label">${{audio.transcript ? audio.transcript : 'No transcript yet'}}</div></div>`);
+      document.getElementById('audio-events').innerHTML = items.join('');
+    }}
+
     function renderProbes(report) {{
       const probes = report.probe_metrics || [];
       document.getElementById('probe-table').innerHTML = probes.length
@@ -648,6 +672,7 @@ class MonitoringWebServer:
       renderRuntime(report);
       renderLatencies(report);
       renderWarnings(report);
+      renderAudio(report);
       renderVision(report);
       renderProbes(report);
       renderTimeline(report);
@@ -668,4 +693,5 @@ class MonitoringWebServer:
   </script>
 </body>
 </html>"""
-        return template.replace("__INITIAL_REPORT__", initial_report).replace("{{", "{").replace("}}", "}")
+        rendered = template.replace("{{", "{").replace("}}", "}")
+        return rendered.replace("__INITIAL_REPORT__", initial_report)

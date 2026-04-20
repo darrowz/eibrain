@@ -43,6 +43,7 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "honjia organ observability" in html
     assert "Hardware probes" in html
     assert "Runtime posture" in html
+    assert "Audio diagnostics" in html
     assert "Visual diagnostics" in html
     assert "/metrics.json" in html
 

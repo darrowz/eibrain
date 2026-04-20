@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from eibrain.body.raspbot_driver import RaspbotDriver
@@ -11,6 +12,7 @@ from eibrain.body.runtime_linux import capture_frame
 from eibrain.body.runtime_linux import compare_frame_hashes
 from eibrain.body.runtime_linux import move_gimbal
 from eibrain.body.runtime_linux import probe_binary_device
+from eibrain.body.runtime_linux import probe_tts_playback
 from eibrain.body.runtime_linux import run_hailo_frame_inference
 from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.body.runtime_linux import probe_sherpa_model_dir
@@ -31,9 +33,29 @@ def main() -> None:
 
     speaker_probe = subparsers.add_parser("probe-speaker")
     speaker_probe.add_argument("--output-device", required=True)
+    speaker_probe.add_argument("--backend", default="espeak")
+    speaker_probe.add_argument("--api-key-env", default="MINIMAX_API_KEY")
+    speaker_probe.add_argument("--api-base-url", default="https://api.minimaxi.com")
+    speaker_probe.add_argument("--model", default="speech-2.8-hd")
+    speaker_probe.add_argument("--voice-id", default="female-shaonv")
 
     speak = subparsers.add_parser("speak")
     speak.add_argument("--output-device", required=True)
+    speak.add_argument("--backend", default="espeak")
+    speak.add_argument("--api-key-env", default="MINIMAX_API_KEY")
+    speak.add_argument("--api-base-url", default="https://api.minimaxi.com")
+    speak.add_argument("--model", default="speech-2.8-hd")
+    speak.add_argument("--voice-id", default="female-shaonv")
+    speak.add_argument("--audio-format", default="wav")
+    speak.add_argument("--sample-rate", type=int, default=32000)
+    speak.add_argument("--bitrate", type=int, default=128000)
+    speak.add_argument("--channel", type=int, default=1)
+    speak.add_argument("--speed", type=float, default=1.0)
+    speak.add_argument("--volume", type=float, default=1.0)
+    speak.add_argument("--pitch", type=float, default=0.0)
+    speak.add_argument("--emotion", default="")
+    speak.add_argument("--language-boost", default="auto")
+    speak.add_argument("--timeout-s", type=int, default=30)
 
     gimbal = subparsers.add_parser("move-gimbal")
     gimbal.add_argument("--servo-id", type=int, default=1)
@@ -65,12 +87,34 @@ def main() -> None:
     elif args.command == "probe-sherpa-model":
         result = probe_sherpa_model_dir(args.model_dir)
     elif args.command == "probe-speaker":
-        result = probe_binary_device(binary_name="aplay", device_path="/dev/snd", label=f"speaker:{args.output_device}")
+        result = probe_tts_playback(
+            output_device=args.output_device,
+            backend=args.backend,
+            api_key=os.environ.get(args.api_key_env, ""),
+            api_base_url=args.api_base_url,
+            model=args.model,
+            voice_id=args.voice_id,
+        )
     elif args.command == "speak":
         payload = json.loads(sys.stdin.read() or "{}")
         result = speak_text(
             text=str(payload.get("payload", {}).get("text", "")),
             output_device=args.output_device,
+            backend=args.backend,
+            api_key=os.environ.get(args.api_key_env, ""),
+            api_base_url=args.api_base_url,
+            model=args.model,
+            voice_id=args.voice_id,
+            audio_format=args.audio_format,
+            sample_rate=args.sample_rate,
+            bitrate=args.bitrate,
+            channel=args.channel,
+            speed=args.speed,
+            volume=args.volume,
+            pitch=args.pitch,
+            emotion=args.emotion,
+            language_boost=args.language_boost,
+            timeout_s=args.timeout_s,
         )
     elif args.command == "move-gimbal":
         payload = json.loads(sys.stdin.read() or "{}")

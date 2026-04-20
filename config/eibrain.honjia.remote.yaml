@@ -30,6 +30,11 @@ body:
           - /dev/snd
           - --label
           - audio-input
+          device: hw:3,0
+          sample_rate: 48000
+          channels: 2
+          chunk_count: 2
+          refresh_interval_s: 1.5
           health_command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m
@@ -43,7 +48,29 @@ body:
           - audio-input
       vad:
         driver:
-          kind: noop
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - arecord
+          - --device
+          - /dev/snd
+          - --label
+          - audio-vad
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - arecord
+          - --device
+          - /dev/snd
+          - --label
+          - audio-vad
       asr:
         driver:
           kind: command
@@ -54,6 +81,10 @@ body:
           - probe-sherpa-model
           - --model-dir
           - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          provider: sherpa_onnx
+          mode: streaming
+          model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          model_type: lstm
           health_command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m
@@ -150,7 +181,33 @@ body:
       enabled: true
       tts_plan:
         driver:
-          kind: noop
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-speaker
+          - --output-device
+          - plughw:2,0
+          - --backend
+          - minimax
+          - --model
+          - speech-2.8-hd
+          - --voice-id
+          - female-shaonv
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-speaker
+          - --output-device
+          - plughw:2,0
+          - --backend
+          - minimax
+          - --model
+          - speech-2.8-hd
+          - --voice-id
+          - female-shaonv
       tts_playback:
         driver:
           kind: command
@@ -161,6 +218,18 @@ body:
           - speak
           - --output-device
           - plughw:2,0
+          - --backend
+          - minimax
+          - --model
+          - speech-2.8-hd
+          - --voice-id
+          - female-shaonv
+          - --audio-format
+          - wav
+          - --sample-rate
+          - '32000'
+          - --channel
+          - '1'
           health_command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m
@@ -168,6 +237,19 @@ body:
           - probe-speaker
           - --output-device
           - plughw:2,0
+          - --backend
+          - minimax
+          - --model
+          - speech-2.8-hd
+          - --voice-id
+          - female-shaonv
+          output_device: plughw:2,0
+          backend: minimax
+          model: speech-2.8-hd
+          voice_id: female-shaonv
+          audio_format: wav
+          sample_rate: 32000
+          channel: 1
     neck:
       enabled: true
       motor:
@@ -195,7 +277,29 @@ body:
           - gimbal
       tracking:
         driver:
-          kind: noop
+          kind: command
+          command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - python3
+          - --device
+          - /dev/i2c-1
+          - --label
+          - gimbal-tracking
+          health_command:
+          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - -m
+          - apps.body_runtime.device_ops
+          - probe-binary-device
+          - --binary
+          - python3
+          - --device
+          - /dev/i2c-1
+          - --label
+          - gimbal-tracking
 cognition:
   node_id: honxin
   llm:

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from urllib.error import HTTPError, URLError
+from urllib import request
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -50,9 +53,47 @@ def speak_text(
     *,
     text: str,
     output_device: str,
+    backend: str = "espeak",
+    api_key: str = "",
+    api_base_url: str = "https://api.minimaxi.com",
+    model: str = "speech-2.8-hd",
+    voice_id: str = "female-shaonv",
+    audio_format: str = "wav",
+    sample_rate: int = 32000,
+    bitrate: int = 128000,
+    channel: int = 1,
+    speed: float = 1.0,
+    volume: float = 1.0,
+    pitch: float = 0.0,
+    emotion: str = "",
+    language_boost: str = "auto",
+    timeout_s: int = 30,
     runner=subprocess.run,
+    urlopen=request.urlopen,
     temp_dir: str | Path | None = None,
 ) -> dict[str, object]:
+    if backend == "minimax":
+        return _speak_text_with_minimax(
+            text=text,
+            output_device=output_device,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            model=model,
+            voice_id=voice_id,
+            audio_format=audio_format,
+            sample_rate=sample_rate,
+            bitrate=bitrate,
+            channel=channel,
+            speed=speed,
+            volume=volume,
+            pitch=pitch,
+            emotion=emotion,
+            language_boost=language_boost,
+            timeout_s=timeout_s,
+            runner=runner,
+            urlopen=urlopen,
+            temp_dir=temp_dir,
+        )
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=temp_dir) as handle:
         wav_path = Path(handle.name)
     try:
@@ -81,6 +122,299 @@ def speak_text(
         }
     finally:
         wav_path.unlink(missing_ok=True)
+
+
+def probe_tts_playback(
+    *,
+    output_device: str,
+    backend: str = "espeak",
+    api_key: str = "",
+    api_base_url: str = "https://api.minimaxi.com",
+    model: str = "speech-2.8-hd",
+    voice_id: str = "female-shaonv",
+) -> dict[str, object]:
+    playback_probe = probe_binary_device(binary_name="aplay", device_path="/dev/snd", label=f"speaker:{output_device}")
+    details = dict(playback_probe.get("details", {}))
+    details.update(
+        {
+            "backend": backend,
+            "output_device": output_device,
+            "api_base_url": api_base_url,
+            "model": model,
+            "voice_id": voice_id,
+            "api_key_present": bool(api_key),
+        }
+    )
+    if backend != "minimax":
+        return {
+            "status": playback_probe["status"],
+            "details": details,
+        }
+    if not api_key:
+        status = "degraded" if playback_probe["status"] == "healthy" else playback_probe["status"]
+        details["reason"] = "missing_minimax_api_key"
+        return {"status": status, "details": details}
+    return {
+        "status": playback_probe["status"],
+        "details": details,
+    }
+
+
+def _speak_text_with_minimax(
+    *,
+    text: str,
+    output_device: str,
+    api_key: str,
+    api_base_url: str,
+    model: str,
+    voice_id: str,
+    audio_format: str,
+    sample_rate: int,
+    bitrate: int,
+    channel: int,
+    speed: float,
+    volume: float,
+    pitch: float,
+    emotion: str,
+    language_boost: str,
+    timeout_s: int,
+    runner,
+    urlopen,
+    temp_dir: str | Path | None,
+) -> dict[str, object]:
+    if not api_key:
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "missing_minimax_api_key",
+                "output_device": output_device,
+            },
+        }
+    if audio_format.lower() != "wav":
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "unsupported_playback_format",
+                "audio_format": audio_format,
+                "output_device": output_device,
+            },
+        }
+
+    with tempfile.NamedTemporaryFile(suffix=f".{audio_format.lower()}", delete=False, dir=temp_dir) as handle:
+        audio_path = Path(handle.name)
+    try:
+        synthesized = synthesize_minimax_speech(
+            text=text,
+            api_key=api_key,
+            api_base_url=api_base_url,
+            model=model,
+            voice_id=voice_id,
+            audio_format=audio_format,
+            sample_rate=sample_rate,
+            bitrate=bitrate,
+            channel=channel,
+            speed=speed,
+            volume=volume,
+            pitch=pitch,
+            emotion=emotion,
+            language_boost=language_boost,
+            timeout_s=timeout_s,
+            urlopen=urlopen,
+        )
+        if synthesized.get("status") != "ok":
+            details = dict(synthesized.get("details", {}))
+            details["output_device"] = output_device
+            return {"status": "error", "details": details}
+
+        audio_bytes = synthesized["audio_bytes"]
+        audio_path.write_bytes(audio_bytes)
+        playback = runner(
+            ["aplay", "-D", output_device, str(audio_path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        synth_details = dict(synthesized.get("details", {}))
+        synth_details.update(
+            {
+                "backend": "minimax",
+                "output_device": output_device,
+                "audio_path": str(audio_path),
+                "returncode": playback.returncode,
+                "stdout": playback.stdout.strip(),
+                "stderr": playback.stderr.strip(),
+            }
+        )
+        return {
+            "status": "ok" if playback.returncode == 0 else "error",
+            "details": synth_details,
+        }
+    finally:
+        audio_path.unlink(missing_ok=True)
+
+
+def synthesize_minimax_speech(
+    *,
+    text: str,
+    api_key: str,
+    api_base_url: str = "https://api.minimaxi.com",
+    model: str = "speech-2.8-hd",
+    voice_id: str = "female-shaonv",
+    audio_format: str = "wav",
+    sample_rate: int = 32000,
+    bitrate: int = 128000,
+    channel: int = 1,
+    speed: float = 1.0,
+    volume: float = 1.0,
+    pitch: float = 0.0,
+    emotion: str = "",
+    language_boost: str = "auto",
+    timeout_s: int = 30,
+    urlopen=request.urlopen,
+) -> dict[str, object]:
+    if not text.strip():
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "empty_text",
+            },
+        }
+    voice_setting: dict[str, object] = {
+        "voice_id": voice_id,
+        "speed": _normalize_minimax_number(speed),
+        "vol": _normalize_minimax_number(volume),
+        "pitch": _normalize_minimax_number(pitch),
+    }
+    if emotion:
+        voice_setting["emotion"] = emotion
+    payload = {
+        "model": model,
+        "text": text,
+        "stream": False,
+        "voice_setting": voice_setting,
+        "audio_setting": {
+            "sample_rate": sample_rate,
+            "bitrate": bitrate,
+            "format": audio_format.lower(),
+            "channel": channel,
+        },
+        "language_boost": language_boost,
+        "subtitle_enable": False,
+    }
+    endpoint = _minimax_t2a_url(api_base_url)
+    req = request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+    )
+    try:
+        with urlopen(req, timeout=timeout_s) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        error_body = exc.read().decode("utf-8", "replace")
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "http_error",
+                "endpoint": endpoint,
+                "status_code": exc.code,
+                "body": error_body,
+            },
+        }
+    except (URLError, OSError) as exc:
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "request_failed",
+                "endpoint": endpoint,
+                "error": str(exc),
+            },
+        }
+
+    try:
+        parsed = json.loads(body)
+        base_resp = dict(parsed.get("base_resp", {}))
+        status_code = int(base_resp.get("status_code", -1))
+        if status_code != 0:
+            return {
+                "status": "error",
+                "details": {
+                    "backend": "minimax",
+                    "reason": "api_error",
+                    "endpoint": endpoint,
+                    "status_code": status_code,
+                    "status_msg": base_resp.get("status_msg", ""),
+                    "body": body,
+                },
+            }
+        data = dict(parsed.get("data", {}))
+        audio_hex = str(data.get("audio", "") or "")
+        if not audio_hex:
+            return {
+                "status": "error",
+                "details": {
+                    "backend": "minimax",
+                    "reason": "missing_audio",
+                    "endpoint": endpoint,
+                    "body": body,
+                },
+            }
+        audio_bytes = bytes.fromhex(audio_hex)
+    except (ValueError, TypeError, KeyError) as exc:
+        return {
+            "status": "error",
+            "details": {
+                "backend": "minimax",
+                "reason": "invalid_response",
+                "endpoint": endpoint,
+                "error": str(exc),
+                "body": body,
+            },
+        }
+
+    extra_info = parsed.get("extra_info", {})
+    if not isinstance(extra_info, dict):
+        extra_info = {}
+    return {
+        "status": "ok",
+        "audio_bytes": audio_bytes,
+        "details": {
+            "backend": "minimax",
+            "endpoint": endpoint,
+            "model": model,
+            "voice_id": voice_id,
+            "trace_id": parsed.get("trace_id"),
+            "audio_size": extra_info.get("audio_size", len(audio_bytes)),
+            "audio_length": extra_info.get("audio_length"),
+            "audio_sample_rate": extra_info.get("audio_sample_rate", sample_rate),
+            "audio_format": extra_info.get("audio_format", audio_format.lower()),
+            "audio_channel": extra_info.get("audio_channel", channel),
+            "usage_characters": extra_info.get("usage_characters"),
+        },
+    }
+
+
+def _minimax_t2a_url(api_base_url: str) -> str:
+    endpoint = api_base_url.rstrip("/")
+    if endpoint.endswith("/v1/t2a_v2"):
+        return endpoint
+    return f"{endpoint}/v1/t2a_v2"
+
+
+def _normalize_minimax_number(value: float | int) -> float | int:
+    numeric = float(value)
+    if numeric.is_integer():
+        return int(numeric)
+    return numeric
 
 
 def move_gimbal(
@@ -529,3 +863,84 @@ print(
             "hef_path": hef_path,
         },
     }
+
+
+def transcribe_pcm_with_sherpa_subprocess(
+    *,
+    pcm_bytes: bytes,
+    model_dir: str,
+    sample_rate: int,
+    channels: int,
+    model_type: str | None = None,
+    python_executable: str | None = None,
+    timeout_s: int = 20,
+) -> dict[str, object]:
+    with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as handle:
+        raw_path = Path(handle.name)
+        handle.write(pcm_bytes)
+    try:
+        script = r"""
+import json
+from pathlib import Path
+from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
+
+payload = json.loads(Path("__PAYLOAD_PATH__").read_text(encoding="utf-8"))
+pcm_bytes = Path(payload["pcm_path"]).read_bytes()
+recognizer = SherpaOnnxStreamingRecognizer(
+    model_dir=payload["model_dir"],
+    model_type=payload.get("model_type"),
+)
+text = recognizer.transcribe(
+    [pcm_bytes],
+    sample_rate=int(payload["sample_rate"]),
+    channels=int(payload["channels"]),
+)
+print(json.dumps({"status": "ok", "details": {"text": text}}, ensure_ascii=False))
+"""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w", encoding="utf-8") as payload_handle:
+            payload_path = Path(payload_handle.name)
+            json.dump(
+                {
+                    "pcm_path": str(raw_path),
+                    "model_dir": model_dir,
+                    "sample_rate": sample_rate,
+                    "channels": channels,
+                    "model_type": model_type,
+                },
+                payload_handle,
+                ensure_ascii=False,
+            )
+        script = script.replace("__PAYLOAD_PATH__", str(payload_path))
+        completed = subprocess.run(
+            [python_executable or sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+        if completed.returncode == 0:
+            try:
+                return json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                pass
+        return {
+            "status": "error",
+            "details": {
+                "reason": "sherpa_subprocess_failed",
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+            },
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "details": {
+                "reason": "sherpa_subprocess_timeout",
+                "timeout_s": timeout_s,
+            },
+        }
+    finally:
+        raw_path.unlink(missing_ok=True)
+        if "payload_path" in locals():
+            payload_path.unlink(missing_ok=True)
