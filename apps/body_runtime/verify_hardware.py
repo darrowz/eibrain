@@ -21,6 +21,7 @@ from eibrain.verification import (
     run_hailo_camera_check,
     run_hailo_frame_check,
     run_vision_frame_check,
+    run_voice_dialogue_check,
 )
 
 
@@ -40,6 +41,12 @@ def main() -> None:
     ear.add_argument("--chunk-count", type=int, default=3)
     ear.add_argument("--session-id", default="verify-ear")
     ear.add_argument("--actor-id", default="verify-user")
+
+    dialogue = subparsers.add_parser("voice-dialogue-check")
+    dialogue.add_argument("--config", default="config/eibrain.yaml")
+    dialogue.add_argument("--chunk-count", type=int, default=6)
+    dialogue.add_argument("--session-id", default="verify-dialogue")
+    dialogue.add_argument("--actor-id", default="verify-user")
 
     vision = subparsers.add_parser("vision-frame-check")
     vision.add_argument("--config", default="config/eibrain.yaml")
@@ -96,6 +103,63 @@ def main() -> None:
                 actor_id=args.actor_id,
             ).to_dict(),
         )
+    elif args.command == "voice-dialogue-check":
+        body_runtime = BodyRuntimeApp.from_config_path(args.config)
+        cognitive_runtime = CognitiveRuntimeApp.from_config_path(args.config)
+        last_observation = {}
+
+        def _listen(chunk_count: int) -> dict[str, object]:
+            nonlocal last_observation
+            observation = body_runtime.transcribe_audio_window(
+                chunk_count=chunk_count,
+                session_id=args.session_id,
+                actor_id=args.actor_id,
+            )
+            last_observation = observation.to_dict()
+            return last_observation
+
+        def _plan(transcript: dict[str, object]) -> list[dict[str, object]]:
+            from eibrain.protocol.observations import AudioTranscriptFinal
+
+            observation = AudioTranscriptFinal(
+                ts=float(transcript.get("ts", 1.0) or 1.0),
+                source=str(transcript.get("source", "ear.asr")),
+                session_id=str(transcript.get("session_id", args.session_id)),
+                actor_id=str(transcript.get("actor_id", args.actor_id)),
+                text=str(transcript.get("text", "")),
+            )
+            return [
+                action.to_dict() if hasattr(action, "to_dict") else dict(action)
+                for action in cognitive_runtime.handle_observation(observation)
+            ]
+
+        def _dispatch(actions: list[dict[str, object]]) -> list[dict[str, object]]:
+            from eibrain.protocol.actions import PlaySpeechAction
+
+            action_objects = [
+                PlaySpeechAction(
+                    ts=float(action.get("ts", 1.0) or 1.0),
+                    source=str(action.get("source", "voice-dialogue-check")),
+                    session_id=str(action.get("session_id", args.session_id)),
+                    actor_id=str(action.get("actor_id", args.actor_id)),
+                    target_id=action.get("target_id"),
+                    text=str(action.get("text", "")),
+                )
+                for action in actions
+                if str(action.get("kind", "")) == "play_speech_action"
+            ]
+            return [
+                outcome.to_dict() if hasattr(outcome, "to_dict") else dict(outcome)
+                for outcome in body_runtime.dispatch_actions(action_objects)
+            ]
+
+        result = run_voice_dialogue_check(
+            chunk_count=args.chunk_count,
+            listen_fn=_listen,
+            plan_fn=_plan,
+            dispatch_fn=_dispatch,
+        )
+        result["cognition"] = cognitive_runtime.snapshot()
     elif args.command == "vision-frame-check":
         runtime = CognitiveRuntimeApp.from_config_path(args.config)
         result = run_vision_frame_check(

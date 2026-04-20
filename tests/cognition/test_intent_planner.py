@@ -56,3 +56,24 @@ def test_intent_planner_generates_pause_intent_on_interrupt() -> None:
 
     assert len(intents) == 1
     assert intents[0].kind == "pause_intent"
+
+
+def test_dialogue_manager_prepares_llm_text_for_speech() -> None:
+    from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.state.embodied import EmbodiedState
+
+    state = EmbodiedState.create_default().with_transcript(
+        text="福建有多少个行政村？",
+        session_id="s1",
+        actor_id="user-1",
+        ts=1.0,
+    )
+
+    reply = DialogueManager().build_reply_text(
+        state,
+        MemoryResult(),
+        "**福建省** 大约有 1.5 万个行政村。",
+    )
+
+    assert reply == "福建省 大约有 1.5 万个行政村。"

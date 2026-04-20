@@ -220,6 +220,7 @@ body:
       tts_playback:
         driver:
           kind: command
+          timeout_s: 60
           command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m

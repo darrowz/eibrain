@@ -9,10 +9,17 @@ class PromptBuilder:
         transcript = state.world.last_transcript.strip()
         visual_summary = state.world.last_visual_summary.strip()
         summary = memory.summary.strip()
+        instruction = (
+            "你是 honjia 的本地语音助手。"
+            "请用中文自然回答用户问题，不要只复述或确认收到。"
+            "回答尽量简短，适合直接语音播放。"
+        )
         if summary and transcript:
-            return f"[memory] {summary}\n[user] {transcript}"
+            return f"{instruction}\n[memory] {summary}\n[user] {transcript}"
         if summary and visual_summary:
-            return f"[memory] {summary}\n[vision] {visual_summary}"
+            return f"{instruction}\n[memory] {summary}\n[vision] {visual_summary}"
         if visual_summary:
-            return f"[vision] {visual_summary}"
-        return transcript
+            return f"{instruction}\n[vision] {visual_summary}"
+        if transcript:
+            return f"{instruction}\n[user] {transcript}"
+        return instruction

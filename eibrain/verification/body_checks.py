@@ -106,6 +106,48 @@ def run_ear_stream_check(
     }
 
 
+def run_voice_dialogue_check(
+    *,
+    chunk_count: int,
+    listen_fn: Callable[[int], dict[str, object]],
+    plan_fn: Callable[[dict[str, object]], list[dict[str, object]]],
+    dispatch_fn: Callable[[list[dict[str, object]]], list[dict[str, object]]],
+) -> dict[str, object]:
+    transcript = listen_fn(chunk_count)
+    text = str(transcript.get("text", "") or "").strip()
+    if not text:
+        return {
+            "status": "degraded",
+            "issues": ["no_transcript"],
+            "chunk_count": chunk_count,
+            "transcript": transcript,
+            "actions": [],
+            "outcomes": [],
+        }
+    actions = plan_fn(transcript)
+    speech_actions = [
+        action
+        for action in actions
+        if str(action.get("kind", "")) == "play_speech_action"
+        and str(action.get("text", "")).strip()
+    ]
+    outcomes = dispatch_fn(actions) if actions else []
+    issues: list[str] = []
+    if not speech_actions:
+        issues.append("no_dialogue_reply")
+    if speech_actions and not outcomes:
+        issues.append("reply_not_dispatched")
+    return {
+        "status": "ok" if not issues else "degraded",
+        "issues": issues,
+        "chunk_count": chunk_count,
+        "transcript": transcript,
+        "actions": actions,
+        "outcomes": outcomes,
+        "reply_text": str(speech_actions[0].get("text", "")) if speech_actions else "",
+    }
+
+
 def run_hailo_camera_check(
     *,
     detect_fn: Callable[[], dict[str, object]],

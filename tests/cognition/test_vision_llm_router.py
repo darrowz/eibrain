@@ -71,6 +71,42 @@ def test_llm_router_supports_anthropic_compatible_text_and_vision(monkeypatch) -
     assert captured["body"]["model"] == "MiniMax-M2.7-highspeed"
     assert captured["body"]["messages"][0]["content"][0]["type"] == "text"
     assert captured["body"]["messages"][0]["content"][1]["type"] == "image"
+    assert captured["timeout"] == 30
+
+
+def test_llm_router_extracts_text_after_thinking_block(monkeypatch) -> None:
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "content": [
+                        {"type": "thinking", "thinking": "private reasoning"},
+                        {"type": "text", "text": "这是一个自然回答"},
+                    ]
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr("eibrain.cognition.dialogue.llm_router.request.urlopen", lambda req, timeout=10: _Response())
+
+    router = LLMRouter(
+        LLMConfig(
+            provider="anthropic_compatible",
+            model="MiniMax-M2.7-highspeed",
+            endpoint="https://api.minimaxi.com/anthropic",
+            api_key="secret",
+        )
+    )
+
+    assert router.generate("今天天气怎么样？") == "这是一个自然回答"
 
 
 def test_llm_router_falls_back_when_remote_provider_errors(monkeypatch) -> None:

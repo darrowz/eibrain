@@ -115,6 +115,35 @@ def test_run_ear_stream_check_returns_transcript() -> None:
     assert result["transcript"]["text"] == "heard-3"
 
 
+def test_run_voice_dialogue_check_dispatches_reply() -> None:
+    from eibrain.verification.body_checks import run_voice_dialogue_check
+
+    result = run_voice_dialogue_check(
+        chunk_count=6,
+        listen_fn=lambda chunk_count: {"text": f"heard-{chunk_count}"},
+        plan_fn=lambda transcript: [{"kind": "play_speech_action", "text": f"answer:{transcript['text']}"}],
+        dispatch_fn=lambda actions: [{"status": "ok", "action_count": len(actions)}],
+    )
+
+    assert result["status"] == "ok"
+    assert result["reply_text"] == "answer:heard-6"
+    assert result["outcomes"][0]["status"] == "ok"
+
+
+def test_run_voice_dialogue_check_marks_missing_transcript_degraded() -> None:
+    from eibrain.verification.body_checks import run_voice_dialogue_check
+
+    result = run_voice_dialogue_check(
+        chunk_count=6,
+        listen_fn=lambda chunk_count: {"text": ""},
+        plan_fn=lambda transcript: [{"kind": "play_speech_action", "text": "unused"}],
+        dispatch_fn=lambda actions: [{"status": "ok"}],
+    )
+
+    assert result["status"] == "degraded"
+    assert result["issues"] == ["no_transcript"]
+
+
 def test_run_hailo_camera_check_returns_detection() -> None:
     from eibrain.verification.body_checks import run_hailo_camera_check
 

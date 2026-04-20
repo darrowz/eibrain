@@ -75,7 +75,7 @@ class LLMRouter:
         body = json.dumps(
             {
                 "model": self.config.model,
-                "max_tokens": 512,
+                "max_tokens": 1024,
                 "messages": [{"role": "user", "content": content}],
                 "temperature": self.config.temperature,
             }
@@ -86,12 +86,15 @@ class LLMRouter:
             "anthropic-version": "2023-06-01",
         }
         req = request.Request(self._anthropic_messages_url(), data=body, method="POST", headers=headers)
-        with request.urlopen(req, timeout=10) as response:
+        with request.urlopen(req, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
         parts = payload.get("content", [])
         if parts and isinstance(parts, list):
             for item in parts:
-                if item.get("type") == "text":
+                if isinstance(item, dict) and item.get("type") == "text":
+                    return str(item.get("text", ""))
+            for item in parts:
+                if isinstance(item, dict) and item.get("text"):
                     return str(item.get("text", ""))
         return ""
 
@@ -113,6 +116,6 @@ class LLMRouter:
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         req = request.Request(self.config.endpoint, data=body, method="POST", headers=headers)
-        with request.urlopen(req, timeout=10) as response:
+        with request.urlopen(req, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
         return str(payload["choices"][0]["message"]["content"])
