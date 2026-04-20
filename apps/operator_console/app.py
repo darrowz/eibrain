@@ -376,12 +376,17 @@ class OperatorConsoleApp:
         loop = body_snapshot.get("voice_dialogue", {})
         if not isinstance(loop, dict):
             loop = {}
+        phase_started_at_ts = loop.get("phase_started_at_ts")
+        if isinstance(phase_started_at_ts, (int, float)):
+            current_phase_elapsed_s = round(time.time() - float(phase_started_at_ts), 2)
+        else:
+            current_phase_elapsed_s = loop.get("current_phase_elapsed_s", 0.0)
         return {
             "enabled": bool(loop.get("enabled")),
             "running": bool(loop.get("running")),
             "phase": loop.get("phase", "idle"),
             "phase_started_at_ts": loop.get("phase_started_at_ts"),
-            "current_phase_elapsed_s": loop.get("current_phase_elapsed_s", 0.0),
+            "current_phase_elapsed_s": current_phase_elapsed_s,
             "last_status": loop.get("last_status", "idle"),
             "turn_count": loop.get("turn_count", 0),
             "last_transcript": loop.get("last_transcript", ""),
