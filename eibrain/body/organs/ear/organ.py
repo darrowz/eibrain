@@ -219,6 +219,7 @@ class EarOrgan(BaseOrgan):
                     result_details = result.get("details", {})
                     if result.get("status") == "ok" and isinstance(result_details, dict):
                         transcript = str(result_details.get("text", "") or "")
+                        transcript = self._normalize_transcript(transcript, asr_extra=asr_extra)
                     elif isinstance(result_details, dict):
                         error = str(result_details.get("stderr") or result_details.get("reason") or "faster_whisper_failed")
             except Exception as exc:  # pragma: no cover - hardware dependency
@@ -263,6 +264,44 @@ class EarOrgan(BaseOrgan):
         if config is None:
             return "disabled"
         return str(config.driver.extra.get("provider", "sherpa_onnx"))
+
+    @staticmethod
+    def _normalize_transcript(transcript: str, *, asr_extra: dict[str, object]) -> str:
+        normalized = transcript.strip()
+        replacements = asr_extra.get("transcript_replacements", [])
+        if isinstance(replacements, dict):
+            replacements = [
+                {"find": find, "replace": replace}
+                for find, replace in replacements.items()
+            ]
+        if isinstance(replacements, list):
+            for replacement in replacements:
+                if not isinstance(replacement, dict):
+                    continue
+                find_text = str(replacement.get("find", ""))
+                replace_text = str(replacement.get("replace", ""))
+                if find_text:
+                    normalized = normalized.replace(find_text, replace_text)
+        return EarOrgan._compact_repeated_sentence(normalized)
+
+    @staticmethod
+    def _compact_repeated_sentence(transcript: str) -> str:
+        normalized = transcript.strip()
+        if not normalized:
+            return ""
+        sentence_marks = "。！？!?"
+        trailing = ""
+        if normalized[-1] in sentence_marks:
+            trailing = normalized[-1]
+            normalized = normalized[:-1]
+        parts = [
+            part.strip()
+            for part in normalized.replace("！", "。").replace("？", "。").replace("!", "。").replace("?", "。").split("。")
+            if part.strip()
+        ]
+        if len(parts) > 1 and all(part == parts[0] for part in parts):
+            return parts[0] + (trailing or "。")
+        return transcript.strip()
 
     def _driver_kind(self, name: str) -> str:
         config = self.config.subfunctions.get(name)

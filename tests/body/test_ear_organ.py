@@ -158,3 +158,49 @@ def test_ear_organ_reports_capture_failure_diagnostics() -> None:
     assert details["capture_stdout_bytes"] == 0
     assert details["capture_retry_count"] == 2
     assert details["error"] == "arecord: Device or resource busy"
+
+
+def test_ear_organ_applies_transcript_replacements(monkeypatch) -> None:
+    from eibrain.body.organs.ear.organ import EarOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    class _Capture:
+        device = "plughw:CARD=U4K,DEV=0"
+        sample_rate = 48000
+        channels = 2
+
+        def read_window(self, duration_s: int):
+            return [b"\x00\x00\x00\x08"] * duration_s
+
+    def _fake_transcribe(**kwargs):
+        return {"status": "ok", "details": {"text": "鸿好鸿途。鸿好鸿途。", "language": "zh"}}
+
+    monkeypatch.setattr("eibrain.body.organs.ear.organ.transcribe_pcm_with_faster_whisper_subprocess", _fake_transcribe)
+
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "capture": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"], extra={"chunk_count": 2, "refresh_interval_s": 0.0})),
+            "vad": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+            "asr": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={
+                        "provider": "faster_whisper",
+                        "transcript_replacements": {
+                            "鸿好鸿途": "你好鸿途",
+                            "您好鸿途": "你好鸿途",
+                        },
+                    },
+                )
+            ),
+        },
+    )
+    organ = EarOrgan(config=config)
+    organ._capture = _Capture()
+    organ._recognizer = None
+
+    heartbeat = organ.heartbeat()
+
+    assert heartbeat.subfunctions["asr"].details["transcript"] == "你好鸿途。"
