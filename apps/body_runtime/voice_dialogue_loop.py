@@ -15,7 +15,7 @@ class VoiceDialogueLoop:
         *,
         body_runtime: BodyRuntimeApp,
         cognitive_runtime: CognitiveRuntimeApp,
-        chunk_count: int = 6,
+        chunk_count: int = 4,
         idle_interval_s: float = 1.0,
         empty_interval_s: float = 1.5,
         session_id: str = "voice-dialogue-loop",
@@ -63,18 +63,25 @@ class VoiceDialogueLoop:
                     self.body_runtime.update_voice_dialogue_state(phase="speaking", last_status="playback_active")
                     self._sleep(self.idle_interval_s)
                     continue
+                turn_started = time.perf_counter()
                 self.body_runtime.update_voice_dialogue_state(phase="listening", last_status="listening")
+                listen_started = time.perf_counter()
                 observation = self.body_runtime.transcribe_audio_window(
                     chunk_count=self.chunk_count,
                     session_id=self.session_id,
                     actor_id=self.actor_id,
                 )
+                listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
                 if not transcript:
                     self.body_runtime.update_voice_dialogue_state(
                         phase="idle",
                         last_status="no_transcript",
                         last_transcript="",
+                        last_latency_s={
+                            "listen_asr": round(listen_asr_s, 2),
+                            "total": round(time.perf_counter() - turn_started, 2),
+                        },
                     )
                     self._sleep(self.empty_interval_s)
                     continue
@@ -82,15 +89,24 @@ class VoiceDialogueLoop:
                     phase="thinking",
                     last_status="transcribed",
                     last_transcript=transcript,
+                    last_latency_s={"listen_asr": round(listen_asr_s, 2)},
                 )
+                think_started = time.perf_counter()
                 actions = self.cognitive_runtime.handle_observation(observation)
+                think_s = time.perf_counter() - think_started
                 reply = next((str(getattr(action, "text", "") or "") for action in actions if getattr(action, "kind", "") == "play_speech_action"), "")
                 self.body_runtime.update_voice_dialogue_state(
                     phase="speaking",
                     last_status="reply_ready" if reply else "no_reply",
                     last_reply=reply,
+                    last_latency_s={
+                        "listen_asr": round(listen_asr_s, 2),
+                        "think": round(think_s, 2),
+                    },
                 )
+                speak_started = time.perf_counter()
                 outcomes = self.body_runtime.dispatch_actions(actions)
+                speak_s = time.perf_counter() - speak_started
                 status = "ok" if outcomes and all(getattr(outcome, "status", "") == "ok" for outcome in outcomes) else "degraded"
                 turn_count = int(self.body_runtime.voice_dialogue_state.get("turn_count", 0) or 0) + 1
                 self.body_runtime.update_voice_dialogue_state(
@@ -98,6 +114,12 @@ class VoiceDialogueLoop:
                     last_status=status,
                     turn_count=turn_count,
                     last_error="",
+                    last_latency_s={
+                        "listen_asr": round(listen_asr_s, 2),
+                        "think": round(think_s, 2),
+                        "speak": round(speak_s, 2),
+                        "total": round(time.perf_counter() - turn_started, 2),
+                    },
                 )
                 self._sleep(self.idle_interval_s)
             except Exception as exc:  # pragma: no cover - hardware loop resilience

@@ -66,3 +66,5 @@ def test_voice_dialogue_loop_processes_one_turn() -> None:
     assert body.voice_dialogue_state["turn_count"] >= 1
     assert body.voice_dialogue_state["last_transcript"] == "你好"
     assert body.voice_dialogue_state["last_reply"] == "你好，我在。"
+    assert body.voice_dialogue_state["last_latency_s"]["total"] >= 0
+    assert body.voice_dialogue_state["last_latency_s"]["listen_asr"] >= 0

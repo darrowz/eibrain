@@ -32,11 +32,14 @@ class BodyRuntimeApp:
             "enabled": False,
             "running": False,
             "phase": "idle",
+            "phase_started_at_ts": time.time(),
             "turn_count": 0,
             "last_transcript": "",
             "last_reply": "",
             "last_status": "idle",
             "last_error": "",
+            "last_latency_s": {},
+            "current_phase_elapsed_s": 0.0,
             "updated_at_ts": None,
         }
 
@@ -181,7 +184,13 @@ class BodyRuntimeApp:
         return observation
 
     def update_voice_dialogue_state(self, **updates: object) -> None:
+        phase = updates.get("phase")
+        if phase is not None and phase != self.voice_dialogue_state.get("phase"):
+            updates.setdefault("phase_started_at_ts", time.time())
         self.voice_dialogue_state.update(updates)
+        phase_started_at_ts = self.voice_dialogue_state.get("phase_started_at_ts")
+        if isinstance(phase_started_at_ts, (int, float)):
+            self.voice_dialogue_state["current_phase_elapsed_s"] = round(time.time() - float(phase_started_at_ts), 2)
         self.voice_dialogue_state["updated_at_ts"] = time.time()
 
     def plan_visual_tracking_action(

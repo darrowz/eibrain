@@ -71,6 +71,8 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
                 "last_transcript": "福州小吃",
                 "last_reply": "鱼丸和肉燕很有名。",
                 "last_error": "",
+                "current_phase_elapsed_s": 1.25,
+                "last_latency_s": {"listen_asr": 4.0, "think": 2.0, "speak": 3.0, "total": 9.0},
             },
         },
         cognitive_snapshot={"last_reply": "fallback reply", "learning_decision": "keep_policy"},
@@ -84,6 +86,8 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert dialogue["turn_count"] == 3
     assert dialogue["last_transcript"] == "福州小吃"
     assert dialogue["last_reply"] == "鱼丸和肉燕很有名。"
+    assert dialogue["current_phase_elapsed_s"] == 1.25
+    assert dialogue["last_latency_s"]["total"] == 9.0
 
 
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:

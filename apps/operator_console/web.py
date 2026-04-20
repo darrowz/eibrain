@@ -445,6 +445,10 @@ class MonitoringWebServer:
       return typeof value === 'number' ? `${{value.toFixed(2)}} ms` : '—';
     }}
 
+    function fmtSeconds(value) {{
+      return typeof value === 'number' ? `${{value.toFixed(2)}} s` : '—';
+    }}
+
     function fmtBool(value) {{
       if (value === true) return 'present';
       if (value === false) return 'missing';
@@ -646,9 +650,11 @@ class MonitoringWebServer:
 
     function renderDialogue(report) {{
       const dialogue = report.dialogue_diagnostics || {{}};
+      const latency = dialogue.last_latency_s || {{}};
       document.getElementById('dialogue-summary').innerHTML = [
         ['Loop', dialogue.running ? 'running' : (dialogue.enabled ? 'stopped' : 'off')],
         ['Phase', dialogue.phase || 'idle'],
+        ['Phase age', fmtSeconds(dialogue.current_phase_elapsed_s)],
         ['Status', dialogue.last_status || 'idle'],
         ['Turns', String(dialogue.turn_count ?? 0)],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
@@ -657,6 +663,7 @@ class MonitoringWebServer:
       const reply = dialogue.last_reply || 'No reply yet';
       const error = dialogue.last_error || '';
       const items = [
+        `<div class="subfunction-item"><div class="sub-top"><strong>Latency breakdown</strong><span class="health-tag ${{latency.total ? 'healthy' : 'degraded'}}">${{fmtSeconds(latency.total)}}</span></div><div class="metric-label">listen+ASR ${{fmtSeconds(latency.listen_asr)}} · think ${{fmtSeconds(latency.think)}} · speak ${{fmtSeconds(latency.speak)}} · total ${{fmtSeconds(latency.total)}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{dialogue.last_transcript ? 'healthy' : 'degraded'}}">${{dialogue.phase || 'idle'}}</span></div><div class="metric-label">${{transcript}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Last reply</strong><span class="health-tag ${{dialogue.last_reply ? 'healthy' : 'degraded'}}">${{dialogue.learning_decision || 'pending'}}</span></div><div class="metric-label">${{reply}}</div></div>`,
       ];
