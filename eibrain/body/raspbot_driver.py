@@ -17,8 +17,11 @@ class RaspbotDriver:
 
     def ctrl_servo(self, angle: int, servo_id: int | None = None) -> list[int]:
         target_servo = self.servo_id if servo_id is None else servo_id
-        self.last_command = (target_servo, angle)
-        payload = [0xFF, self.addr & 0xFF, target_servo & 0xFF, angle & 0xFF]
+        clipped_angle = max(0, min(180, int(angle)))
+        if target_servo == 2 and clipped_angle > 110:
+            clipped_angle = 110
+        self.last_command = (target_servo, clipped_angle)
+        payload = [target_servo & 0xFF, clipped_angle & 0xFF]
         if self.mock or not self.enabled:
             return payload
         if not os.path.exists(self.device_path):
@@ -29,7 +32,7 @@ class RaspbotDriver:
             raise RuntimeError(f"smbus2 unavailable: {exc}") from exc
         bus = smbus2.SMBus(self.bus)
         try:
-            bus.write_i2c_block_data(self.addr, 0x06 + target_servo * 4, [0, 0, angle & 0xFF, 0])
+            bus.write_i2c_block_data(self.addr, 0x02, payload)
         finally:
             bus.close()
         return payload

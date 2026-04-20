@@ -51,3 +51,70 @@ def test_body_runtime_maps_visual_target_to_move_head_action() -> None:
     )
 
     assert action.target_x == 0.75
+
+
+def test_body_runtime_can_dispatch_visual_tracking_to_neck() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    runtime = BodyRuntimeApp()
+
+    class _Eye:
+        name = "eye"
+
+        def supports_action(self, action) -> bool:
+            return False
+
+        def heartbeat(self):
+            return OrganHealth(
+                organ="eye",
+                health="healthy",
+                subfunctions={
+                    "detection": SubfunctionHealth(
+                        name="detection",
+                        health="healthy",
+                        details={
+                            "detections": [
+                                {
+                                    "label": "person",
+                                    "score": 0.6,
+                                    "bbox": {"x_min": 0.0, "x_max": 0.4},
+                                },
+                                {
+                                    "label": "face",
+                                    "score": 0.8,
+                                    "bbox": {"x_min": 0.6, "x_max": 0.8},
+                                },
+                            ]
+                        },
+                    )
+                },
+            )
+
+    class _Neck:
+        name = "neck"
+
+        def supports_action(self, action) -> bool:
+            return True
+
+        def handle_action(self, action):
+            from eibrain.protocol.outcomes import ActionExecuted
+
+            return ActionExecuted(
+                ts=action.ts,
+                source="neck.motor",
+                status="ok",
+                session_id=action.session_id,
+                actor_id=action.actor_id,
+                target_id=action.target_id,
+                action_kind=action.kind,
+                details={"target_x": action.target_x, "target_name": action.target_name},
+            )
+
+    runtime.organs = [_Eye(), _Neck()]
+
+    outcome = runtime.track_visual_target_once(session_id="track-1", actor_id="vision-1")
+
+    assert outcome is not None
+    assert outcome.details["target_name"] == "face"
+    assert outcome.details["target_x"] == 0.7

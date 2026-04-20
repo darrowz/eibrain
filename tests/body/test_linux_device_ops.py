@@ -148,6 +148,26 @@ def test_move_gimbal_uses_injected_driver() -> None:
     assert calls == [(1, 90)]
 
 
+def test_raspbot_driver_uses_simple_servo_payload() -> None:
+    from eibrain.body.raspbot_driver import RaspbotDriver
+
+    driver = RaspbotDriver(mock=True, servo_id=1)
+
+    payload = driver.ctrl_servo(90)
+
+    assert payload == [1, 90]
+
+
+def test_raspbot_driver_clamps_servo_2_to_110_degrees() -> None:
+    from eibrain.body.raspbot_driver import RaspbotDriver
+
+    driver = RaspbotDriver(mock=True, servo_id=2)
+
+    payload = driver.ctrl_servo(180)
+
+    assert payload == [2, 110]
+
+
 def test_run_hailo_detection_reports_uvc_camera_gap() -> None:
     from eibrain.body.runtime_linux import run_hailo_detection
 

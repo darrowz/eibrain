@@ -166,6 +166,7 @@ class EarOrgan(BaseOrgan):
                         model_type=self._recognizer.model_type,
                         sample_rate=self._capture.sample_rate,
                         channels=self._capture.channels,
+                        chunk_bytes=max(1, len(chunks[0])) if chunks else 4096,
                     )
                     result_details = result.get("details", {})
                     if result.get("status") == "ok" and isinstance(result_details, dict):

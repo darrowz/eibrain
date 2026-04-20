@@ -872,6 +872,7 @@ def transcribe_pcm_with_sherpa_subprocess(
     sample_rate: int,
     channels: int,
     model_type: str | None = None,
+    chunk_bytes: int = 4096,
     python_executable: str | None = None,
     timeout_s: int = 20,
 ) -> dict[str, object]:
@@ -890,8 +891,14 @@ recognizer = SherpaOnnxStreamingRecognizer(
     model_dir=payload["model_dir"],
     model_type=payload.get("model_type"),
 )
+chunk_bytes = int(payload.get("chunk_bytes", 4096))
+pcm_chunks = [
+    pcm_bytes[index : index + chunk_bytes]
+    for index in range(0, len(pcm_bytes), chunk_bytes)
+    if pcm_bytes[index : index + chunk_bytes]
+]
 text = recognizer.transcribe(
-    [pcm_bytes],
+    pcm_chunks,
     sample_rate=int(payload["sample_rate"]),
     channels=int(payload["channels"]),
 )
@@ -906,6 +913,7 @@ print(json.dumps({"status": "ok", "details": {"text": text}}, ensure_ascii=False
                     "sample_rate": sample_rate,
                     "channels": channels,
                     "model_type": model_type,
+                    "chunk_bytes": chunk_bytes,
                 },
                 payload_handle,
                 ensure_ascii=False,

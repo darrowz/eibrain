@@ -109,6 +109,25 @@ class BodyRuntimeApp:
             target_x=target_x,
         )
 
+    def track_visual_target_once(
+        self,
+        *,
+        preferred_labels: tuple[str, ...] = ("face", "person"),
+        session_id: str = "tracking-session",
+        actor_id: str = "vision-runtime",
+    ):
+        target = self._select_visual_tracking_target(preferred_labels=preferred_labels)
+        if target is None:
+            return None
+        action = self.plan_visual_tracking_action(
+            target_name=str(target.get("label", "target")),
+            target_x=float(target["target_x"]),
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        outcomes = self.dispatch_actions([action])
+        return outcomes[0] if outcomes else None
+
     def snapshot(self) -> dict[str, object]:
         organ_states = [organ.heartbeat() for organ in self.organs]
         degradation = self.degradation_manager.evaluate(organ_states)
@@ -151,3 +170,50 @@ class BodyRuntimeApp:
             if isinstance(frame_path, str) and frame_path:
                 return frame_path
         return None
+
+    def _select_visual_tracking_target(
+        self,
+        *,
+        preferred_labels: tuple[str, ...],
+    ) -> dict[str, object] | None:
+        eye = next((organ for organ in self.organs if organ.name == "eye"), None)
+        if eye is None:
+            return None
+        heartbeat = eye.heartbeat()
+        detection_state = heartbeat.subfunctions.get("detection")
+        if detection_state is None:
+            return None
+        detections = detection_state.details.get("detections", [])
+        if not isinstance(detections, list):
+            return None
+        ranked: list[tuple[int, float, dict[str, object]]] = []
+        for detection in detections:
+            if not isinstance(detection, dict):
+                continue
+            bbox = detection.get("bbox", {})
+            if not isinstance(bbox, dict):
+                continue
+            try:
+                x_min = float(bbox.get("x_min", 0.0))
+                x_max = float(bbox.get("x_max", 0.0))
+                score = float(detection.get("score", 0.0))
+            except (TypeError, ValueError):
+                continue
+            label = str(detection.get("label", "target"))
+            priority = preferred_labels.index(label) if label in preferred_labels else len(preferred_labels)
+            ranked.append(
+                (
+                    priority,
+                    -score,
+                    {
+                        "label": label,
+                        "score": score,
+                        "target_x": max(0.0, min(1.0, (x_min + x_max) / 2.0)),
+                        "bbox": bbox,
+                    },
+                )
+            )
+        if not ranked:
+            return None
+        ranked.sort(key=lambda item: (item[0], item[1]))
+        return ranked[0][2]
