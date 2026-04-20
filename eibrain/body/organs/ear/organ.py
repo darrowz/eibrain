@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 from eibrain.body.ear_stream import ArecordStreamCapture, pcm_signal_stats
 from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
@@ -28,7 +29,9 @@ class EarOrgan(BaseOrgan):
         self._cached_heartbeat_at = 0.0
         self._cached_asr_probe = None
         self._cached_asr_probe_at = 0.0
+        self._recognizer_prewarm_error = ""
         self._heartbeat_lock = threading.Lock()
+        self._prewarm_recognizer()
 
     def heartbeat(self) -> OrganHealth:
         if not self._audio_runtime_enabled():
@@ -192,12 +195,12 @@ class EarOrgan(BaseOrgan):
     ) -> SubfunctionHealth:
         if self._driver_kind("asr") == "noop":
             return self._subfunction_health("asr")
-        probe = self._asr_probe()
         started = time.perf_counter()
         transcript = ""
         error = None
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
         voice_activity = bool(capture_state.details.get("voice_activity"))
+        probe = self._asr_probe() if voice_activity else self._passive_asr_probe()
         if (
             chunks
             and voice_activity
@@ -305,6 +308,29 @@ class EarOrgan(BaseOrgan):
         self._cached_asr_probe = self.drivers["asr"].heartbeat()
         self._cached_asr_probe_at = now_ts
         return self._cached_asr_probe
+
+    def _passive_asr_probe(self):
+        if self._cached_asr_probe is not None:
+            return self._cached_asr_probe
+        return SimpleNamespace(
+            status="healthy",
+            details={
+                "driver": self._asr_provider(),
+                "status": "silence_skipped_probe",
+            },
+        )
+
+    def _prewarm_recognizer(self) -> None:
+        if not isinstance(self._recognizer, FasterWhisperRecognizer):
+            return
+
+        def _load_model() -> None:
+            try:
+                self._recognizer._get_model()
+            except Exception as exc:  # pragma: no cover - host dependency
+                self._recognizer_prewarm_error = str(exc)
+
+        threading.Thread(target=_load_model, name="faster-whisper-prewarm", daemon=True).start()
 
     @staticmethod
     def _normalize_transcript(transcript: str, *, asr_extra: dict[str, object]) -> str:
