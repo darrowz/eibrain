@@ -7,7 +7,6 @@ import time
 
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from apps.body_runtime.app import BodyRuntimeApp
-from eibrain.protocol.actions import PlaySpeechAction
 
 
 class VoiceDialogueLoop:
@@ -19,7 +18,6 @@ class VoiceDialogueLoop:
         chunk_count: int = 3,
         idle_interval_s: float = 1.0,
         empty_interval_s: float = 1.5,
-        no_transcript_feedback_interval_s: float = 12.0,
         session_id: str = "voice-dialogue-loop",
         actor_id: str = "darrow",
     ) -> None:
@@ -28,12 +26,10 @@ class VoiceDialogueLoop:
         self.chunk_count = chunk_count
         self.idle_interval_s = idle_interval_s
         self.empty_interval_s = empty_interval_s
-        self.no_transcript_feedback_interval_s = no_transcript_feedback_interval_s
         self.session_id = session_id
         self.actor_id = actor_id
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
-        self._last_no_transcript_feedback_at = 0.0
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -78,17 +74,9 @@ class VoiceDialogueLoop:
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
                 if not transcript:
-                    feedback = self._maybe_build_no_transcript_feedback()
-                    if feedback is not None:
-                        self.body_runtime.update_voice_dialogue_state(
-                            phase="speaking",
-                            last_status="heard_but_no_transcript",
-                            last_reply=feedback.text,
-                        )
-                        self.body_runtime.dispatch_actions([feedback])
                     self.body_runtime.update_voice_dialogue_state(
                         phase="idle",
-                        last_status="heard_but_no_transcript" if feedback is not None else "no_transcript",
+                        last_status="no_transcript",
                         last_transcript="",
                         last_latency_s={
                             "listen_asr": round(listen_asr_s, 2),
@@ -157,34 +145,3 @@ class VoiceDialogueLoop:
 
     def _sleep(self, seconds: float) -> None:
         self._stop_event.wait(max(0.0, seconds))
-
-    def _maybe_build_no_transcript_feedback(self) -> PlaySpeechAction | None:
-        details = self._latest_audio_trace_details()
-        if not details:
-            return None
-        heard_voice = bool(details.get("voice_activity")) or bool(details.get("asr_voice_activity"))
-        if not heard_voice:
-            return None
-        now_ts = time.time()
-        if now_ts - self._last_no_transcript_feedback_at < self.no_transcript_feedback_interval_s:
-            return None
-        self._last_no_transcript_feedback_at = now_ts
-        return PlaySpeechAction(
-            ts=now_ts,
-            source="voice_dialogue.no_transcript_feedback",
-            session_id=self.session_id,
-            actor_id=self.actor_id,
-            text="我听到了，但还没听清。请靠近一点，再说一遍。",
-        )
-
-    def _latest_audio_trace_details(self) -> dict[str, object]:
-        recent_events = getattr(self.body_runtime, "recent_events", None)
-        if not callable(recent_events):
-            return {}
-        for event in reversed(list(recent_events())):
-            if not isinstance(event, dict) or event.get("kind") != "audio_transcript_final":
-                continue
-            details = event.get("details", {})
-            if isinstance(details, dict):
-                return details
-        return {}
