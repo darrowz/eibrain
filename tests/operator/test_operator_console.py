@@ -300,3 +300,50 @@ def test_operator_console_exposes_audio_diagnostics() -> None:
     assert report["audio_diagnostics"]["capture_device"] == "hw:3,0"
     assert report["audio_diagnostics"]["voice_activity"] is True
     assert report["audio_diagnostics"]["transcript"] == "ni hao honjia"
+
+
+def test_operator_console_backfills_audio_diagnostics_from_recent_trace() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_hear_voice": True, "can_transcribe_speech": True},
+            "organs": {
+                "ear": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "capture": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                        "vad": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                        "asr": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[
+            {
+                "kind": "audio_transcript_final",
+                "recorded_at_ts": 123.0,
+                "details": {
+                    "text": "",
+                    "speech_window_summary": "voice activity detected at -32.4 dBFS",
+                    "dbfs": -32.4,
+                    "rms_level": 0.024,
+                    "peak_level": 0.77,
+                    "payload_bytes": 576000,
+                    "capture_device": "plughw:CARD=U4K,DEV=0",
+                    "capture_elapsed_ms": 3140.0,
+                    "asr_elapsed_ms": 0.01,
+                },
+            }
+        ],
+    )
+
+    assert report["audio_diagnostics"]["capture_device"] == "plughw:CARD=U4K,DEV=0"
+    assert report["audio_diagnostics"]["dbfs"] == -32.4
+    assert report["audio_diagnostics"]["capture_status"] == "recent_trace"
+    assert report["audio_diagnostics"]["asr_status"] == "no_transcript"
+    assert report["summary"]["avg_latency_ms"] is not None
+    assert report["latency_metrics"][0]["id"] == "ear.capture.recent"

@@ -47,6 +47,8 @@ class OperatorConsoleApp:
         )
         organ_cards = self._build_organ_cards(organs)
         latency_metrics = self._build_latency_metrics(organs)
+        if not latency_metrics:
+            latency_metrics = self._build_trace_latency_metrics(traces)
         capability_status = self._build_capability_status(capabilities)
         probe_metrics = self._build_probe_metrics(organs)
         runtime_overview = self._build_runtime_overview(
@@ -55,7 +57,7 @@ class OperatorConsoleApp:
             probe_metrics=probe_metrics,
         )
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
-        audio_diagnostics = self._build_audio_diagnostics(organs)
+        audio_diagnostics = self._build_audio_diagnostics(organs, traces=traces)
         visual_diagnostics = self._build_visual_diagnostics(organs)
         dialogue_diagnostics = self._build_dialogue_diagnostics(
             body_snapshot=body_snapshot,
@@ -167,6 +169,28 @@ class OperatorConsoleApp:
                         "elapsed_ms": round(float(elapsed_ms), 2),
                     }
                 )
+        metrics.sort(key=lambda item: float(item["elapsed_ms"]), reverse=True)
+        return metrics
+
+    def _build_trace_latency_metrics(self, traces: list[dict[str, object]]) -> list[dict[str, object]]:
+        details = self._latest_audio_trace_details(traces)
+        if not details:
+            return []
+        metrics: list[dict[str, object]] = []
+        for subfunction, key in (("capture", "capture_elapsed_ms"), ("asr", "asr_elapsed_ms")):
+            elapsed_ms = details.get(key)
+            if not isinstance(elapsed_ms, (int, float)):
+                continue
+            metrics.append(
+                {
+                    "id": f"ear.{subfunction}.recent",
+                    "organ": "ear",
+                    "subfunction": subfunction,
+                    "driver": "recent_trace",
+                    "health": "healthy",
+                    "elapsed_ms": round(float(elapsed_ms), 2),
+                }
+            )
         metrics.sort(key=lambda item: float(item["elapsed_ms"]), reverse=True)
         return metrics
 
@@ -322,10 +346,10 @@ class OperatorConsoleApp:
             "top_detection": detection_details.get("top_detection"),
         }
 
-    def _build_audio_diagnostics(self, organs: dict[str, object]) -> dict[str, object]:
+    def _build_audio_diagnostics(self, organs: dict[str, object], *, traces: list[dict[str, object]] | None = None) -> dict[str, object]:
         ear = organs.get("ear", {})
         if not isinstance(ear, dict):
-            return {"enabled": False}
+            ear = {}
         subfunctions = ear.get("subfunctions", {})
         if not isinstance(subfunctions, dict):
             subfunctions = {}
@@ -341,6 +365,38 @@ class OperatorConsoleApp:
         capture_details = dict(capture.get("details", {})) if isinstance(capture.get("details", {}), dict) else {}
         vad_details = dict(vad.get("details", {})) if isinstance(vad.get("details", {}), dict) else {}
         asr_details = dict(asr.get("details", {})) if isinstance(asr.get("details", {}), dict) else {}
+        trace_details = self._latest_audio_trace_details(traces or [])
+        if trace_details and not capture_details.get("dbfs"):
+            capture_details.update(
+                {
+                    "driver": capture_details.get("driver", "recent_trace"),
+                    "status": "recent_trace",
+                    "capture_device": trace_details.get("capture_device"),
+                    "sample_rate": trace_details.get("sample_rate"),
+                    "channels": trace_details.get("channels"),
+                    "chunk_count": trace_details.get("chunk_count"),
+                    "payload_bytes": trace_details.get("payload_bytes"),
+                    "dbfs": trace_details.get("dbfs"),
+                    "rms_level": trace_details.get("rms_level"),
+                    "peak_level": trace_details.get("peak_level"),
+                    "voice_activity": trace_details.get("voice_activity", bool(trace_details.get("dbfs"))),
+                    "captured_at_ts": trace_details.get("captured_at_ts") or trace_details.get("recorded_at_ts"),
+                    "elapsed_ms": trace_details.get("capture_elapsed_ms"),
+                }
+            )
+        if trace_details and not asr_details.get("transcript"):
+            transcript_from_trace = str(trace_details.get("text", "") or "")
+            asr_details.update(
+                {
+                    "driver": asr_details.get("driver", "recent_trace"),
+                    "status": "transcribed" if transcript_from_trace else "no_transcript",
+                    "transcript": transcript_from_trace,
+                    "voice_activity": trace_details.get("voice_activity", bool(trace_details.get("dbfs"))),
+                    "speech_window_summary": trace_details.get("speech_window_summary"),
+                    "captured_at_ts": trace_details.get("captured_at_ts") or trace_details.get("recorded_at_ts"),
+                    "elapsed_ms": trace_details.get("asr_elapsed_ms"),
+                }
+            )
         transcript = str(asr_details.get("transcript", "") or "")
         return {
             "enabled": bool(capture_details or asr_details),
@@ -366,6 +422,20 @@ class OperatorConsoleApp:
             or vad_details.get("speech_window_summary")
             or capture_details.get("speech_window_summary"),
         }
+
+    @staticmethod
+    def _latest_audio_trace_details(traces: list[dict[str, object]]) -> dict[str, object]:
+        for trace in reversed(traces):
+            if not isinstance(trace, dict) or trace.get("kind") != "audio_transcript_final":
+                continue
+            details = trace.get("details", {})
+            if not isinstance(details, dict):
+                continue
+            merged = dict(details)
+            if "recorded_at_ts" in trace:
+                merged.setdefault("recorded_at_ts", trace.get("recorded_at_ts"))
+            return merged
+        return {}
 
     @staticmethod
     def _build_dialogue_diagnostics(
