@@ -113,7 +113,7 @@ class EarOrgan(BaseOrgan):
     def _capture_health(self, *, now_ts: float) -> tuple[SubfunctionHealth, list[bytes]]:
         if self._driver_kind("capture") == "noop":
             return self._subfunction_health("capture"), []
-        probe = self._driver_probe("capture")
+        probe = self._passive_driver_probe("capture")
         started = time.perf_counter()
         chunks: list[bytes] = []
         error = None
@@ -184,7 +184,7 @@ class EarOrgan(BaseOrgan):
             )
             health = "healthy" if chunks else "degraded"
             return SubfunctionHealth(name="vad", health=health, details=details)
-        probe = self._driver_probe("vad")
+        probe = self._passive_driver_probe("vad")
         return SubfunctionHealth(
             name="vad",
             health=self._normalize_status(probe.status),
@@ -320,16 +320,19 @@ class EarOrgan(BaseOrgan):
         self._cached_driver_probe_at[name] = now_ts
         return probe
 
-    def _passive_asr_probe(self):
-        if "asr" in self._cached_driver_probes:
-            return self._cached_driver_probes["asr"]
+    def _passive_driver_probe(self, name: str):
+        if name in self._cached_driver_probes:
+            return self._cached_driver_probes[name]
         return SimpleNamespace(
             status="healthy",
             details={
-                "driver": self._asr_provider(),
-                "status": "silence_skipped_probe",
+                "driver": self._driver_kind(name),
+                "status": "live_probe_skipped",
             },
         )
+
+    def _passive_asr_probe(self):
+        return self._passive_driver_probe("asr")
 
     def _prewarm_recognizer(self) -> None:
         if not isinstance(self._recognizer, FasterWhisperRecognizer):
