@@ -27,8 +27,8 @@ class EarOrgan(BaseOrgan):
         self._recognizer = self._build_recognizer()
         self._cached_heartbeat: OrganHealth | None = None
         self._cached_heartbeat_at = 0.0
-        self._cached_asr_probe = None
-        self._cached_asr_probe_at = 0.0
+        self._cached_driver_probes: dict[str, object] = {}
+        self._cached_driver_probe_at: dict[str, float] = {}
         self._recognizer_prewarm_error = ""
         self._heartbeat_lock = threading.Lock()
         self._prewarm_recognizer()
@@ -113,7 +113,7 @@ class EarOrgan(BaseOrgan):
     def _capture_health(self, *, now_ts: float) -> tuple[SubfunctionHealth, list[bytes]]:
         if self._driver_kind("capture") == "noop":
             return self._subfunction_health("capture"), []
-        probe = self.drivers["capture"].heartbeat()
+        probe = self._driver_probe("capture")
         started = time.perf_counter()
         chunks: list[bytes] = []
         error = None
@@ -184,7 +184,12 @@ class EarOrgan(BaseOrgan):
             )
             health = "healthy" if chunks else "degraded"
             return SubfunctionHealth(name="vad", health=health, details=details)
-        return self._subfunction_health("vad")
+        probe = self._driver_probe("vad")
+        return SubfunctionHealth(
+            name="vad",
+            health=self._normalize_status(probe.status),
+            details=dict(probe.details),
+        )
 
     def _asr_health(
         self,
@@ -200,7 +205,7 @@ class EarOrgan(BaseOrgan):
         error = None
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
         voice_activity = bool(capture_state.details.get("voice_activity"))
-        probe = self._asr_probe() if voice_activity else self._passive_asr_probe()
+        probe = self._driver_probe("asr") if voice_activity else self._passive_asr_probe()
         if (
             chunks
             and voice_activity
@@ -301,17 +306,20 @@ class EarOrgan(BaseOrgan):
             return "disabled"
         return str(config.driver.extra.get("provider", "sherpa_onnx"))
 
-    def _asr_probe(self):
+    def _driver_probe(self, name: str):
         now_ts = time.time()
-        if self._cached_asr_probe is not None and now_ts - self._cached_asr_probe_at < 60.0:
-            return self._cached_asr_probe
-        self._cached_asr_probe = self.drivers["asr"].heartbeat()
-        self._cached_asr_probe_at = now_ts
-        return self._cached_asr_probe
+        cached = self._cached_driver_probes.get(name)
+        cached_at = self._cached_driver_probe_at.get(name, 0.0)
+        if cached is not None and now_ts - cached_at < 60.0:
+            return cached
+        probe = self.drivers[name].heartbeat()
+        self._cached_driver_probes[name] = probe
+        self._cached_driver_probe_at[name] = now_ts
+        return probe
 
     def _passive_asr_probe(self):
-        if self._cached_asr_probe is not None:
-            return self._cached_asr_probe
+        if "asr" in self._cached_driver_probes:
+            return self._cached_driver_probes["asr"]
         return SimpleNamespace(
             status="healthy",
             details={
