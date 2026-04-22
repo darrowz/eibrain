@@ -33,7 +33,15 @@ class EyeOrgan(BaseOrgan):
     def passive_heartbeat(self) -> OrganHealth:
         if self._cached_heartbeat is not None:
             return self._cached_heartbeat
-        return super().heartbeat()
+        subfunctions = {
+            name: SubfunctionHealth(
+                name=name,
+                health="healthy",
+                details={"driver": self._driver_kind(name), "status": "live_probe_skipped"},
+            )
+            for name in self.subfunction_names
+        }
+        return OrganHealth(organ=self.name, health="healthy", subfunctions=subfunctions)
 
     def heartbeat(self) -> OrganHealth:
         if not self._visual_runtime_enabled():
