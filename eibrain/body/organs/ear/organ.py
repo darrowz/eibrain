@@ -213,7 +213,9 @@ class EarOrgan(BaseOrgan):
         transcript = ""
         error = None
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
-        voice_activity = bool(capture_state.details.get("voice_activity"))
+        dbfs = float(capture_state.details.get("dbfs", -120.0) or -120.0)
+        min_asr_dbfs = self._read_float_config("asr", "min_asr_dbfs", default=-30.0)
+        voice_activity = bool(capture_state.details.get("voice_activity")) and dbfs >= min_asr_dbfs
         provider = self._asr_provider()
         if provider == "faster_whisper":
             probe = self._passive_asr_probe()
@@ -289,7 +291,9 @@ class EarOrgan(BaseOrgan):
                 "transcript": transcript,
                 "transcript_char_count": len(transcript),
                 "voice_activity": capture_state.details.get("voice_activity"),
+                "asr_voice_activity": voice_activity,
                 "dbfs": capture_state.details.get("dbfs"),
+                "min_asr_dbfs": min_asr_dbfs,
                 "sample_count": sample_count,
                 "speech_window_summary": self._summarize_audio(capture_state.details, transcript=transcript),
             }

@@ -105,7 +105,7 @@ def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
                 driver=DriverConfig(
                     kind="command",
                     command=["python"],
-                    extra={"provider": "faster_whisper", "model_name": "Systran/faster-whisper-tiny", "language": "zh", "vad_filter": False},
+                    extra={"provider": "faster_whisper", "model_name": "Systran/faster-whisper-tiny", "language": "zh", "vad_filter": False, "min_asr_dbfs": -120.0},
                 )
             ),
         },
@@ -208,11 +208,12 @@ def test_ear_organ_applies_transcript_replacements(monkeypatch) -> None:
                     command=["python"],
                     extra={
                         "provider": "faster_whisper",
-                        "transcript_replacements": {
-                            "鸿好鸿途": "你好鸿途",
-                            "您好鸿途": "你好鸿途",
+                            "transcript_replacements": {
+                                "鸿好鸿途": "你好鸿途",
+                                "您好鸿途": "你好鸿途",
+                            },
+                            "min_asr_dbfs": -120.0,
                         },
-                    },
                 )
             ),
         },

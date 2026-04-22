@@ -89,6 +89,7 @@ body:
           compute_type: int8
           beam_size: 1
           vad_filter: false
+          min_asr_dbfs: -30.0
           transcript_replacements:
             鸿好鸿途: 你好鸿途
             您好鸿途: 你好鸿途
