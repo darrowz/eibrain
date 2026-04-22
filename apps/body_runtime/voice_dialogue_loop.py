@@ -15,7 +15,7 @@ class VoiceDialogueLoop:
         *,
         body_runtime: BodyRuntimeApp,
         cognitive_runtime: CognitiveRuntimeApp,
-        chunk_count: int = 4,
+        chunk_count: int = 3,
         idle_interval_s: float = 1.0,
         empty_interval_s: float = 1.5,
         session_id: str = "voice-dialogue-loop",

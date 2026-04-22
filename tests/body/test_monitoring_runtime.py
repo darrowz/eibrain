@@ -135,6 +135,49 @@ def test_body_runtime_snapshot_uses_passive_ear_when_voice_loop_enabled() -> Non
     assert snapshot["organs"]["ear"]["organ"] == "ear"
 
 
+def test_body_runtime_snapshot_uses_passive_eye_when_voice_loop_running() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    class _Eye:
+        name = "eye"
+
+        def __init__(self) -> None:
+            self.passive_calls = 0
+            self.active_calls = 0
+
+        def passive_heartbeat(self):
+            self.passive_calls += 1
+            return type(
+                "Health",
+                (),
+                {
+                    "organ": "eye",
+                    "health": "healthy",
+                    "subfunctions": {},
+                    "to_dict": lambda self: {
+                        "organ": "eye",
+                        "health": "healthy",
+                        "subfunctions": {},
+                    },
+                },
+            )()
+
+        def heartbeat(self):
+            self.active_calls += 1
+            raise AssertionError("active eye heartbeat should not run while voice loop is running")
+
+    runtime = BodyRuntimeApp()
+    eye = _Eye()
+    runtime.organs = [eye]
+    runtime.update_voice_dialogue_state(enabled=True, running=True)
+
+    snapshot = runtime.snapshot()
+
+    assert eye.passive_calls == 1
+    assert eye.active_calls == 0
+    assert snapshot["organs"]["eye"]["organ"] == "eye"
+
+
 def test_body_runtime_marks_command_action_error_from_json_status(tmp_path) -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.protocol.actions import MoveHeadAction

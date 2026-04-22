@@ -16,7 +16,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Start eibrain honjia monitoring web")
     parser.add_argument("--config", default="config/eibrain.yaml")
     parser.add_argument("--disable-voice-dialogue-loop", action="store_true")
-    parser.add_argument("--voice-chunk-count", type=int, default=4)
+    parser.add_argument("--voice-chunk-count", type=int, default=3)
     args = parser.parse_args()
 
     config = load_config(args.config)

@@ -30,6 +30,11 @@ class EyeOrgan(BaseOrgan):
             return str(self._frame_path)
         return None
 
+    def passive_heartbeat(self) -> OrganHealth:
+        if self._cached_heartbeat is not None:
+            return self._cached_heartbeat
+        return super().heartbeat()
+
     def heartbeat(self) -> OrganHealth:
         if not self._visual_runtime_enabled():
             return super().heartbeat()

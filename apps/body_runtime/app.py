@@ -290,6 +290,9 @@ class BodyRuntimeApp:
         if organ.name == "ear" and (self.is_speaking() or self.voice_dialogue_state.get("enabled")):
             if hasattr(organ, "passive_heartbeat"):
                 return organ.passive_heartbeat()
+        if organ.name == "eye" and self.voice_dialogue_state.get("running"):
+            if hasattr(organ, "passive_heartbeat"):
+                return organ.passive_heartbeat()
         return organ.heartbeat()
 
     def recent_events(self) -> list[dict[str, object]]:
