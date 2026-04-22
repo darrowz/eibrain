@@ -90,6 +90,13 @@ class LLMRouter:
             payload = json.loads(response.read().decode("utf-8"))
         parts = payload.get("content", [])
         if parts and isinstance(parts, list):
+            text_parts = [
+                str(item.get("text", ""))
+                for item in parts
+                if isinstance(item, dict) and item.get("type") == "text" and item.get("text")
+            ]
+            if text_parts:
+                return "".join(text_parts).strip()
             for item in parts:
                 if isinstance(item, dict) and item.get("type") == "text":
                     return str(item.get("text", ""))
