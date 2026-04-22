@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Kernel-first embodied intelligence system"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0"]
+dependencies = ["PyYAML>=6.0", "faster-whisper>=1.2.1"]
 
 [project.scripts]
 eibrain-body = "apps.body_runtime.__main__:main"
