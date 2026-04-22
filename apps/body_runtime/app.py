@@ -151,6 +151,8 @@ class BodyRuntimeApp:
                         "asr_status": details.get("status"),
                         "asr_voice_activity": details.get("asr_voice_activity"),
                         "min_asr_dbfs": details.get("min_asr_dbfs"),
+                        "recognizer_prewarmed": details.get("recognizer_prewarmed"),
+                        "recognizer_prewarm_error": details.get("recognizer_prewarm_error"),
                         "dbfs": capture_details.get("dbfs"),
                         "rms_level": capture_details.get("rms_level"),
                         "peak_level": capture_details.get("peak_level"),

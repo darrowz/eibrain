@@ -29,6 +29,7 @@ class EarOrgan(BaseOrgan):
         self._cached_driver_probes: dict[str, object] = {}
         self._cached_driver_probe_at: dict[str, float] = {}
         self._recognizer_prewarm_error = ""
+        self._recognizer_prewarmed = False
         self._heartbeat_lock = threading.Lock()
         self._prewarm_recognizer()
 
@@ -285,6 +286,8 @@ class EarOrgan(BaseOrgan):
                 "asr_voice_activity": voice_activity,
                 "dbfs": capture_state.details.get("dbfs"),
                 "min_asr_dbfs": min_asr_dbfs,
+                "recognizer_prewarmed": self._recognizer_prewarmed,
+                "recognizer_prewarm_error": self._recognizer_prewarm_error,
                 "sample_count": sample_count,
                 "speech_window_summary": self._summarize_audio(capture_state.details, transcript=transcript),
             }
@@ -339,12 +342,20 @@ class EarOrgan(BaseOrgan):
         return self._passive_driver_probe("asr")
 
     def _prewarm_recognizer(self) -> None:
+        if isinstance(self._recognizer, SherpaOnnxStreamingRecognizer):
+            try:
+                self._recognizer._get_recognizer(self._recognizer.expected_sample_rate)
+                self._recognizer_prewarmed = True
+            except Exception as exc:  # pragma: no cover - host dependency
+                self._recognizer_prewarm_error = str(exc)
+            return
         if not isinstance(self._recognizer, FasterWhisperRecognizer):
             return
 
         def _load_model() -> None:
             try:
                 self._recognizer._get_model()
+                self._recognizer_prewarmed = True
             except Exception as exc:  # pragma: no cover - host dependency
                 self._recognizer_prewarm_error = str(exc)
 
