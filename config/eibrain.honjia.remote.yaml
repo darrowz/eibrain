@@ -319,6 +319,7 @@ cognition:
     endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
     api_key: ${ANTHROPIC_AUTH_TOKEN}
     temperature: 0.2
+    max_tokens: 80
     supports_vision: false
     experimental: false
   vision_llm:
@@ -327,6 +328,7 @@ cognition:
     endpoint: ${ANTHROPIC_BASE_URL:-https://api.minimaxi.com/anthropic}
     api_key: ${ANTHROPIC_AUTH_TOKEN}
     temperature: 0.2
+    max_tokens: 80
     supports_vision: true
     experimental: true
 vision:

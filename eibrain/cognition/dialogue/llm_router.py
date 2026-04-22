@@ -75,7 +75,7 @@ class LLMRouter:
         body = json.dumps(
             {
                 "model": self.config.model,
-                "max_tokens": 1024,
+                "max_tokens": self.config.max_tokens,
                 "messages": [{"role": "user", "content": content}],
                 "temperature": self.config.temperature,
             }
@@ -110,6 +110,7 @@ class LLMRouter:
                 "model": self.config.model,
                 "messages": [{"role": "user", "content": content}],
                 "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
             }
         ).encode("utf-8")
         headers = {"Content-Type": "application/json"}

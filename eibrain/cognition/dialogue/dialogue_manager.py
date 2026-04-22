@@ -14,7 +14,7 @@ class DialogueManager:
         return memory.summary or ""
 
     @staticmethod
-    def _prepare_for_speech(text: str, *, max_chars: int = 140) -> str:
+    def _prepare_for_speech(text: str, *, max_chars: int = 60) -> str:
         cleaned = " ".join(text.replace("**", "").replace("__", "").split())
         if len(cleaned) <= max_chars:
             return cleaned

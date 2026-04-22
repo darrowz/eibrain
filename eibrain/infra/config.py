@@ -52,6 +52,7 @@ class LLMConfig:
     endpoint: str = ""
     api_key: str = ""
     temperature: float = 0.2
+    max_tokens: int = 256
     supports_vision: bool = False
     experimental: bool = False
 
