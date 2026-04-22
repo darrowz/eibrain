@@ -74,6 +74,12 @@ class BodyRuntimeApp:
             device=str(capture_cfg.driver.extra.get("device", "default")),
             sample_rate=int(capture_cfg.driver.extra.get("sample_rate", 16000)),
             channels=int(capture_cfg.driver.extra.get("channels", 1)),
+            streaming_vad=bool(capture_cfg.driver.extra.get("streaming_vad", False)),
+            vad_frame_ms=int(capture_cfg.driver.extra.get("vad_frame_ms", 80)),
+            vad_rms_threshold=float(capture_cfg.driver.extra.get("vad_rms_threshold", 0.028)),
+            vad_min_voice_ms=int(capture_cfg.driver.extra.get("vad_min_voice_ms", 160)),
+            vad_end_silence_ms=int(capture_cfg.driver.extra.get("vad_end_silence_ms", 360)),
+            vad_pre_roll_ms=int(capture_cfg.driver.extra.get("vad_pre_roll_ms", 240)),
         )
 
     def _make_recognizer(self, asr_cfg):
@@ -162,6 +168,9 @@ class BodyRuntimeApp:
                         "channels": capture_details.get("channels"),
                         "chunk_count": capture_details.get("chunk_count"),
                         "voice_activity": capture_details.get("voice_activity"),
+                        "streaming_vad": capture_details.get("streaming_vad"),
+                        "vad_triggered": capture_details.get("vad_triggered"),
+                        "vad_elapsed_ms": capture_details.get("vad_elapsed_ms"),
                         "captured_at_ts": capture_details.get("captured_at_ts"),
                         "asr_elapsed_ms": details.get("elapsed_ms"),
                         "capture_elapsed_ms": capture_details.get("elapsed_ms"),

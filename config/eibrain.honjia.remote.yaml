@@ -35,6 +35,12 @@ body:
           channels: 2
           chunk_count: 2
           refresh_interval_s: 1.5
+          streaming_vad: true
+          vad_frame_ms: 80
+          vad_rms_threshold: 0.028
+          vad_min_voice_ms: 160
+          vad_end_silence_ms: 360
+          vad_pre_roll_ms: 240
           health_command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m

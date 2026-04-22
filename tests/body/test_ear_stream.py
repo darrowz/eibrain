@@ -64,6 +64,74 @@ def test_arecord_stream_capture_retries_empty_capture(monkeypatch) -> None:
     assert capture.last_command == capture.build_command() + ["-d", "1"]
 
 
+def test_arecord_stream_capture_streaming_vad_stops_after_voice(monkeypatch) -> None:
+    from eibrain.body.ear_stream import ArecordStreamCapture
+
+    frame_bytes = 1600 * 2
+    silence = (0).to_bytes(2, "little", signed=True) * 1600
+    voice = (2000).to_bytes(2, "little", signed=True) * 1600
+    frames = [silence, silence, voice, voice, silence, silence, silence, silence, voice, voice]
+
+    class _Stdout:
+        def __init__(self) -> None:
+            self.frames = list(frames)
+
+        def read(self, size: int) -> bytes:
+            assert size == frame_bytes
+            if not self.frames:
+                return b""
+            return self.frames.pop(0)
+
+    class _Stderr:
+        def read(self) -> bytes:
+            return b""
+
+    class _Process:
+        def __init__(self, command, **kwargs) -> None:
+            self.command = command
+            self.stdout = _Stdout()
+            self.stderr = _Stderr()
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.terminated = True
+            self.returncode = -15
+
+        def wait(self, timeout: float | None = None):
+            self.returncode = self.returncode if self.returncode is not None else 0
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr("eibrain.body.ear_stream.subprocess.Popen", _Process)
+
+    capture = ArecordStreamCapture(
+        device="hw:3,0",
+        sample_rate=16000,
+        channels=1,
+        streaming_vad=True,
+        vad_frame_ms=100,
+        vad_rms_threshold=0.03,
+        vad_min_voice_ms=200,
+        vad_end_silence_ms=300,
+        vad_pre_roll_ms=200,
+    )
+
+    chunks = capture.read_window(2, chunk_bytes=frame_bytes)
+
+    assert len(chunks) == 6
+    assert capture.last_vad_triggered is True
+    assert capture.last_vad_voice_frame_count == 2
+    assert capture.last_vad_frame_count == 7
+    assert capture.last_stdout_bytes == frame_bytes * 6
+    assert capture.last_command == capture.build_command()
+
+
 def test_ear_stream_processor_emits_audio_transcript_observation() -> None:
     from eibrain.body.ear_stream import EarStreamProcessor
 

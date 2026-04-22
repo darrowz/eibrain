@@ -95,6 +95,12 @@ class EarOrgan(BaseOrgan):
             device=str(capture_cfg.driver.extra.get("device", "default")),
             sample_rate=int(capture_cfg.driver.extra.get("sample_rate", 16000)),
             channels=int(capture_cfg.driver.extra.get("channels", 1)),
+            streaming_vad=bool(capture_cfg.driver.extra.get("streaming_vad", False)),
+            vad_frame_ms=int(capture_cfg.driver.extra.get("vad_frame_ms", 80)),
+            vad_rms_threshold=float(capture_cfg.driver.extra.get("vad_rms_threshold", 0.028)),
+            vad_min_voice_ms=int(capture_cfg.driver.extra.get("vad_min_voice_ms", 160)),
+            vad_end_silence_ms=int(capture_cfg.driver.extra.get("vad_end_silence_ms", 360)),
+            vad_pre_roll_ms=int(capture_cfg.driver.extra.get("vad_pre_roll_ms", 240)),
         )
 
     def _build_recognizer(self) -> SherpaOnnxStreamingRecognizer | FasterWhisperRecognizer | None:
@@ -161,6 +167,12 @@ class EarOrgan(BaseOrgan):
                     "capture_stdout_bytes": getattr(self._capture, "last_stdout_bytes", None),
                     "capture_command": getattr(self._capture, "last_command", []),
                     "capture_retry_count": getattr(self._capture, "retry_count", None),
+                    "streaming_vad": getattr(self._capture, "streaming_vad", False),
+                    "vad_rms_threshold": getattr(self._capture, "vad_rms_threshold", None),
+                    "vad_triggered": getattr(self._capture, "last_vad_triggered", False),
+                    "vad_frame_count": getattr(self._capture, "last_vad_frame_count", None),
+                    "vad_voice_frame_count": getattr(self._capture, "last_vad_voice_frame_count", None),
+                    "vad_elapsed_ms": getattr(self._capture, "last_vad_elapsed_ms", None),
                 }
             )
         if error:
