@@ -10,7 +10,6 @@ from eibrain.body.ear_stream import ArecordStreamCapture, pcm_signal_stats
 from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
 from eibrain.body.organs.base import BaseOrgan
 from eibrain.body.runtime_linux import transcribe_pcm_with_faster_whisper_subprocess
-from eibrain.body.runtime_linux import transcribe_pcm_with_sherpa_subprocess
 from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
 
@@ -228,27 +227,14 @@ class EarOrgan(BaseOrgan):
         ):
             try:
                 if provider == "sherpa_onnx" and self._recognizer is not None:
-                    if isinstance(self._recognizer, SherpaOnnxStreamingRecognizer):
-                        if sample_count >= int(self._recognizer.expected_sample_rate * 0.25):
-                            result = transcribe_pcm_with_sherpa_subprocess(
-                                pcm_bytes=b"".join(chunks),
-                                model_dir=str(self._recognizer.model_dir),
-                                model_type=self._recognizer.model_type,
-                                sample_rate=self._capture.sample_rate,
-                                channels=self._capture.channels,
-                                chunk_bytes=max(1, len(chunks[0])) if chunks else 4096,
-                            )
-                            result_details = result.get("details", {})
-                            if result.get("status") == "ok" and isinstance(result_details, dict):
-                                transcript = str(result_details.get("text", "") or "")
-                            elif isinstance(result_details, dict):
-                                error = str(result_details.get("stderr") or result_details.get("reason") or "sherpa_subprocess_failed")
-                    else:
-                        transcript = self._recognizer.transcribe(
-                            chunks,
-                            sample_rate=self._capture.sample_rate,
-                            channels=self._capture.channels,
-                        )
+                    transcript = self._recognizer.transcribe(
+                        chunks,
+                        sample_rate=self._capture.sample_rate,
+                        channels=self._capture.channels,
+                    )
+                    asr_cfg = self.config.subfunctions.get("asr")
+                    asr_extra = asr_cfg.driver.extra if asr_cfg is not None else {}
+                    transcript = self._normalize_transcript(transcript, asr_extra=asr_extra)
                 elif provider == "faster_whisper":
                     asr_cfg = self.config.subfunctions.get("asr")
                     asr_extra = asr_cfg.driver.extra if asr_cfg is not None else {}
