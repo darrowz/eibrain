@@ -48,6 +48,36 @@ def test_sherpa_streaming_recognizer_transcribes_chunks() -> None:
     assert built_sample_rates == [16000]
 
 
+def test_sherpa_streaming_recognizer_handles_string_get_result() -> None:
+    from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
+
+    class _Stream:
+        def accept_waveform(self, sample_rate: int, waveform: list[float]) -> None:
+            return None
+
+        def input_finished(self) -> None:
+            return None
+
+    class _Recognizer:
+        def create_stream(self) -> _Stream:
+            return _Stream()
+
+        def is_ready(self, stream: _Stream) -> bool:
+            return False
+
+        def decode_stream(self, stream: _Stream) -> None:
+            return None
+
+        def get_result(self, stream: _Stream) -> str:
+            return "你好鸿途"
+
+    recognizer = SherpaOnnxStreamingRecognizer(model_dir="/models", recognizer_factory=lambda sample_rate: _Recognizer())
+
+    text = recognizer.transcribe([b"\x00\x00\x10\x00"], sample_rate=16000, channels=1)
+
+    assert text == "你好鸿途"
+
+
 def test_sherpa_streaming_recognizer_downmixes_and_resamples_to_16k() -> None:
     from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 
@@ -80,7 +110,7 @@ def test_sherpa_streaming_recognizer_downmixes_and_resamples_to_16k() -> None:
 
     recognizer.transcribe([b"\x00\x00\x01\x00\x02\x00\x03\x00\x04\x00\x05\x00"], sample_rate=48000, channels=2)
 
-    assert accepted_lengths == [1]
+    assert accepted_lengths == [1, 12800]
 
 
 def test_body_runtime_builds_default_ear_processor_from_config() -> None:

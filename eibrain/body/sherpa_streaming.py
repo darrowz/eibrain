@@ -58,11 +58,24 @@ class SherpaOnnxStreamingRecognizer:
             )
             while hasattr(recognizer, "is_ready") and recognizer.is_ready(stream):
                 recognizer.decode_stream(stream)
+        # Online transducer models need a little trailing silence to flush the
+        # final tokens; decoding once after input_finished can crash on short
+        # utterances in some sherpa-onnx builds.
+        tail_padding = [0.0] * int(self.expected_sample_rate * 0.8)
+        stream.accept_waveform(
+            sample_rate=self.expected_sample_rate,
+            waveform=_to_waveform_buffer(tail_padding),
+        )
         if hasattr(stream, "input_finished"):
             stream.input_finished()
-        if hasattr(recognizer, "decode_stream"):
+        while hasattr(recognizer, "is_ready") and recognizer.is_ready(stream):
             recognizer.decode_stream(stream)
-        result = getattr(stream, "result", None)
+        if hasattr(recognizer, "get_result"):
+            result = recognizer.get_result(stream)
+        else:
+            result = getattr(stream, "result", None)
+        if isinstance(result, str):
+            return result.strip()
         return str(getattr(result, "text", "") or "").strip()
 
     def _normalize_waveform(self, samples: list[float], *, input_sample_rate: int) -> list[float]:
@@ -90,9 +103,9 @@ class SherpaOnnxStreamingRecognizer:
 
         model_dir = Path(self.model_dir).expanduser()
         tokens = str(model_dir / "tokens.txt")
-        encoder = str(model_dir / "encoder.onnx")
-        decoder = str(model_dir / "decoder.onnx")
-        joiner = str(model_dir / "joiner.onnx")
+        encoder = str(self._model_file(model_dir, "encoder.onnx", "encoder-*.onnx"))
+        decoder = str(self._model_file(model_dir, "decoder.onnx", "decoder-*.onnx"))
+        joiner = str(self._model_file(model_dir, "joiner.onnx", "joiner-*.onnx"))
         model_type = self.model_type or self._infer_model_type(model_dir)
 
         if model_type in {"lstm", "conformer", "zipformer", "zipformer2"} and hasattr(sherpa_onnx, "OnlineRecognizer") and hasattr(sherpa_onnx.OnlineRecognizer, "from_transducer"):
@@ -162,3 +175,20 @@ class SherpaOnnxStreamingRecognizer:
         if "conformer" in name:
             return "conformer"
         return "transducer"
+
+    @staticmethod
+    def _model_file(model_dir: Path, preferred_name: str, pattern: str) -> Path:
+        preferred = model_dir / preferred_name
+        if preferred.exists():
+            return preferred
+        candidates = sorted(
+            path
+            for path in model_dir.glob(pattern)
+            if path.is_file() and ".int8." not in path.name
+        )
+        if candidates:
+            return candidates[0]
+        all_candidates = sorted(path for path in model_dir.glob(pattern) if path.is_file())
+        if all_candidates:
+            return all_candidates[0]
+        return preferred
