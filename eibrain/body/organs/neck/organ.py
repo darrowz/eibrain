@@ -19,6 +19,17 @@ class NeckOrgan(BaseOrgan):
         super().__init__(config=config)
         self._last_tracking: dict[str, object] | None = None
 
+    def passive_heartbeat(self) -> OrganHealth:
+        motor_details = {"driver": self._driver_kind("motor"), "status": "live_probe_skipped"}
+        tracking_details = {"driver": self._driver_kind("tracking"), "status": "live_probe_skipped"}
+        if self._last_tracking is not None:
+            tracking_details.update(self._last_tracking)
+        subfunctions = {
+            "motor": SubfunctionHealth(name="motor", health="healthy", details=motor_details),
+            "tracking": SubfunctionHealth(name="tracking", health="healthy", details=tracking_details),
+        }
+        return OrganHealth(organ=self.name, health="healthy", subfunctions=subfunctions)
+
     def heartbeat(self) -> OrganHealth:
         if self._driver_kind("tracking") == "noop":
             return super().heartbeat()

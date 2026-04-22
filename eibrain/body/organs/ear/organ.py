@@ -69,7 +69,15 @@ class EarOrgan(BaseOrgan):
     def passive_heartbeat(self) -> OrganHealth:
         if self._cached_heartbeat is not None:
             return self._cached_heartbeat
-        return super().heartbeat()
+        subfunctions = {
+            name: SubfunctionHealth(
+                name=name,
+                health="healthy",
+                details=dict(self._passive_driver_probe(name).details),
+            )
+            for name in self.subfunction_names
+        }
+        return OrganHealth(organ=self.name, health="healthy", subfunctions=subfunctions)
 
     def _audio_runtime_enabled(self) -> bool:
         return (

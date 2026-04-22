@@ -287,7 +287,7 @@ class BodyRuntimeApp:
         return outcomes
 
     def _snapshot_organ(self, organ):
-        if organ.name == "ear" and (self.is_speaking() or self.voice_dialogue_state.get("enabled")):
+        if organ.name in {"ear", "mouth", "neck"} and self.voice_dialogue_state.get("running"):
             if hasattr(organ, "passive_heartbeat"):
                 return organ.passive_heartbeat()
         if organ.name == "eye" and self.voice_dialogue_state.get("running"):

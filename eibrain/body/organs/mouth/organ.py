@@ -19,6 +19,21 @@ class MouthOrgan(BaseOrgan):
         self._last_plan: dict[str, object] | None = None
         self._last_playback: dict[str, object] | None = None
 
+    def passive_heartbeat(self) -> OrganHealth:
+        plan_details = {"driver": self._driver_kind("tts_plan"), "status": "live_probe_skipped"}
+        playback_details = {"driver": self._driver_kind("tts_playback"), "status": "live_probe_skipped"}
+        plan_details.update(self._voice_config_details())
+        playback_details.update(self._voice_config_details())
+        if self._last_plan is not None:
+            plan_details.update(self._last_plan)
+        if self._last_playback is not None:
+            playback_details.update(self._last_playback)
+        subfunctions = {
+            "tts_plan": SubfunctionHealth(name="tts_plan", health="healthy", details=plan_details),
+            "tts_playback": SubfunctionHealth(name="tts_playback", health="healthy", details=playback_details),
+        }
+        return OrganHealth(organ=self.name, health="healthy", subfunctions=subfunctions)
+
     def heartbeat(self) -> OrganHealth:
         if self._driver_kind("tts_plan") == "noop" and self._driver_kind("tts_playback") == "noop":
             return super().heartbeat()
