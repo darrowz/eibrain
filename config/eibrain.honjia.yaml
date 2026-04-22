@@ -94,7 +94,7 @@ body:
           model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
           model_type: lstm
           language: zh
-          min_asr_dbfs: -30.0
+          min_asr_dbfs: -35.0
           transcript_replacements:
             鸿好鸿途: 你好鸿途
             您好鸿途: 你好鸿途
