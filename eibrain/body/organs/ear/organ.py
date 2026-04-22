@@ -205,14 +205,17 @@ class EarOrgan(BaseOrgan):
         error = None
         sample_count = int(capture_state.details.get("sample_count", 0) or 0)
         voice_activity = bool(capture_state.details.get("voice_activity"))
-        probe = self._driver_probe("asr") if voice_activity else self._passive_asr_probe()
+        provider = self._asr_provider()
+        if provider == "faster_whisper":
+            probe = self._passive_asr_probe()
+        else:
+            probe = self._driver_probe("asr") if voice_activity else self._passive_asr_probe()
         if (
             chunks
             and voice_activity
             and self._capture is not None
         ):
             try:
-                provider = self._asr_provider()
                 if provider == "sherpa_onnx" and self._recognizer is not None:
                     if isinstance(self._recognizer, SherpaOnnxStreamingRecognizer):
                         if sample_count >= int(self._recognizer.expected_sample_rate * 0.25):
