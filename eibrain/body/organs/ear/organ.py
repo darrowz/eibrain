@@ -110,6 +110,7 @@ class EarOrgan(BaseOrgan):
                 compute_type=str(extra.get("compute_type", "int8")),
                 beam_size=int(extra.get("beam_size", 1)),
                 vad_filter=bool(extra.get("vad_filter", False)),
+                python_executable=str(extra.get("python_executable", "/usr/bin/python3")),
             )
         if provider != "sherpa_onnx":
             return None

@@ -8,6 +8,7 @@ import tempfile
 import wave
 
 from eibrain.body.runtime_linux import resolve_faster_whisper_model_path
+from eibrain.body.runtime_linux import transcribe_pcm_with_faster_whisper_subprocess
 
 
 @dataclass(slots=True)
@@ -18,11 +19,30 @@ class FasterWhisperRecognizer:
     beam_size: int = 1
     vad_filter: bool = False
     device: str = "cpu"
+    python_executable: str = "/usr/bin/python3"
     _model: object | None = field(default=None, init=False)
 
     def transcribe(self, pcm_chunks: list[bytes], *, sample_rate: int, channels: int) -> str:
         if not pcm_chunks:
             return ""
+        if self._model is None and not self._can_import_faster_whisper():
+            result = transcribe_pcm_with_faster_whisper_subprocess(
+                pcm_bytes=b"".join(pcm_chunks),
+                model_name=self.model_name,
+                sample_rate=sample_rate,
+                channels=channels,
+                language=self.language,
+                compute_type=self.compute_type,
+                beam_size=self.beam_size,
+                vad_filter=self.vad_filter,
+                python_executable=self.python_executable,
+            )
+            details = result.get("details", {})
+            if result.get("status") == "ok" and isinstance(details, dict):
+                return str(details.get("text", "") or "").strip()
+            if isinstance(details, dict):
+                raise RuntimeError(str(details.get("stderr") or details.get("reason") or "faster_whisper_failed"))
+            raise RuntimeError("faster_whisper_failed")
         wav_path = self._write_wav(pcm_chunks=pcm_chunks, sample_rate=sample_rate, channels=channels)
         try:
             segments, _info = self._get_model().transcribe(
@@ -45,6 +65,14 @@ class FasterWhisperRecognizer:
                 compute_type=self.compute_type,
             )
         return self._model
+
+    @staticmethod
+    def _can_import_faster_whisper() -> bool:
+        try:
+            import faster_whisper  # noqa: F401  # pragma: no cover - optional host dependency
+        except Exception:
+            return False
+        return True
 
     @staticmethod
     def _write_wav(*, pcm_chunks: list[bytes], sample_rate: int, channels: int) -> Path:
