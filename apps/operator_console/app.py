@@ -389,9 +389,11 @@ class OperatorConsoleApp:
             asr_details.update(
                 {
                     "driver": asr_details.get("driver", "recent_trace"),
-                    "status": "transcribed" if transcript_from_trace else "no_transcript",
+                    "status": trace_details.get("asr_status") or ("transcribed" if transcript_from_trace else "no_transcript"),
                     "transcript": transcript_from_trace,
                     "voice_activity": trace_details.get("voice_activity", bool(trace_details.get("dbfs"))),
+                    "asr_voice_activity": trace_details.get("asr_voice_activity"),
+                    "min_asr_dbfs": trace_details.get("min_asr_dbfs"),
                     "speech_window_summary": trace_details.get("speech_window_summary"),
                     "captured_at_ts": trace_details.get("captured_at_ts") or trace_details.get("recorded_at_ts"),
                     "elapsed_ms": trace_details.get("asr_elapsed_ms"),

@@ -336,6 +336,7 @@ def test_operator_console_backfills_audio_diagnostics_from_recent_trace() -> Non
                     "capture_device": "plughw:CARD=U4K,DEV=0",
                     "capture_elapsed_ms": 3140.0,
                     "asr_elapsed_ms": 0.01,
+                    "asr_status": "below_asr_threshold",
                 },
             }
         ],
@@ -344,6 +345,6 @@ def test_operator_console_backfills_audio_diagnostics_from_recent_trace() -> Non
     assert report["audio_diagnostics"]["capture_device"] == "plughw:CARD=U4K,DEV=0"
     assert report["audio_diagnostics"]["dbfs"] == -32.4
     assert report["audio_diagnostics"]["capture_status"] == "recent_trace"
-    assert report["audio_diagnostics"]["asr_status"] == "no_transcript"
+    assert report["audio_diagnostics"]["asr_status"] == "below_asr_threshold"
     assert report["summary"]["avg_latency_ms"] is not None
     assert report["latency_metrics"][0]["id"] == "ear.capture.recent"

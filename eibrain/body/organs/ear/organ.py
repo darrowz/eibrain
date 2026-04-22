@@ -269,7 +269,12 @@ class EarOrgan(BaseOrgan):
         details = self._merge_probe_details(
             probe=probe.details,
             elapsed_ms=elapsed_ms,
-            status="transcribed" if transcript else ("silence" if chunks else "capture_unavailable"),
+            status=self._asr_status(
+                transcript=transcript,
+                chunks=chunks,
+                raw_voice_activity=bool(capture_state.details.get("voice_activity")),
+                gated_voice_activity=voice_activity,
+            ),
         )
         details.update(
             {
@@ -363,6 +368,22 @@ class EarOrgan(BaseOrgan):
                 if find_text:
                     normalized = normalized.replace(find_text, replace_text)
         return EarOrgan._compact_repeated_sentence(normalized)
+
+    @staticmethod
+    def _asr_status(
+        *,
+        transcript: str,
+        chunks: list[bytes],
+        raw_voice_activity: bool,
+        gated_voice_activity: bool,
+    ) -> str:
+        if transcript:
+            return "transcribed"
+        if not chunks:
+            return "capture_unavailable"
+        if raw_voice_activity and not gated_voice_activity:
+            return "below_asr_threshold"
+        return "silence"
 
     @staticmethod
     def _compact_repeated_sentence(transcript: str) -> str:

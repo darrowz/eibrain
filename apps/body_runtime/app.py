@@ -148,6 +148,9 @@ class BodyRuntimeApp:
                     "details": {
                         "text": transcript,
                         "speech_window_summary": details.get("speech_window_summary", ""),
+                        "asr_status": details.get("status"),
+                        "asr_voice_activity": details.get("asr_voice_activity"),
+                        "min_asr_dbfs": details.get("min_asr_dbfs"),
                         "dbfs": capture_details.get("dbfs"),
                         "rms_level": capture_details.get("rms_level"),
                         "peak_level": capture_details.get("peak_level"),
