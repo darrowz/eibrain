@@ -16,6 +16,8 @@ class LLMRouter:
     def generate(self, prompt: str) -> str:
         if not prompt.strip():
             return ""
+        if self.config.provider == "echo":
+            return f"reply: {prompt.splitlines()[-1]}"
         if self._uses_anthropic_api():
             try:
                 return self._generate_anthropic_compatible(prompt)
@@ -26,7 +28,7 @@ class LLMRouter:
                 return self._generate_openai_compatible(prompt)
             except (URLError, OSError, ValueError, KeyError):
                 pass
-        return f"reply: {prompt.splitlines()[-1]}"
+        return ""
 
     def generate_vision(self, prompt: str, image_urls: list[str]) -> str:
         if not prompt.strip():
@@ -88,6 +90,10 @@ class LLMRouter:
         req = request.Request(self._anthropic_messages_url(), data=body, method="POST", headers=headers)
         with request.urlopen(req, timeout=30) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        return self._extract_anthropic_text(payload)
+
+    @staticmethod
+    def _extract_anthropic_text(payload: dict[str, object]) -> str:
         parts = payload.get("content", [])
         if parts and isinstance(parts, list):
             text_parts = [
@@ -103,6 +109,8 @@ class LLMRouter:
             for item in parts:
                 if isinstance(item, dict) and item.get("text"):
                     return str(item.get("text", ""))
+        if isinstance(payload.get("text"), str):
+            return str(payload["text"]).strip()
         return ""
 
     def _generate_openai_compatible(self, prompt: str, image_urls: list[str] | None = None) -> str:

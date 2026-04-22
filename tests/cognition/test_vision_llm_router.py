@@ -133,8 +133,17 @@ def test_llm_router_falls_back_when_remote_provider_errors(monkeypatch) -> None:
     text_result = router.generate("hello world")
     vision_result = router.generate_vision("describe", ["https://example.com/frame.jpg"])
 
-    assert text_result == "reply: hello world"
+    assert text_result == ""
     assert vision_result.startswith("vision-reply:")
+
+
+def test_llm_router_echo_provider_is_the_only_text_echo() -> None:
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    router = LLMRouter(LLMConfig(provider="echo"))
+
+    assert router.generate("hello world") == "reply: hello world"
 
 
 def test_llm_router_uses_openai_compatible_image_url_shape(monkeypatch) -> None:
