@@ -120,6 +120,19 @@ class VoiceDialogueLoop:
                         "speak": round(speak_s, 2),
                         "total": round(time.perf_counter() - turn_started, 2),
                     },
+                    last_completed_turn={
+                        "turn_count": turn_count,
+                        "transcript": transcript,
+                        "reply": reply,
+                        "status": status,
+                        "latency_s": {
+                            "listen_asr": round(listen_asr_s, 2),
+                            "think": round(think_s, 2),
+                            "speak": round(speak_s, 2),
+                            "total": round(time.perf_counter() - turn_started, 2),
+                        },
+                        "completed_at_ts": time.time(),
+                    },
                 )
                 self._sleep(self.idle_interval_s)
             except Exception as exc:  # pragma: no cover - hardware loop resilience

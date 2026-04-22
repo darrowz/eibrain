@@ -393,6 +393,7 @@ class OperatorConsoleApp:
             "last_reply": loop.get("last_reply") or cognitive_snapshot.get("last_reply", ""),
             "last_error": loop.get("last_error", ""),
             "last_latency_s": loop.get("last_latency_s", {}),
+            "last_completed_turn": loop.get("last_completed_turn", {}),
             "updated_at_ts": loop.get("updated_at_ts"),
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),

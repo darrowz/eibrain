@@ -39,6 +39,7 @@ class BodyRuntimeApp:
             "last_status": "idle",
             "last_error": "",
             "last_latency_s": {},
+            "last_completed_turn": {},
             "current_phase_elapsed_s": 0.0,
             "updated_at_ts": None,
         }
@@ -116,7 +117,6 @@ class BodyRuntimeApp:
         ear = next((organ for organ in self.organs if organ.name == "ear"), None)
         if ear is not None and hasattr(ear, "heartbeat"):
             original_chunk_count = getattr(ear, "_chunk_count", None)
-            original_cached_heartbeat = getattr(ear, "_cached_heartbeat", None)
             if hasattr(ear, "_chunk_count"):
                 ear._chunk_count = chunk_count
             if hasattr(ear, "_cached_heartbeat"):
@@ -126,10 +126,10 @@ class BodyRuntimeApp:
             finally:
                 if hasattr(ear, "_chunk_count") and original_chunk_count is not None:
                     ear._chunk_count = original_chunk_count
-                if hasattr(ear, "_cached_heartbeat"):
-                    ear._cached_heartbeat = original_cached_heartbeat
             asr_state = heartbeat.subfunctions.get("asr")
+            capture_state = heartbeat.subfunctions.get("capture")
             details = asr_state.details if asr_state is not None else {}
+            capture_details = capture_state.details if capture_state is not None else {}
             transcript = str(details.get("transcript", "") or "")
             observation = AudioTranscriptFinal(
                 ts=time.time(),
@@ -148,6 +148,13 @@ class BodyRuntimeApp:
                     "details": {
                         "text": transcript,
                         "speech_window_summary": details.get("speech_window_summary", ""),
+                        "dbfs": capture_details.get("dbfs"),
+                        "rms_level": capture_details.get("rms_level"),
+                        "peak_level": capture_details.get("peak_level"),
+                        "payload_bytes": capture_details.get("payload_bytes"),
+                        "capture_device": capture_details.get("capture_device"),
+                        "asr_elapsed_ms": details.get("elapsed_ms"),
+                        "capture_elapsed_ms": capture_details.get("elapsed_ms"),
                     },
                 }
             )
