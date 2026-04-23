@@ -95,6 +95,8 @@ class OpenClawConfig:
     endpoint: str = ""
     api_key: str = ""
     timeout_s: float = 5.0
+    agent_id: str = ""
+    workspace_id: str = ""
 
 
 @dataclass(slots=True)

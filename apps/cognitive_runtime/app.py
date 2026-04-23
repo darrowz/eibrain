@@ -9,7 +9,7 @@ from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.learning.adaptation import AdaptationEngine
 from eibrain.learning.evaluation import EvaluationEngine
 from eibrain.learning.review import SelfReviewEngine
-from eibrain.memory.adapters.openclaw import OpenClawMemoryAdapter
+from eibrain.memory.adapters.factory import build_memory_adapter
 from eibrain.memory.contracts import MemoryQuery
 from eibrain.protocol.observations import AudioTranscriptFinal
 from eibrain.skills.compiler import SkillCompiler
@@ -21,7 +21,7 @@ from eibrain.vision.minimax_mcp import MiniMaxMCPAdapter
 class CognitiveRuntimeApp:
     def __init__(self, *, config: EIBrainConfig | None = None, vision_adapter=None) -> None:
         self.config = config or EIBrainConfig()
-        self.memory = OpenClawMemoryAdapter(self.config.memory.openclaw)
+        self.memory = build_memory_adapter(self.config.memory.openclaw)
         self.planner = IntentPlanner(llm_router=LLMRouter(self.config.cognition.llm))
         self.compiler = SkillCompiler()
         self.review = SelfReviewEngine()

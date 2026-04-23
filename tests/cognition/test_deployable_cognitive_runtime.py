@@ -39,6 +39,27 @@ def test_cognitive_runtime_uses_yaml_configured_services(tmp_path) -> None:
     assert "hello" in actions[0].text
 
 
+def test_cognitive_runtime_builds_eimemory_rpc_adapter_from_config(tmp_path) -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "memory:",
+                "  openclaw:",
+                "    provider: eimemory_rpc",
+                "    endpoint: http://127.0.0.1:8091/",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = CognitiveRuntimeApp.from_config_path(config_path)
+
+    assert runtime.memory.__class__.__name__ == "EIMemoryRPCAdapter"
+
+
 def test_cognitive_runtime_can_handle_visual_focus_with_mcp_adapter() -> None:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
 

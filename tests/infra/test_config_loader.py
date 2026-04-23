@@ -48,6 +48,33 @@ def test_load_config_reads_unified_yaml_and_expands_env(tmp_path) -> None:
     assert config.memory.openclaw.provider == "in_memory"
 
 
+def test_load_config_reads_eimemory_rpc_fields(tmp_path) -> None:
+    from eibrain.infra.config import load_config
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "memory:",
+                "  openclaw:",
+                "    provider: eimemory_rpc",
+                "    endpoint: http://127.0.0.1:8091/",
+                "    timeout_s: 1.5",
+                "    agent_id: honxin",
+                "    workspace_id: honjia-prod",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.memory.openclaw.provider == "eimemory_rpc"
+    assert config.memory.openclaw.endpoint == "http://127.0.0.1:8091/"
+    assert config.memory.openclaw.agent_id == "honxin"
+    assert config.memory.openclaw.workspace_id == "honjia-prod"
+
+
 def test_load_config_supports_env_defaults(tmp_path) -> None:
     from eibrain.infra.config import load_config
 
