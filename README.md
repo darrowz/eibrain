@@ -33,6 +33,18 @@ The configuration supports:
 - honjia monitoring web settings
 - environment variable expansion through `${VAR_NAME}`
 
+## Memory Endpoint
+
+`eibrain` should connect to a running `eimemory` service through `EIMEMORY_ENDPOINT`, for example `http://127.0.0.1:8091/`.
+
+Keep these concerns separate:
+
+- code checkout paths such as `/dev-project/eimemory`
+- deployed runtime paths such as `/opt/eimemory/current`
+- the actual integration contract, which is the RPC endpoint address
+
+`eibrain` must not depend on the `eimemory` repository path at runtime.
+
 ## Default Deployment Layout
 
 The default deployment root is `/home/${USER}/eibrain`, shared by both `honjia` and `honxin`.

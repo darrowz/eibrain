@@ -360,7 +360,9 @@ monitoring:
   port: 18080
 memory:
   openclaw:
-    provider: in_memory
-    endpoint: ''
+    provider: eimemory_rpc
+    endpoint: ${EIMEMORY_ENDPOINT:-http://127.0.0.1:8091/}
     api_key: ${OPENCLAW_API_KEY}
-    timeout_s: 5.0
+    timeout_s: 3.0
+    agent_id: honxin
+    workspace_id: honjia
