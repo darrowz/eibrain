@@ -436,7 +436,7 @@ class MonitoringWebServer:
     const refreshMs = 2000;
 
     function healthClass(value) {{
-      if (value === 'healthy' || value === 'normal') return 'healthy';
+      if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned') return 'healthy';
       if (value === 'unavailable' || value === 'error') return 'unavailable';
       return 'degraded';
     }}
@@ -466,6 +466,7 @@ class MonitoringWebServer:
       document.getElementById('hero-avg-latency').textContent = fmtLatency(summary.avg_latency_ms);
       const cards = [
         ['Healthy modules', `${{summary.healthy_subfunction_count ?? 0}} / ${{summary.subfunction_count ?? 0}}`, 'Healthy subfunctions across all organs'],
+        ['Live data', `${{summary.live_data_subfunction_count ?? 0}} / ${{summary.subfunction_count ?? 0}}`, 'Subfunctions with fresh runtime output'],
         ['Enabled capabilities', `${{summary.enabled_capability_count ?? 0}} / ${{summary.capability_count ?? 0}}`, 'Current embodied capability coverage'],
         ['Warning count', String(summary.warning_count ?? 0), 'Active diagnostic warnings'],
         ['Degraded organs', String(summary.degraded_organ_count ?? 0), 'Organs needing attention'],
@@ -490,10 +491,11 @@ class MonitoringWebServer:
               <div class="muted">${{card.name}}</div>
               <h2>${{card.label}}</h2>
             </div>
-            <span class="health-tag ${{healthClass(card.health)}}">${{card.health}}</span>
+            <span class="health-tag ${{healthClass(card.data_health || card.health)}}">${{card.data_status || card.health}}</span>
           </div>
           <div class="mini-grid">
             <div class="mini-card"><div class="muted">Healthy subfunctions</div><div class="metric-value" style="font-size:22px;">${{card.healthy_subfunctions}}</div></div>
+            <div class="mini-card"><div class="muted">Live data</div><div class="metric-value" style="font-size:22px;">${{card.live_data_subfunctions ?? 0}} / ${{card.subfunction_count ?? 0}}</div></div>
             <div class="mini-card"><div class="muted">Avg latency</div><div class="metric-value" style="font-size:22px;">${{fmtLatency(card.avg_latency_ms)}}</div></div>
             <div class="mini-card"><div class="muted">Degraded subfunctions</div><div class="metric-value" style="font-size:22px;">${{card.degraded_subfunctions}}</div></div>
             <div class="mini-card"><div class="muted">Max latency</div><div class="metric-value" style="font-size:22px;">${{fmtLatency(card.max_latency_ms)}}</div></div>
@@ -503,9 +505,9 @@ class MonitoringWebServer:
               <div class="subfunction-item">
                 <div class="sub-top">
                   <strong>${{sub.name}}</strong>
-                  <span class="health-tag ${{healthClass(sub.health)}}">${{sub.health}}</span>
+                  <span class="health-tag ${{healthClass(sub.data_health || sub.health)}}">${{sub.data_status || sub.health}}</span>
                 </div>
-                <div class="muted">Driver <span class="driver-tag">${{sub.driver}}</span> · Status ${{sub.status || '—'}}</div>
+                <div class="muted">Driver <span class="driver-tag">${{sub.driver}}</span> · Health ${{sub.health || '—'}} · Status ${{sub.status || '—'}}</div>
                 <div class="metric-label">${{sub.visual_summary || (sub.probe?.device ? `device=${{sub.probe.device}} · ${{fmtBool(sub.probe.device_exists)}}` : (sub.error || 'No active error'))}}</div>
                 <div class="latency-bar"><span style="width:${{Math.min(100, (sub.elapsed_ms || 0) / 2)}}%"></span></div>
                 <div class="metric-label">${{fmtLatency(sub.elapsed_ms)}}</div>
@@ -581,8 +583,9 @@ class MonitoringWebServer:
       const identityCandidates = visual.identity_candidates || [];
       document.getElementById('vision-summary').innerHTML = [
         ['Frame', visual.frame_available ? 'live' : 'missing'],
-        ['Detection', visual.detection_health || 'unknown'],
-        ['Identity', visual.identity_health || 'unknown'],
+        ['Data', visual.data_status || 'unknown'],
+        ['Detection', visual.detection_status || visual.detection_health || 'unknown'],
+        ['Identity', visual.identity_status || visual.identity_health || 'unknown'],
         ['Targets', String(visual.detection_count ?? 0)],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 

@@ -115,23 +115,39 @@ class OperatorConsoleApp:
                 if isinstance(elapsed_ms, (int, float)):
                     latencies.append(float(elapsed_ms))
                 visual_summary = details.get("scene_summary") or details.get("identity_summary")
+                status = str(details.get("status", sub_snapshot.get("health", "unknown")))
+                data_status = self._subfunction_data_status(
+                    organ_name=organ_name,
+                    sub_name=str(sub_name),
+                    status=status,
+                    details=details,
+                )
                 entries.append(
                     {
                         "name": sub_name,
                         "health": sub_snapshot.get("health", "unknown"),
+                        "data_health": self._data_health(data_status, str(sub_snapshot.get("health", "unknown"))),
+                        "data_status": data_status,
                         "driver": details.get("driver", "unknown"),
                         "elapsed_ms": elapsed_ms,
-                        "status": details.get("status", sub_snapshot.get("health", "unknown")),
+                        "status": status,
                         "error": details.get("error") or details.get("reason") or details.get("stderr", ""),
                         "visual_summary": visual_summary,
                         "probe": probe_details,
                     }
                 )
+            live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
+            data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
                     "name": organ_name,
                     "label": self.ORGAN_LABELS.get(organ_name, organ_name.title()),
                     "health": snapshot.get("health", "unknown"),
+                    "data_health": self._data_health(data_status, str(snapshot.get("health", "unknown"))),
+                    "data_status": data_status,
+                    "live_data_subfunctions": live_data_count,
+                    "waiting_data_subfunctions": waiting_data_count,
                     "subfunction_count": len(entries),
                     "healthy_subfunctions": sum(1 for entry in entries if entry["health"] == "healthy"),
                     "degraded_subfunctions": sum(1 for entry in entries if entry["health"] != "healthy"),
@@ -223,6 +239,8 @@ class OperatorConsoleApp:
             "p95_latency_ms": p95_latency,
             "healthy_subfunction_count": runtime_overview["healthy_subfunction_count"],
             "subfunction_count": runtime_overview["subfunction_count"],
+            "live_data_subfunction_count": runtime_overview["live_data_subfunction_count"],
+            "waiting_data_subfunction_count": runtime_overview["waiting_data_subfunction_count"],
             "real_driver_count": runtime_overview["real_driver_count"],
             "noop_driver_count": runtime_overview["noop_driver_count"],
             "unavailable_probe_count": sum(1 for probe in probe_metrics if probe["health"] == "unavailable"),
@@ -237,6 +255,8 @@ class OperatorConsoleApp:
     ) -> dict[str, object]:
         subfunction_count = sum(int(card["subfunction_count"]) for card in organ_cards)
         healthy_subfunction_count = sum(int(card["healthy_subfunctions"]) for card in organ_cards)
+        live_data_subfunction_count = sum(int(card.get("live_data_subfunctions", 0)) for card in organ_cards)
+        waiting_data_subfunction_count = sum(int(card.get("waiting_data_subfunctions", 0)) for card in organ_cards)
         return {
             "node_id": body_snapshot.get("node_id", "unknown"),
             "degradation_mode": body_snapshot.get("degradation_mode", "unknown"),
@@ -244,6 +264,8 @@ class OperatorConsoleApp:
             "recent_event_count": body_snapshot.get("recent_event_count", 0),
             "subfunction_count": subfunction_count,
             "healthy_subfunction_count": healthy_subfunction_count,
+            "live_data_subfunction_count": live_data_subfunction_count,
+            "waiting_data_subfunction_count": waiting_data_subfunction_count,
             "real_driver_count": sum(1 for probe in probe_metrics if probe["driver"] != "noop"),
             "noop_driver_count": sum(1 for probe in probe_metrics if probe["driver"] == "noop"),
         }
@@ -327,8 +349,11 @@ class OperatorConsoleApp:
             identity_candidates = []
         frame_path = detection_details.get("frame_path") or camera_details.get("frame_path")
         frame_captured_at_ts = detection_details.get("frame_captured_at_ts") or camera_details.get("frame_captured_at_ts")
+        data_status = "live" if frame_path else "waiting_for_frame"
         return {
             "enabled": bool(frame_path or detections or identity_candidates),
+            "data_health": "healthy" if frame_path else "degraded",
+            "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
             "frame_captured_at_ts": frame_captured_at_ts,
@@ -340,8 +365,8 @@ class OperatorConsoleApp:
             "detection_count": len(detections),
             "detections": detections,
             "identity_candidates": identity_candidates,
-            "scene_summary": detection_details.get("scene_summary", "no visual diagnostics yet"),
-            "identity_summary": identity_details.get("identity_summary", "identity chain inactive"),
+            "scene_summary": detection_details.get("scene_summary", "waiting for camera/detection data"),
+            "identity_summary": identity_details.get("identity_summary", "waiting for identity data"),
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
         }
@@ -489,6 +514,47 @@ class OperatorConsoleApp:
             "healthy": 2,
         }.get(str(probe.get("health", "unknown")), 3)
         return (priority, str(probe.get("id", "")))
+
+    @staticmethod
+    def _data_health(data_status: str, fallback_health: str = "unknown") -> str:
+        if data_status in {"live", "recent_trace", "played", "planned"}:
+            return "healthy"
+        if fallback_health == "unavailable":
+            return "unavailable"
+        if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
+            return "degraded"
+        return "degraded"
+
+    @staticmethod
+    def _subfunction_data_status(
+        *,
+        organ_name: str,
+        sub_name: str,
+        status: str,
+        details: dict[str, object],
+    ) -> str:
+        if status == "live_probe_skipped":
+            return "waiting_for_data"
+        if organ_name == "eye":
+            if details.get("frame_path") or details.get("frame_captured_at_ts"):
+                return "live"
+            return "waiting_for_frame"
+        if organ_name == "mouth":
+            if details.get("played_at_ts"):
+                return "played"
+            if details.get("planned_at_ts"):
+                return "planned"
+            return "waiting_for_action"
+        if organ_name == "neck":
+            if details.get("tracked_at_ts") or details.get("target_angle") is not None:
+                return "live"
+            return "waiting_for_target"
+        if organ_name == "ear":
+            if details.get("captured_at_ts") or details.get("payload_bytes") or details.get("transcript"):
+                return "live"
+        if details.get("elapsed_ms") is not None:
+            return "live"
+        return status or "waiting_for_data"
 
     @staticmethod
     def _extract_probe_details(details: dict[str, Any]) -> dict[str, object]:

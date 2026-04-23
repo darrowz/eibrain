@@ -241,6 +241,48 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
     assert report["visual_diagnostics"]["identity_candidates"][0]["candidate_id"] == "unknown-face-1"
 
 
+def test_operator_console_distinguishes_health_from_live_data() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True, "can_speak": True, "can_orient_head": True},
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                        "detection": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                    },
+                },
+                "neck": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "tracking": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                    },
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    eye_card = next(card for card in report["organ_cards"] if card["name"] == "eye")
+    neck_card = next(card for card in report["organ_cards"] if card["name"] == "neck")
+
+    assert eye_card["health"] == "healthy"
+    assert eye_card["data_health"] == "degraded"
+    assert eye_card["data_status"] == "waiting_for_data"
+    assert eye_card["live_data_subfunctions"] == 0
+    assert eye_card["subfunctions"][0]["data_status"] == "waiting_for_data"
+    assert neck_card["data_status"] == "waiting_for_data"
+    assert report["summary"]["live_data_subfunction_count"] == 0
+    assert report["summary"]["waiting_data_subfunction_count"] == 3
+    assert report["visual_diagnostics"]["data_status"] == "waiting_for_frame"
+
+
 def test_operator_console_exposes_audio_diagnostics() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 
