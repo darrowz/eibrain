@@ -60,6 +60,42 @@ def test_cognitive_runtime_builds_eimemory_rpc_adapter_from_config(tmp_path) -> 
     assert runtime.memory.__class__.__name__ == "EIMemoryRPCAdapter"
 
 
+
+def test_cognitive_runtime_uses_eimemory_rpc_memory_in_handle_observation(monkeypatch, tmp_path) -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "cognition:",
+                "  llm:",
+                "    provider: echo",
+                "memory:",
+                "  openclaw:",
+                "    provider: eimemory_rpc",
+                "    endpoint: http://127.0.0.1:8091/",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "eibrain.memory.adapters.eimemory_rpc.EIMemoryRPCAdapter.retrieve_context",
+        lambda self, query: MemoryResult(summary="Prefer concise replies."),
+    )
+
+    runtime = CognitiveRuntimeApp.from_config_path(config_path)
+    actions = runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="hello", session_id="s1", actor_id="user-1")
+    )
+
+    assert actions
+    assert runtime.memory.__class__.__name__ == "EIMemoryRPCAdapter"
+
+
 def test_cognitive_runtime_can_handle_visual_focus_with_mcp_adapter() -> None:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
 

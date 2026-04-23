@@ -107,3 +107,23 @@ def test_eimemory_rpc_adapter_maps_recall_bundle_to_memory_result(monkeypatch) -
     ]
     assert result.actor_profile == {}
     assert result.session_summary == "Recent dialogue is concise."
+
+
+
+def test_eimemory_rpc_adapter_gracefully_degrades_on_transport_failure(monkeypatch) -> None:
+    from urllib.error import URLError
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery
+
+    def _failing_urlopen(req, timeout=0):
+        raise URLError("down")
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _failing_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    result = adapter.retrieve_context(MemoryQuery(query="hello", session_id="s1", actor_id="user-1"))
+
+    assert "hello" in result.summary
+    assert result.session_summary == ""

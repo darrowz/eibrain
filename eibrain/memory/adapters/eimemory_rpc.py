@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from urllib import request
+from urllib.error import URLError
 
 from eibrain.infra.config import OpenClawConfig
 from eibrain.memory.contracts import MemoryQuery, MemoryResult
@@ -28,8 +29,11 @@ class EIMemoryRPCAdapter:
                 },
             },
         }
-        result = self._post_json(payload)
-        return self._map_result(result)
+        try:
+            result = self._post_json(payload)
+            return self._map_result(result)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return self._fallback_result(query)
 
     def remember_episode(self, *, session_id: str, summary: str) -> None:
         self._sessions[session_id] = summary
@@ -94,6 +98,20 @@ class EIMemoryRPCAdapter:
             relevant_memories=relevant_memories,
             actor_profile={},
             session_summary=str(explanation.get("session_summary", "")),
+        )
+
+    def _fallback_result(self, query: MemoryQuery) -> MemoryResult:
+        session_summary = self.summarize_session(query.session_id) if query.session_id else ""
+        actor_profile = self.load_actor_profile(query.actor_id) if query.actor_id else None
+        summary_parts = [f"eimemory-context:{query.query}"]
+        if session_summary:
+            summary_parts.append(f"session:{session_summary}")
+        if actor_profile:
+            summary_parts.append(f"profile:{actor_profile}")
+        return MemoryResult(
+            summary=" | ".join(summary_parts),
+            actor_profile=actor_profile or {},
+            session_summary=session_summary,
         )
 
     def _headers(self) -> dict[str, str]:
