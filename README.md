@@ -87,6 +87,8 @@ development defaults from the primary repository.
 
 The listener is configured in `monitoring.host` / `monitoring.port`.
 
+For the current honxin split-port deployment, keep `18080` for the proxy and run the local monitor on `18081` using `config/eibrain.honjia.local.yaml` plus `deploy/systemd/eibrain-monitor.service`.
+
 ## Model Defaults
 
 - text LLM defaults to `MiniMax-M2.7-highspeed`

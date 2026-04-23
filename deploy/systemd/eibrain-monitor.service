@@ -1,0 +1,17 @@
+[Unit]
+Description=eibrain monitoring web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/eibrain/current
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/eibrain/.venv/bin/python -m apps.operator_console --config /opt/eibrain/current/config/eibrain.honjia.local.yaml
+Restart=always
+RestartSec=3
+StandardOutput=append:/opt/eibrain/logs/eibrain-monitor.service.log
+StandardError=append:/opt/eibrain/logs/eibrain-monitor.service.log
+
+[Install]
+WantedBy=default.target
