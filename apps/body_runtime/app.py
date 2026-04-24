@@ -50,12 +50,16 @@ class BodyRuntimeApp:
 
     def _build_organs(self):
         organ_configs = self.config.body.organs
-        return [
-            EarOrgan(config=organ_configs.get("ear")),
-            EyeOrgan(config=organ_configs.get("eye")),
-            MouthOrgan(config=organ_configs.get("mouth")),
-            NeckOrgan(config=organ_configs.get("neck")),
-        ]
+        organ_types = (("ear", EarOrgan), ("eye", EyeOrgan), ("mouth", MouthOrgan), ("neck", NeckOrgan))
+        if not organ_configs:
+            return [organ_cls() for _, organ_cls in organ_types]
+        organs = []
+        for organ_name, organ_cls in organ_types:
+            organ_config = organ_configs.get(organ_name)
+            if organ_config is None or not organ_config.enabled:
+                continue
+            organs.append(organ_cls(config=organ_config))
+        return organs
 
     def simulate_transcript(self, *, text: str, session_id: str, actor_id: str) -> AudioTranscriptFinal:
         return AudioTranscriptFinal(
@@ -313,10 +317,7 @@ class BodyRuntimeApp:
         return outcomes
 
     def _snapshot_organ(self, organ):
-        if organ.name in {"ear", "mouth", "neck"} and self.voice_dialogue_state.get("running"):
-            if hasattr(organ, "passive_heartbeat"):
-                return organ.passive_heartbeat()
-        if organ.name == "eye" and self.voice_dialogue_state.get("running"):
+        if self.voice_dialogue_state.get("running") and organ.name in {"ear", "eye"}:
             if hasattr(organ, "passive_heartbeat"):
                 return organ.passive_heartbeat()
         return organ.heartbeat()

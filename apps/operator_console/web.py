@@ -48,8 +48,6 @@ class MonitoringWebServer:
                 if request_path in {"/status.json", "/healthz", "/metrics.json"}:
                     body = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
                     status_code = 200
-                    if request_path == "/healthz" and report.get("system_health") != "healthy":
-                        status_code = 503
                     self.send_response(status_code)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
@@ -436,7 +434,7 @@ class MonitoringWebServer:
     const refreshMs = 2000;
 
     function healthClass(value) {{
-      if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned') return 'healthy';
+      if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned' || value === 'waiting') return 'healthy';
       if (value === 'unavailable' || value === 'error') return 'unavailable';
       return 'degraded';
     }}

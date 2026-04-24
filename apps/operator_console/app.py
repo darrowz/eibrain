@@ -17,6 +17,15 @@ class OperatorConsoleApp:
         "can_orient_head",
     )
 
+    CAPABILITY_ORGANS = {
+        "can_hear_voice": "ear",
+        "can_transcribe_speech": "ear",
+        "can_see_people": "eye",
+        "can_identify_person": "eye",
+        "can_speak": "mouth",
+        "can_orient_head": "neck",
+    }
+
     ORGAN_LABELS = {
         "ear": "Ear",
         "eye": "Eye",
@@ -38,7 +47,7 @@ class OperatorConsoleApp:
         warnings = [
             f"{name}=false"
             for name in self.IMPORTANT_CAPABILITIES
-            if capabilities.get(name) is False
+            if capabilities.get(name) is False and self._capability_is_expected(name, organs)
         ]
         degraded_organs = sorted(
             organ_name
@@ -137,7 +146,7 @@ class OperatorConsoleApp:
                     }
                 )
             live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
-            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "waiting")
             data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
@@ -350,9 +359,10 @@ class OperatorConsoleApp:
         frame_path = detection_details.get("frame_path") or camera_details.get("frame_path")
         frame_captured_at_ts = detection_details.get("frame_captured_at_ts") or camera_details.get("frame_captured_at_ts")
         data_status = "live" if frame_path else "waiting_for_frame"
+        enabled = bool(camera or detection or identity or frame_path or detections or identity_candidates)
         return {
-            "enabled": bool(frame_path or detections or identity_candidates),
-            "data_health": "healthy" if frame_path else "degraded",
+            "enabled": enabled,
+            "data_health": "healthy" if frame_path else ("waiting" if enabled else "unavailable"),
             "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
@@ -515,6 +525,13 @@ class OperatorConsoleApp:
         }.get(str(probe.get("health", "unknown")), 3)
         return (priority, str(probe.get("id", "")))
 
+    @classmethod
+    def _capability_is_expected(cls, capability_name: str, organs: dict[str, object]) -> bool:
+        organ_name = cls.CAPABILITY_ORGANS.get(capability_name)
+        if organ_name is None:
+            return True
+        return organ_name in organs
+
     @staticmethod
     def _data_health(data_status: str, fallback_health: str = "unknown") -> str:
         if data_status in {"live", "recent_trace", "played", "planned"}:
@@ -522,7 +539,7 @@ class OperatorConsoleApp:
         if fallback_health == "unavailable":
             return "unavailable"
         if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
-            return "degraded"
+            return "waiting"
         return "degraded"
 
     @staticmethod
@@ -533,6 +550,8 @@ class OperatorConsoleApp:
         status: str,
         details: dict[str, object],
     ) -> str:
+        if details.get("driver") == "noop":
+            return "no_data"
         if status == "live_probe_skipped":
             return "waiting_for_data"
         if organ_name == "eye":

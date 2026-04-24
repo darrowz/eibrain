@@ -25,7 +25,7 @@ class DegradationManager:
 
         capabilities = CapabilityMatrix(
             can_hear_voice=self._is_real_capability(ear, "capture", allow_degraded=True),
-            can_transcribe_speech=self._is_real_capability(ear, "asr"),
+            can_transcribe_speech=self._has_transcribe_capability(ear),
             can_see_people=self._is_real_capability(eye, "detection", allow_degraded=True),
             can_identify_person=self._is_real_capability(eye, "identity"),
             can_speak=self._is_real_capability(mouth, "tts_playback", allow_degraded=True),
@@ -33,14 +33,36 @@ class DegradationManager:
         )
 
         degradation_mode = "normal"
-        if capabilities.can_hear_voice and not capabilities.can_transcribe_speech:
+        if ear is not None and capabilities.can_hear_voice and not capabilities.can_transcribe_speech:
             degradation_mode = "low_confidence_body"
-        elif not capabilities.can_speak:
+        elif mouth is not None and not capabilities.can_speak:
             degradation_mode = "mute_companion"
-        elif not capabilities.can_orient_head:
+        elif neck is not None and not capabilities.can_orient_head:
             degradation_mode = "fixed_gaze"
 
         return DegradationResult(capabilities=capabilities, degradation_mode=degradation_mode)
+
+    @staticmethod
+    def _has_transcribe_capability(organ: OrganHealth | None) -> bool:
+        if not DegradationManager._is_real_capability(organ, "asr", allow_degraded=True):
+            return False
+        if organ is None:
+            return False
+        subfunction = organ.subfunctions.get("asr")
+        if subfunction is None:
+            return False
+        if subfunction.health == "healthy":
+            return True
+        status = str(subfunction.details.get("status", "")).strip().lower()
+        return status in {
+            "silence",
+            "below_asr_threshold",
+            "live_probe_skipped",
+            "waiting_for_data",
+            "warming_up",
+            "recent_trace",
+            "transcribed",
+        }
 
     @staticmethod
     def _is_real_capability(

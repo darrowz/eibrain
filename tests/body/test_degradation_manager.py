@@ -64,3 +64,35 @@ def test_degradation_manager_does_not_treat_noop_identity_or_tracking_as_real_ca
     assert result.capabilities.can_see_people is True
     assert result.capabilities.can_identify_person is False
     assert result.capabilities.can_orient_head is True
+
+
+
+def test_degradation_manager_keeps_transcribe_capability_on_silence() -> None:
+    from eibrain.body.health.degradation_manager import DegradationManager
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    manager = DegradationManager()
+    organ_states = [
+        OrganHealth(
+            organ="ear",
+            health="degraded",
+            subfunctions={
+                "capture": SubfunctionHealth(name="capture", health="healthy", details={"driver": "command"}),
+                "vad": SubfunctionHealth(name="vad", health="healthy", details={"driver": "command"}),
+                "asr": SubfunctionHealth(name="asr", health="degraded", details={"driver": "command", "status": "silence"}),
+            },
+        ),
+        OrganHealth(
+            organ="mouth",
+            health="healthy",
+            subfunctions={
+                "tts_plan": SubfunctionHealth(name="tts_plan", health="healthy", details={"driver": "command"}),
+                "tts_playback": SubfunctionHealth(name="tts_playback", health="healthy", details={"driver": "command"}),
+            },
+        ),
+    ]
+
+    result = manager.evaluate(organ_states)
+
+    assert result.capabilities.can_transcribe_speech is True
+    assert result.degradation_mode == "normal"

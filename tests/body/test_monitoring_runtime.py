@@ -224,3 +224,77 @@ def test_body_runtime_marks_command_action_error_from_json_status(tmp_path) -> N
     )
 
     assert outcomes[0].status == "error"
+
+
+
+def test_body_runtime_skips_disabled_organs_from_snapshot(tmp_path) -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "body:",
+                "  organs:",
+                "    mouth:",
+                "      enabled: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = BodyRuntimeApp.from_config_path(config_path)
+    snapshot = runtime.snapshot()
+
+    assert runtime.organs == []
+    assert snapshot["organ_count"] == 0
+    assert snapshot["organs"] == {}
+
+
+
+def test_body_runtime_keeps_mouth_health_probe_during_voice_loop() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    class _Mouth:
+        name = "mouth"
+
+        def __init__(self) -> None:
+            self.active_calls = 0
+            self.passive_calls = 0
+
+        def passive_heartbeat(self):
+            self.passive_calls += 1
+            return type(
+                "Health",
+                (),
+                {
+                    "organ": "mouth",
+                    "health": "healthy",
+                    "subfunctions": {},
+                    "to_dict": lambda self: {"organ": "mouth", "health": "healthy", "subfunctions": {}},
+                },
+            )()
+
+        def heartbeat(self):
+            self.active_calls += 1
+            return type(
+                "Health",
+                (),
+                {
+                    "organ": "mouth",
+                    "health": "unavailable",
+                    "subfunctions": {},
+                    "to_dict": lambda self: {"organ": "mouth", "health": "unavailable", "subfunctions": {}},
+                },
+            )()
+
+    runtime = BodyRuntimeApp()
+    mouth = _Mouth()
+    runtime.organs = [mouth]
+    runtime.update_voice_dialogue_state(enabled=True, running=True)
+
+    snapshot = runtime.snapshot()
+
+    assert mouth.active_calls == 1
+    assert mouth.passive_calls == 0
+    assert snapshot["organs"]["mouth"]["health"] == "unavailable"

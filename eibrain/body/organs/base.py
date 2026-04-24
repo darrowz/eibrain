@@ -64,8 +64,15 @@ class BaseOrgan:
 
     @staticmethod
     def _normalize_status(status: str) -> str:
-        if status in {"ok", "healthy"}:
+        normalized = str(status or "").strip().lower()
+        if not normalized:
+            return "unavailable"
+        if normalized in {"ok", "healthy"}:
             return "healthy"
-        if status in {"error", "degraded"}:
+        if normalized == "unavailable" or normalized.startswith("missing_") or normalized.endswith("_unavailable"):
+            return "unavailable"
+        if any(token in normalized for token in ("error", "fail", "timeout", "degraded")):
             return "degraded"
-        return "unavailable"
+        if normalized.startswith("waiting_") or normalized.endswith("_skipped"):
+            return "healthy"
+        return "healthy"

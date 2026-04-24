@@ -114,8 +114,7 @@ def test_operator_console_marks_report_degraded_when_capabilities_missing() -> N
     )
 
     assert report["system_health"] == "degraded"
-    assert "can_transcribe_speech" in report["warnings"][0]
-    assert "can_orient_head" in report["warnings"][1]
+    assert report["warnings"] == ["can_orient_head=false"]
     assert report["degraded_organs"] == ["neck"]
     assert report["summary"]["degraded_organ_count"] == 1
 
@@ -273,7 +272,7 @@ def test_operator_console_distinguishes_health_from_live_data() -> None:
     neck_card = next(card for card in report["organ_cards"] if card["name"] == "neck")
 
     assert eye_card["health"] == "healthy"
-    assert eye_card["data_health"] == "degraded"
+    assert eye_card["data_health"] == "waiting"
     assert eye_card["data_status"] == "waiting_for_data"
     assert eye_card["live_data_subfunctions"] == 0
     assert eye_card["subfunctions"][0]["data_status"] == "waiting_for_data"
@@ -390,3 +389,89 @@ def test_operator_console_backfills_audio_diagnostics_from_recent_trace() -> Non
     assert report["audio_diagnostics"]["asr_status"] == "below_asr_threshold"
     assert report["summary"]["avg_latency_ms"] is not None
     assert report["latency_metrics"][0]["id"] == "ear.capture.recent"
+
+
+
+def test_operator_console_marks_waiting_visual_pipeline_as_enabled_but_waiting() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True},
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                        "detection": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                        "identity": {"health": "healthy", "details": {"driver": "command", "status": "live_probe_skipped"}},
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["visual_diagnostics"]["enabled"] is True
+    assert report["visual_diagnostics"]["data_status"] == "waiting_for_frame"
+    assert report["visual_diagnostics"]["data_health"] == "waiting"
+
+
+
+def test_operator_console_does_not_degrade_for_undeployed_optional_organs() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {
+                "can_hear_voice": True,
+                "can_transcribe_speech": True,
+                "can_see_people": False,
+                "can_speak": True,
+                "can_orient_head": False,
+            },
+            "organs": {
+                "ear": {"health": "healthy", "subfunctions": {}},
+                "mouth": {"health": "healthy", "subfunctions": {}},
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["warnings"] == []
+    assert report["system_health"] == "healthy"
+
+
+
+def test_operator_console_does_not_count_noop_probe_as_live_data() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {
+                "ear": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "capture": {"health": "healthy", "details": {"driver": "noop", "elapsed_ms": 0.02}},
+                    },
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    ear_card = next(card for card in report["organ_cards"] if card["name"] == "ear")
+    capture = next(sub for sub in ear_card["subfunctions"] if sub["name"] == "capture")
+
+    assert capture["data_status"] == "no_data"
+    assert report["runtime_overview"]["live_data_subfunction_count"] == 0

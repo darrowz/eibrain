@@ -75,3 +75,35 @@ def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
 
     assert payload == b"jpeg-bytes"
     assert content_type == "image/jpeg"
+
+
+
+def test_monitoring_web_healthz_stays_200_when_report_is_degraded() -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    class _Runtime:
+        def snapshot(self):
+            return {
+                "node_id": "honjia",
+                "degradation_mode": "low_confidence_body",
+                "capabilities": {"can_transcribe_speech": False},
+                "organs": {"ear": {"health": "degraded", "subfunctions": {}}},
+            }
+
+        def recent_events(self):
+            return []
+
+        def latest_visual_frame_path(self):
+            return None
+
+    server = MonitoringWebServer(runtime=_Runtime(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.port}/healthz") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+            status_code = response.status
+    finally:
+        server.stop()
+
+    assert status_code == 200
+    assert payload["system_health"] == "degraded"

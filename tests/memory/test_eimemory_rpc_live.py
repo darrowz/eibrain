@@ -1,7 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+import sys
+
+import pytest
+
+
+def _ensure_eimemory_repo_on_path() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    eimemory_repo = repo_root / "eimemory"
+    if not (eimemory_repo / "eimemory").exists():
+        pytest.skip("eimemory repository checkout is unavailable for live cross-repo test")
+    repo_path = str(eimemory_repo)
+    if repo_path not in sys.path:
+        sys.path.insert(0, repo_path)
+
 
 def test_eimemory_rpc_adapter_reads_from_live_server(tmp_path) -> None:
+    _ensure_eimemory_repo_on_path()
+
     from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
     from eimemory.api.runtime import Runtime
 
