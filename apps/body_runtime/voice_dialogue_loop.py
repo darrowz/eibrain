@@ -73,6 +73,18 @@ class VoiceDialogueLoop:
                 )
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
+                if len(transcript) == 1:
+                    self.body_runtime.update_voice_dialogue_state(
+                        phase="idle",
+                        last_status="short_transcript_ignored",
+                        last_transcript=transcript,
+                        last_latency_s={
+                            "listen_asr": round(listen_asr_s, 2),
+                            "total": round(time.perf_counter() - turn_started, 2),
+                        },
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
                 if not transcript:
                     self.body_runtime.update_voice_dialogue_state(
                         phase="idle",

@@ -165,6 +165,7 @@ class BodyRuntimeApp:
                 session_id=session_id,
                 actor_id=actor_id,
             )
+            observation = self._normalize_audio_observation(observation)
             self._record_ear_processor_event(
                 observation=observation,
                 elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -233,6 +234,37 @@ class BodyRuntimeApp:
             chunk_count=chunk_count,
             session_id=session_id,
             actor_id=actor_id,
+        )
+
+    def _normalize_audio_observation(self, observation: AudioTranscriptFinal) -> AudioTranscriptFinal:
+        text = observation.text.strip()
+        if not text:
+            return observation
+        asr_cfg = self.config.body.organs.get("ear")
+        subfunction = asr_cfg.subfunctions.get("asr") if asr_cfg is not None else None
+        replacements = subfunction.driver.extra.get("transcript_replacements", {}) if subfunction is not None else {}
+        if isinstance(replacements, dict):
+            for find_text, replace_text in replacements.items():
+                if find_text:
+                    text = text.replace(str(find_text), str(replace_text))
+        elif isinstance(replacements, list):
+            for replacement in replacements:
+                if not isinstance(replacement, dict):
+                    continue
+                find_text = str(replacement.get("find", ""))
+                replace_text = str(replacement.get("replace", ""))
+                if find_text:
+                    text = text.replace(find_text, replace_text)
+        if text == observation.text:
+            return observation
+        return AudioTranscriptFinal(
+            ts=observation.ts,
+            source=observation.source,
+            text=text.strip(),
+            language=observation.language,
+            session_id=observation.session_id,
+            actor_id=observation.actor_id,
+            target_id=observation.target_id,
         )
 
     def is_speaking(self) -> bool:
