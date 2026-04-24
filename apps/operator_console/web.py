@@ -25,6 +25,15 @@ class MonitoringWebServer:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            def _send_json(self, status_code: int, payload: dict[str, object]) -> None:
+                body = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+                self.send_response(status_code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
             def do_GET(self) -> None:  # noqa: N802
                 request_path = urlparse(self.path).path
                 report = outer.console.build_status_report(
@@ -46,16 +55,10 @@ class MonitoringWebServer:
                         self.send_error(404, "vision frame not available")
                     return
                 if request_path in {"/status.json", "/healthz", "/metrics.json"}:
-                    body = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
                     status_code = 200
                     if request_path == "/healthz" and report.get("system_health") != "healthy":
                         status_code = 503
-                    self.send_response(status_code)
-                    self.send_header("Content-Type", "application/json; charset=utf-8")
-                    self.send_header("Cache-Control", "no-store")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.end_headers()
-                    self.wfile.write(body)
+                    self._send_json(status_code, report)
                     return
                 body = outer._render_html(report).encode("utf-8")
                 self.send_response(200)
@@ -64,6 +67,32 @@ class MonitoringWebServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+
+            def do_POST(self) -> None:  # noqa: N802
+                request_path = urlparse(self.path).path
+                if request_path != "/identity/register":
+                    self.send_error(404, "not found")
+                    return
+                content_length = int(self.headers.get("Content-Length", "0") or 0)
+                payload: dict[str, object] = {}
+                if content_length:
+                    try:
+                        payload = json.loads(self.rfile.read(content_length).decode("utf-8"))
+                    except json.JSONDecodeError as exc:
+                        self._send_json(400, {"ok": False, "error": f"invalid json: {exc}"})
+                        return
+                if not isinstance(payload, dict):
+                    self._send_json(400, {"ok": False, "error": "json body must be an object"})
+                    return
+                register = getattr(outer.runtime, "register_current_identity", None)
+                if register is None:
+                    self._send_json(501, {"ok": False, "error": "identity registration is unavailable"})
+                    return
+                result = register(
+                    display_name=str(payload.get("display_name", "Darrow") or "Darrow"),
+                    actor_id=str(payload.get("actor_id", "darrow") or "darrow"),
+                )
+                self._send_json(200 if result.get("ok") else 409, result)
 
             def log_message(self, format: str, *args) -> None:  # noqa: A003
                 return
@@ -314,6 +343,23 @@ class MonitoringWebServer:
       font-weight: 700;
       white-space: nowrap;
     }}
+    .action-row {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }}
+    .action-button {{
+      border: 1px solid rgba(249,160,63,0.5);
+      border-radius: 999px;
+      background: var(--orange-soft);
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 800;
+      padding: 9px 13px;
+    }}
+    .action-button:hover {{ background: rgba(249,160,63,0.28); }}
     table {{
       width: 100%;
       border-collapse: collapse;
@@ -408,6 +454,10 @@ class MonitoringWebServer:
       <div class="vision-layout">
         <div class="vision-stage" id="vision-stage"></div>
         <div>
+          <div class="action-row">
+            <button class="action-button" type="button" onclick="registerIdentity()">Register Darrow</button>
+            <span class="muted" id="identity-action-status">Session identity not registered</span>
+          </div>
           <div class="mini-grid" id="vision-summary"></div>
           <div class="subfunction-list" id="vision-detection-list" style="margin-top: 14px;"></div>
         </div>
@@ -581,12 +631,19 @@ class MonitoringWebServer:
       const timestamp = visual.frame_captured_at_ts || report.generated_at_ts || Date.now() / 1000;
       const detections = visual.detections || [];
       const identityCandidates = visual.identity_candidates || [];
+      const registeredIdentity = visual.registered_identity || {{}};
+      const recognizedIdentity = visual.recognized_identity || {{}};
+      const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
+      document.getElementById('identity-action-status').textContent = registeredIdentity.registered
+        ? `Registered: ${{identityName || 'known person'}}`
+        : 'Session identity not registered';
       document.getElementById('vision-summary').innerHTML = [
         ['Frame', visual.frame_available ? 'live' : 'missing'],
         ['Frame age', fmtSeconds(visual.frame_age_s)],
         ['Data', visual.data_status || 'unknown'],
         ['Detection', visual.detection_status || visual.detection_health || 'unknown'],
         ['Tracking', visual.tracking_status || 'idle'],
+        ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
@@ -598,7 +655,8 @@ class MonitoringWebServer:
           const width = Math.max(1, Math.min(100, ((bbox.x_max || 0) - (bbox.x_min || 0)) * 100));
           const height = Math.max(1, Math.min(100, ((bbox.y_max || 0) - (bbox.y_min || 0)) * 100));
           const boxClass = detection.label === 'face' ? 'bbox face' : 'bbox';
-          return `<div class="${{boxClass}}" style="left:${{left}}%;top:${{top}}%;width:${{width}}%;height:${{height}}%;"><span class="bbox-label">${{detection.label}} ${{Number(detection.score || 0).toFixed(2)}}</span></div>`;
+          const label = detection.identity || detection.label || 'target';
+          return `<div class="${{boxClass}}" style="left:${{left}}%;top:${{top}}%;width:${{width}}%;height:${{height}}%;"><span class="bbox-label">${{label}} ${{Number(detection.score || 0).toFixed(2)}}</span></div>`;
         }}).join('');
         document.getElementById('vision-stage').innerHTML = `
           <img src="${{visual.frame_url}}?t=${{timestamp}}" alt="latest honjia frame">
@@ -625,7 +683,7 @@ class MonitoringWebServer:
       if (visual.tracking_running || visual.tracking_target || visual.tracking_last_error) {{
         const target = visual.tracking_target || {{}};
         const bbox = target.bbox || {{}};
-        const targetLabel = target.label || 'none';
+        const targetLabel = target.identity || target.label || 'none';
         const targetScore = typeof target.score === 'number' ? target.score.toFixed(2) : '—';
         const targetX = typeof target.target_x === 'number' ? target.target_x.toFixed(2) : '—';
         const missCount = visual.tracking_miss_count ?? 0;
@@ -645,11 +703,29 @@ class MonitoringWebServer:
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>#${{index + 1}} ${{detection.label || 'target'}}</strong><span class="health-tag healthy">${{Number(detection.score || 0).toFixed(2)}}</span></div><div class="metric-label">bbox x:${{Number(bbox.x_min || 0).toFixed(2)}}-${{Number(bbox.x_max || 0).toFixed(2)}} · y:${{Number(bbox.y_min || 0).toFixed(2)}}-${{Number(bbox.y_max || 0).toFixed(2)}}</div></div>`);
       }});
       identityCandidates.slice(0, 4).forEach((candidate) => {{
-        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{candidate.candidate_id || 'candidate'}}</strong><span class="health-tag degraded">${{candidate.identity || 'unknown'}}</span></div><div class="metric-label">score ${{Number(candidate.score || 0).toFixed(2)}}</div></div>`);
+        const tagHealth = candidate.source === 'session_registration' ? 'healthy' : 'degraded';
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{candidate.candidate_id || 'candidate'}}</strong><span class="health-tag ${{tagHealth}}">${{candidate.identity || 'unknown'}}</span></div><div class="metric-label">score ${{Number(candidate.score || 0).toFixed(2)}}</div></div>`);
       }});
       document.getElementById('vision-detection-list').innerHTML = listItems.length
         ? listItems.join('')
         : '<div class="muted">No visual detections yet</div>';
+    }}
+
+    async function registerIdentity() {{
+      const status = document.getElementById('identity-action-status');
+      status.textContent = 'Registering Darrow from current target...';
+      try {{
+        const response = await fetch('/identity/register', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ display_name: 'Darrow', actor_id: 'darrow' }}),
+        }});
+        const result = await response.json();
+        status.textContent = result.ok ? 'Registered: Darrow' : `Register failed: ${{result.status || result.error || response.status}}`;
+        await refresh();
+      }} catch (error) {{
+        status.textContent = `Register failed: ${{error}}`;
+      }}
     }}
 
     function renderAudio(report) {{

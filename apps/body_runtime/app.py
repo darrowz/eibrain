@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+import json
+from pathlib import Path
 import time
 
 from eibrain.protocol.actions import PlaySpeechAction
@@ -55,6 +57,8 @@ class BodyRuntimeApp:
             "last_error": "",
             "miss_count": 0,
         }
+        self._identity_registry_path = Path(".tmp-test-artifacts/identity_registry.json")
+        self.identity_registry: dict[str, object] = self._load_identity_registry()
         now_ts = time.time()
         self.interaction_state: dict[str, object] = {
             "current_mode": "sleeping",
@@ -358,7 +362,59 @@ class BodyRuntimeApp:
             "voice_dialogue": dict(self.voice_dialogue_state),
             "visual_tracking": dict(self.visual_tracking_state),
             "interaction_state": dict(self.interaction_state),
+            "identity_registry": dict(self.identity_registry),
         }
+
+    def register_current_identity(
+        self,
+        *,
+        display_name: str = "Darrow",
+        actor_id: str = "darrow",
+    ) -> dict[str, object]:
+        name = (display_name or "").strip() or "Darrow"
+        actor = (actor_id or "").strip() or name.lower()
+        target = self._current_identity_target()
+        if target is None:
+            if self.identity_registry.get("registered"):
+                return {"ok": True, "status": "already_registered", "identity": dict(self.identity_registry)}
+            result = {
+                "ok": False,
+                "status": "no_visual_target",
+                "display_name": name,
+                "actor_id": actor,
+            }
+            self.record_runtime_event(
+                kind="identity_registration",
+                source="eye.identity",
+                status="degraded",
+                details=result,
+            )
+            return result
+
+        profile = {
+            "registered": True,
+            "actor_id": actor,
+            "display_name": name,
+            "registered_at_ts": time.time(),
+            "source": "visual_tracking",
+            "target": dict(target),
+        }
+        self.identity_registry = profile
+        self._save_identity_registry(profile)
+        self.interaction_state.update(
+            {
+                "recognized_actor_id": actor,
+                "recognized_display_name": name,
+                "updated_at_ts": time.time(),
+            }
+        )
+        self.record_runtime_event(
+            kind="identity_registered",
+            source="eye.identity",
+            status="ok",
+            details=profile,
+        )
+        return {"ok": True, "status": "registered", "identity": dict(profile)}
 
     def dispatch_actions(self, actions: list[Action]) -> list:
         outcomes = []
@@ -434,6 +490,48 @@ class BodyRuntimeApp:
             if isinstance(frame_path, str) and frame_path:
                 return frame_path
         return None
+
+    def _current_identity_target(self) -> dict[str, object] | None:
+        target = self.visual_tracking_state.get("target")
+        if isinstance(target, dict) and target.get("label") and target.get("bbox"):
+            return dict(target)
+        target, _eye_details = self._select_visual_tracking_target(preferred_labels=("face", "person"))
+        if target is not None:
+            return dict(target)
+        return None
+
+    def _load_identity_registry(self) -> dict[str, object]:
+        default = {
+            "registered": False,
+            "actor_id": "",
+            "display_name": "",
+            "registered_at_ts": None,
+            "source": "",
+            "target": None,
+        }
+        try:
+            if self._identity_registry_path.exists():
+                payload = json.loads(self._identity_registry_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    return {**default, **payload}
+        except (OSError, json.JSONDecodeError):
+            pass
+        return default
+
+    def _save_identity_registry(self, profile: dict[str, object]) -> None:
+        try:
+            self._identity_registry_path.parent.mkdir(parents=True, exist_ok=True)
+            self._identity_registry_path.write_text(
+                json.dumps(profile, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            self.record_runtime_event(
+                kind="identity_registry_persist",
+                source="eye.identity",
+                status="degraded",
+                details={"error": str(exc)},
+            )
 
     def _select_visual_tracking_target(
         self,

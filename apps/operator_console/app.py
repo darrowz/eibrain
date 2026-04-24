@@ -360,9 +360,44 @@ class OperatorConsoleApp:
         visual_tracking = body_snapshot.get("visual_tracking", {})
         if not isinstance(visual_tracking, dict):
             visual_tracking = {}
+        registered_identity = body_snapshot.get("identity_registry", {})
+        if not isinstance(registered_identity, dict):
+            registered_identity = {}
+        tracking_target = visual_tracking.get("target")
+        if isinstance(tracking_target, dict):
+            tracking_target = dict(tracking_target)
+        else:
+            tracking_target = None
+        recognized_identity: dict[str, object] = {}
+        identity_summary = identity_details.get("identity_summary", "waiting for identity data")
+        if registered_identity.get("registered"):
+            display_name = str(registered_identity.get("display_name", "known person") or "known person")
+            actor_id = str(registered_identity.get("actor_id", "") or "")
+            recognized_identity = {
+                "actor_id": actor_id,
+                "display_name": display_name,
+                "source": registered_identity.get("source", "session"),
+                "registered_at_ts": registered_identity.get("registered_at_ts"),
+            }
+            identity_summary = f"recognized {display_name} (session registration)"
+            if tracking_target is not None and isinstance(tracking_target.get("bbox"), dict):
+                tracking_target["identity"] = display_name
+                tracking_target["actor_id"] = actor_id
+                tracking_target["registered_identity"] = True
+            registered_target = registered_identity.get("target")
+            if isinstance(registered_target, dict):
+                registered_candidate = {
+                    "candidate_id": "session_registered_target",
+                    "identity": display_name,
+                    "actor_id": actor_id,
+                    "score": registered_target.get("score", 1.0),
+                    "bbox": registered_target.get("bbox", {}),
+                    "source": "session_registration",
+                }
+                identity_candidates = [registered_candidate, *identity_candidates]
         data_status = "live" if frame_path else "waiting_for_frame"
         return {
-            "enabled": bool(frame_path or detections or identity_candidates),
+            "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
             "data_health": "healthy" if frame_path else "degraded",
             "data_status": data_status,
             "frame_available": bool(frame_path),
@@ -376,8 +411,10 @@ class OperatorConsoleApp:
             "detection_count": len(detections),
             "detections": detections,
             "identity_candidates": identity_candidates,
+            "registered_identity": registered_identity,
+            "recognized_identity": recognized_identity,
             "scene_summary": detection_details.get("scene_summary", "waiting for camera/detection data"),
-            "identity_summary": identity_details.get("identity_summary", "waiting for identity data"),
+            "identity_summary": identity_summary,
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
             "frame_age_s": self._age_seconds(frame_captured_at_ts),
@@ -385,7 +422,7 @@ class OperatorConsoleApp:
             "tracking_updated_at_ts": visual_tracking.get("updated_at_ts"),
             "tracking_age_s": self._age_seconds(visual_tracking.get("updated_at_ts")),
             "tracking_running": bool(visual_tracking.get("running", False)),
-            "tracking_target": visual_tracking.get("target"),
+            "tracking_target": tracking_target,
             "tracking_miss_count": int(visual_tracking.get("miss_count", 0) or 0),
             "tracking_last_outcome_status": visual_tracking.get("last_outcome_status"),
             "tracking_last_error": str(visual_tracking.get("last_error", "") or ""),
