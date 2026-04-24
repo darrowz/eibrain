@@ -16,6 +16,7 @@ from eibrain.body.organs.ear.organ import EarOrgan
 from eibrain.body.organs.eye.organ import EyeOrgan
 from eibrain.body.organs.mouth.organ import MouthOrgan
 from eibrain.body.organs.neck.organ import NeckOrgan
+from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
 from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.protocol.actions import Action, MoveHeadAction
@@ -120,6 +121,18 @@ class BodyRuntimeApp:
         )
 
     def _make_recognizer(self, asr_cfg):
+        provider = str(asr_cfg.driver.extra.get("provider", "sherpa_onnx"))
+        if provider == "faster_whisper":
+            recognizer = FasterWhisperRecognizer(
+                model_name=str(asr_cfg.driver.extra.get("model_name", "Systran/faster-whisper-tiny")),
+                language=str(asr_cfg.driver.extra.get("language", "zh")),
+                compute_type=str(asr_cfg.driver.extra.get("compute_type", "int8")),
+                beam_size=int(asr_cfg.driver.extra.get("beam_size", 1)),
+                vad_filter=bool(asr_cfg.driver.extra.get("vad_filter", False)),
+                python_executable=str(asr_cfg.driver.extra.get("python_executable", "/usr/bin/python3")),
+            )
+            recognizer.prewarm()
+            return recognizer
         recognizer = SherpaOnnxStreamingRecognizer(
             model_dir=str(asr_cfg.driver.extra.get("model_dir", "")),
             model_type=str(asr_cfg.driver.extra.get("model_type", "") or "") or None,

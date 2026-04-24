@@ -22,6 +22,10 @@ class FasterWhisperRecognizer:
     python_executable: str = "/usr/bin/python3"
     _model: object | None = field(default=None, init=False)
 
+    def prewarm(self) -> bool:
+        self._get_model()
+        return True
+
     def transcribe(self, pcm_chunks: list[bytes], *, sample_rate: int, channels: int) -> str:
         if not pcm_chunks:
             return ""
