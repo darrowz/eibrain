@@ -30,9 +30,9 @@ body:
           - /dev/snd
           - --label
           - audio-input
-          device: plughw:CARD=SPA3700,DEV=0
-          sample_rate: 16000
-          channels: 1
+          device: plughw:CARD=U4K,DEV=0
+          sample_rate: 48000
+          channels: 2
           chunk_count: 2
           refresh_interval_s: 1.5
           streaming_vad: true
