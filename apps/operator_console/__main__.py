@@ -6,6 +6,7 @@ import argparse
 
 from apps.body_runtime.app import BodyRuntimeApp
 from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from eibrain.infra.config import load_config
 
@@ -17,12 +18,15 @@ def main() -> None:
     parser.add_argument("--config", default="config/eibrain.yaml")
     parser.add_argument("--disable-voice-dialogue-loop", action="store_true")
     parser.add_argument("--voice-chunk-count", type=int, default=2)
+    parser.add_argument("--disable-visual-tracking-loop", action="store_true")
+    parser.add_argument("--visual-tracking-interval", type=float, default=1.0)
     args = parser.parse_args()
 
     config = load_config(args.config)
     runtime = BodyRuntimeApp(config=config)
     cognitive_runtime = CognitiveRuntimeApp(config=config)
     voice_loop = None
+    visual_loop = None
     if not args.disable_voice_dialogue_loop:
         voice_loop = VoiceDialogueLoop(
             body_runtime=runtime,
@@ -30,6 +34,12 @@ def main() -> None:
             chunk_count=args.voice_chunk_count,
         )
         voice_loop.start()
+    if not args.disable_visual_tracking_loop:
+        visual_loop = VisualTrackingLoop(
+            body_runtime=runtime,
+            interval_s=args.visual_tracking_interval,
+        )
+        visual_loop.start()
     server = MonitoringWebServer(
         runtime=runtime,
         cognitive_runtime=cognitive_runtime,
@@ -45,6 +55,8 @@ def main() -> None:
     finally:
         if voice_loop is not None:
             voice_loop.stop()
+        if visual_loop is not None:
+            visual_loop.stop()
         server.stop()
 
 

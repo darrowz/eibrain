@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+import time
+
+
+def test_visual_tracking_loop_calls_runtime_until_stopped() -> None:
+    from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def track_visual_target_once(self, *, session_id: str, actor_id: str):
+            self.calls += 1
+            return None
+
+    runtime = _Runtime()
+    loop = VisualTrackingLoop(body_runtime=runtime, interval_s=0.05)
+    loop.start()
+    try:
+        deadline = time.time() + 1.0
+        while runtime.calls < 2 and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        loop.stop()
+
+    calls_after_stop = runtime.calls
+    time.sleep(0.08)
+
+    assert calls_after_stop >= 2
+    assert runtime.calls == calls_after_stop
