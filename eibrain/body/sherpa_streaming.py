@@ -40,10 +40,25 @@ class SherpaOnnxStreamingRecognizer:
     expected_sample_rate: int = 16000
     model_type: str | None = None
     recognizer_factory: Callable[[int], Any] | None = None
+    prewarmed: bool = False
+    prewarm_error: str = ""
     _recognizer_cache: dict[int, Any] = field(default_factory=dict, init=False)
+
+    def prewarm(self) -> bool:
+        try:
+            self._get_recognizer(self.expected_sample_rate)
+        except Exception as exc:
+            self.prewarmed = False
+            self.prewarm_error = str(exc)
+            return False
+        self.prewarmed = True
+        self.prewarm_error = ""
+        return True
 
     def transcribe(self, pcm_chunks: list[bytes], *, sample_rate: int, channels: int) -> str:
         recognizer = self._get_recognizer(self.expected_sample_rate)
+        self.prewarmed = True
+        self.prewarm_error = ""
         stream = recognizer.create_stream()
         for chunk in pcm_chunks:
             waveform = self._normalize_waveform(

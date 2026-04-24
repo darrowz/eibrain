@@ -120,10 +120,12 @@ class BodyRuntimeApp:
         )
 
     def _make_recognizer(self, asr_cfg):
-        return SherpaOnnxStreamingRecognizer(
+        recognizer = SherpaOnnxStreamingRecognizer(
             model_dir=str(asr_cfg.driver.extra.get("model_dir", "")),
             model_type=str(asr_cfg.driver.extra.get("model_type", "") or "") or None,
         )
+        recognizer.prewarm()
+        return recognizer
 
     def build_default_ear_processor(self) -> EarStreamProcessor:
         ear_cfg = self.config.body.organs.get("ear")
@@ -274,7 +276,7 @@ class BodyRuntimeApp:
                     "speech_window_summary": "transcribed speech" if text else "no vad speech trigger",
                     "asr_status": "transcribed" if text else "silence",
                     "asr_voice_activity": bool(text),
-                    "recognizer_prewarmed": getattr(recognizer, "prewarmed", None),
+                    "recognizer_prewarmed": bool(getattr(recognizer, "prewarmed", False)),
                     "recognizer_prewarm_error": getattr(recognizer, "prewarm_error", ""),
                     "dbfs": stats.get("dbfs"),
                     "rms_level": stats.get("rms_level"),

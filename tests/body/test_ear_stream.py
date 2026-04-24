@@ -280,3 +280,20 @@ def test_ear_stream_processor_skips_asr_when_vad_does_not_trigger() -> None:
     )
 
     assert observation.text == ""
+
+
+def test_sherpa_streaming_recognizer_records_prewarm_state() -> None:
+    from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
+
+    class _Recognizer:
+        def create_stream(self):
+            return object()
+
+    recognizer = SherpaOnnxStreamingRecognizer(
+        model_dir="/tmp/model",
+        recognizer_factory=lambda sample_rate: _Recognizer(),
+    )
+
+    assert recognizer.prewarm() is True
+    assert recognizer.prewarmed is True
+    assert recognizer.prewarm_error == ""
