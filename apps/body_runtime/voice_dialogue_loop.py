@@ -16,8 +16,8 @@ class VoiceDialogueLoop:
         body_runtime: BodyRuntimeApp,
         cognitive_runtime: CognitiveRuntimeApp,
         chunk_count: int = 3,
-        idle_interval_s: float = 1.0,
-        empty_interval_s: float = 1.5,
+        idle_interval_s: float = 0.5,
+        empty_interval_s: float = 0.25,
         session_id: str = "voice-dialogue-loop",
         actor_id: str = "darrow",
     ) -> None:

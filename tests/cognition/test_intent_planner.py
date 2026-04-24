@@ -94,3 +94,25 @@ def test_dialogue_manager_does_not_echo_when_llm_is_empty() -> None:
     reply = DialogueManager().build_reply_text(state, MemoryResult(), "")
 
     assert reply == "我是鸿途。"
+
+
+def test_dialogue_manager_trims_long_llm_reply_for_fast_tts() -> None:
+    from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.state.embodied import EmbodiedState
+
+    state = EmbodiedState.create_default().with_transcript(
+        text="介绍一下你自己",
+        session_id="s1",
+        actor_id="user-1",
+        ts=1.0,
+    )
+
+    reply = DialogueManager().build_reply_text(
+        state,
+        MemoryResult(),
+        "我是 honjia 的语音助手，随时帮你查询、提醒和解答问题。",
+    )
+
+    assert len(reply) <= 29
+    assert reply.endswith("。")
