@@ -9,7 +9,7 @@ from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.learning.adaptation import AdaptationEngine
 from eibrain.learning.evaluation import EvaluationEngine
 from eibrain.learning.review import SelfReviewEngine
-from eibrain.memory.adapters.factory import build_memory_adapter
+from eibrain.memory.adapters.openclaw import OpenClawMemoryAdapter
 from eibrain.memory.contracts import MemoryQuery
 from eibrain.protocol.observations import AudioTranscriptFinal
 from eibrain.skills.compiler import SkillCompiler
@@ -21,7 +21,7 @@ from eibrain.vision.minimax_mcp import MiniMaxMCPAdapter
 class CognitiveRuntimeApp:
     def __init__(self, *, config: EIBrainConfig | None = None, vision_adapter=None) -> None:
         self.config = config or EIBrainConfig()
-        self.memory = build_memory_adapter(self.config.memory.openclaw)
+        self.memory = OpenClawMemoryAdapter(self.config.memory.openclaw)
         self.planner = IntentPlanner(llm_router=LLMRouter(self.config.cognition.llm))
         self.compiler = SkillCompiler()
         self.review = SelfReviewEngine()
@@ -32,6 +32,11 @@ class CognitiveRuntimeApp:
         self.last_review: dict[str, object] = {}
         self.last_learning_decision = "keep_policy"
         self.last_reply = ""
+        self.last_llm_status: dict[str, object] = {
+            "provider": self.planner.llm_router.config.provider,
+            "status": "idle",
+            "error": "",
+        }
 
     @classmethod
     def from_config_path(cls, path) -> "CognitiveRuntimeApp":
@@ -68,6 +73,13 @@ class CognitiveRuntimeApp:
             )
         )
         intents = self.planner.plan(state=state, memory=memory_result)
+        router = self.planner.llm_router
+        self.last_llm_status = {
+            "provider": router.last_provider,
+            "status": router.last_status,
+            "error": router.last_error,
+            "text_preview": router.last_text[:80],
+        }
         actions = self.compiler.compile(intents)
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
         self.memory.remember_episode(
@@ -130,4 +142,5 @@ class CognitiveRuntimeApp:
             "last_reply": self.last_reply,
             "learning_decision": self.last_learning_decision,
             "last_review": self.last_review,
+            "last_llm_status": dict(self.last_llm_status),
         }

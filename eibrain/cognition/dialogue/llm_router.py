@@ -12,22 +12,40 @@ from eibrain.infra.config import LLMConfig
 class LLMRouter:
     def __init__(self, config: LLMConfig | None = None) -> None:
         self.config = config or LLMConfig()
+        self.last_status = "idle"
+        self.last_error = ""
+        self.last_provider = self.config.provider
+        self.last_text = ""
 
     def generate(self, prompt: str) -> str:
+        self.last_provider = self.config.provider
+        self.last_error = ""
+        self.last_text = ""
         if not prompt.strip():
+            self.last_status = "empty_prompt"
             return ""
         if self.config.provider == "echo":
-            return f"reply: {prompt.splitlines()[-1]}"
+            self.last_status = "ok"
+            self.last_text = f"reply: {prompt.splitlines()[-1]}"
+            return self.last_text
         if self._uses_anthropic_api():
             try:
-                return self._generate_anthropic_compatible(prompt)
-            except (URLError, OSError, ValueError, KeyError):
-                pass
+                self.last_text = self._generate_anthropic_compatible(prompt)
+                self.last_status = "ok" if self.last_text else "empty_response"
+                return self.last_text
+            except (URLError, OSError, ValueError, KeyError) as exc:
+                self.last_status = "error"
+                self.last_error = f"{type(exc).__name__}: {exc}"
         if self._uses_chat_api():
             try:
-                return self._generate_openai_compatible(prompt)
-            except (URLError, OSError, ValueError, KeyError):
-                pass
+                self.last_text = self._generate_openai_compatible(prompt)
+                self.last_status = "ok" if self.last_text else "empty_response"
+                return self.last_text
+            except (URLError, OSError, ValueError, KeyError) as exc:
+                self.last_status = "error"
+                self.last_error = f"{type(exc).__name__}: {exc}"
+        if self.last_status not in {"error", "empty_response"}:
+            self.last_status = "unavailable"
         return ""
 
     def generate_vision(self, prompt: str, image_urls: list[str]) -> str:

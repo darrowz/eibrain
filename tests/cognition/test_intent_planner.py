@@ -96,6 +96,24 @@ def test_dialogue_manager_does_not_echo_when_llm_is_empty() -> None:
     assert reply == "我是鸿途。"
 
 
+def test_dialogue_manager_fallback_is_not_generic_acknowledgement() -> None:
+    from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.state.embodied import EmbodiedState
+
+    state = EmbodiedState.create_default().with_transcript(
+        text="介绍一下你自己",
+        session_id="s1",
+        actor_id="user-1",
+        ts=1.0,
+    )
+
+    reply = DialogueManager().build_reply_text(state, MemoryResult(), "")
+
+    assert "我听到了" not in reply
+    assert "鸿途" in reply or "honjia" in reply
+
+
 def test_dialogue_manager_trims_long_llm_reply_for_fast_tts() -> None:
     from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
     from eibrain.memory.contracts import MemoryResult

@@ -567,6 +567,7 @@ class OperatorConsoleApp:
             "updated_at_ts": loop.get("updated_at_ts"),
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),
+            "last_llm_status": cognitive_snapshot.get("last_llm_status", {}),
         }
 
     @staticmethod

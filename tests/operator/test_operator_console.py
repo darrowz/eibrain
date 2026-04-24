@@ -75,7 +75,11 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
                 "last_latency_s": {"listen_asr": 4.0, "think": 2.0, "speak": 3.0, "total": 9.0},
             },
         },
-        cognitive_snapshot={"last_reply": "fallback reply", "learning_decision": "keep_policy"},
+        cognitive_snapshot={
+            "last_reply": "fallback reply",
+            "learning_decision": "keep_policy",
+            "last_llm_status": {"provider": "anthropic_compatible", "status": "ok", "error": ""},
+        },
         traces=[],
     )
 
@@ -88,6 +92,7 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert dialogue["last_reply"] == "鱼丸和肉燕很有名。"
     assert dialogue["current_phase_elapsed_s"] == 1.25
     assert dialogue["last_latency_s"]["total"] == 9.0
+    assert dialogue["last_llm_status"]["status"] == "ok"
 
 
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:

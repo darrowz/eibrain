@@ -25,6 +25,10 @@ class DialogueManager:
         normalized = transcript.replace("洪图", "鸿途").replace("宏图", "鸿途").strip()
         if any(marker in normalized for marker in ("你叫", "你是", "你的名字", "叫什么")):
             return "我是鸿途。"
+        if any(marker in normalized for marker in ("介绍", "自我介绍", "你能做什么", "有什么用")):
+            return "我是鸿途，可以陪你对话、看画面和控制设备。"
+        if any(marker in normalized for marker in ("天气", "时间", "几点", "日期")):
+            return "这个问题需要联网查询，我先记下来。"
         if normalized.endswith(("吗", "么", "嘛", "?","？")):
-            return "我先想一下。"
-        return "我听到了，继续说。"
+            return "我现在接口不稳，先给你简短回答：可以。"
+        return f"我理解你说的是：{normalized[:18]}。"
