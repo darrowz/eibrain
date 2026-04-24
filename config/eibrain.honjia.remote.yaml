@@ -95,6 +95,12 @@ body:
           transcript_replacements:
             鸿好鸿途: 你好鸿途
             您好鸿途: 你好鸿途
+            你好宏图: 你好鸿途
+            你好洪图: 你好鸿途
+            你好黄土: 你好鸿途
+            宏图: 鸿途
+            洪图: 鸿途
+            黄土: 鸿途
           health_command:
           - /home/darrow/dev-project/eibrain/.venv/bin/python
           - -m

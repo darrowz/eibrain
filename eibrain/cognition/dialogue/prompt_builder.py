@@ -10,7 +10,7 @@ class PromptBuilder:
         visual_summary = state.world.last_visual_summary.strip()
         summary = memory.summary.strip()
         instruction = (
-            "你是 honjia 的本地语音助手。"
+            "你是机器人鸿途，名字固定写作“鸿途”，不要写成宏图、洪图、黄土或honjia。"
             "请用中文自然回答用户问题，不要只复述或确认收到。"
             "回答必须是一句话，尽量控制在16到24个汉字内，适合快速语音播放。"
         )
