@@ -48,6 +48,8 @@ class MonitoringWebServer:
                 if request_path in {"/status.json", "/healthz", "/metrics.json"}:
                     body = json.dumps(report, ensure_ascii=False, indent=2).encode("utf-8")
                     status_code = 200
+                    if request_path == "/healthz" and report.get("system_health") != "healthy":
+                        status_code = 503
                     self.send_response(status_code)
                     self.send_header("Content-Type", "application/json; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
@@ -434,7 +436,7 @@ class MonitoringWebServer:
     const refreshMs = 2000;
 
     function healthClass(value) {{
-      if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned' || value === 'waiting') return 'healthy';
+      if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned') return 'healthy';
       if (value === 'unavailable' || value === 'error') return 'unavailable';
       return 'degraded';
     }}
@@ -581,9 +583,10 @@ class MonitoringWebServer:
       const identityCandidates = visual.identity_candidates || [];
       document.getElementById('vision-summary').innerHTML = [
         ['Frame', visual.frame_available ? 'live' : 'missing'],
+        ['Frame age', fmtSeconds(visual.frame_age_s)],
         ['Data', visual.data_status || 'unknown'],
         ['Detection', visual.detection_status || visual.detection_health || 'unknown'],
-        ['Identity', visual.identity_status || visual.identity_health || 'unknown'],
+        ['Tracking', visual.tracking_status || 'idle'],
         ['Targets', String(visual.detection_count ?? 0)],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
@@ -618,6 +621,24 @@ class MonitoringWebServer:
       }}
       if (visual.identity_summary) {{
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Identity</strong><span class="health-tag ${{healthClass(visual.identity_health || 'unknown')}}">${{visual.identity_status || visual.identity_health || 'unknown'}}</span></div><div class="metric-label">${{visual.identity_summary}}</div></div>`);
+      }}
+      if (visual.tracking_running || visual.tracking_target || visual.tracking_last_error) {{
+        const target = visual.tracking_target || {{}};
+        const bbox = target.bbox || {{}};
+        const targetLabel = target.label || 'none';
+        const targetScore = typeof target.score === 'number' ? target.score.toFixed(2) : '—';
+        const targetX = typeof target.target_x === 'number' ? target.target_x.toFixed(2) : '—';
+        const missCount = visual.tracking_miss_count ?? 0;
+        const trackingDetails = [
+          `target ${{targetLabel}}`,
+          `score ${{targetScore}}`,
+          `x ${{targetX}}`,
+          `misses ${{missCount}}`,
+          bbox.x_min !== undefined ? `bbox x:${{Number(bbox.x_min || 0).toFixed(2)}}-${{Number(bbox.x_max || 0).toFixed(2)}}` : '',
+          visual.tracking_last_outcome_status ? `neck ${{visual.tracking_last_outcome_status}}` : '',
+          visual.tracking_age_s !== undefined && visual.tracking_age_s !== null ? `updated ${{fmtSeconds(visual.tracking_age_s)}} ago` : '',
+        ].filter(Boolean).join(' · ');
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Tracking</strong><span class="health-tag ${{healthClass(visual.tracking_last_error ? 'unavailable' : (visual.tracking_status === 'tracking' ? 'healthy' : 'degraded'))}}">${{visual.tracking_status || 'idle'}}</span></div><div class="metric-label">${{visual.tracking_last_error || trackingDetails || 'waiting for tracking state'}}</div></div>`);
       }}
       detections.slice(0, 6).forEach((detection, index) => {{
         const bbox = detection.bbox || {{}};

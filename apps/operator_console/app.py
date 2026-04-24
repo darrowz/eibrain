@@ -17,15 +17,6 @@ class OperatorConsoleApp:
         "can_orient_head",
     )
 
-    CAPABILITY_ORGANS = {
-        "can_hear_voice": "ear",
-        "can_transcribe_speech": "ear",
-        "can_see_people": "eye",
-        "can_identify_person": "eye",
-        "can_speak": "mouth",
-        "can_orient_head": "neck",
-    }
-
     ORGAN_LABELS = {
         "ear": "Ear",
         "eye": "Eye",
@@ -47,7 +38,7 @@ class OperatorConsoleApp:
         warnings = [
             f"{name}=false"
             for name in self.IMPORTANT_CAPABILITIES
-            if capabilities.get(name) is False and self._capability_is_expected(name, organs)
+            if capabilities.get(name) is False
         ]
         degraded_organs = sorted(
             organ_name
@@ -67,7 +58,10 @@ class OperatorConsoleApp:
         )
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
         audio_diagnostics = self._build_audio_diagnostics(organs, traces=traces)
-        visual_diagnostics = self._build_visual_diagnostics(organs)
+        visual_diagnostics = self._build_visual_diagnostics(
+            body_snapshot=body_snapshot,
+            organs=organs,
+        )
         dialogue_diagnostics = self._build_dialogue_diagnostics(
             body_snapshot=body_snapshot,
             cognitive_snapshot=cognitive_snapshot,
@@ -146,7 +140,7 @@ class OperatorConsoleApp:
                     }
                 )
             live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
-            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "waiting")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
             data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
@@ -331,7 +325,12 @@ class OperatorConsoleApp:
         probes.sort(key=self._probe_sort_key)
         return probes
 
-    def _build_visual_diagnostics(self, organs: dict[str, object]) -> dict[str, object]:
+    def _build_visual_diagnostics(
+        self,
+        *,
+        body_snapshot: dict[str, object],
+        organs: dict[str, object],
+    ) -> dict[str, object]:
         eye = organs.get("eye", {})
         if not isinstance(eye, dict):
             return {"enabled": False, "detections": [], "identity_candidates": []}
@@ -358,11 +357,13 @@ class OperatorConsoleApp:
             identity_candidates = []
         frame_path = detection_details.get("frame_path") or camera_details.get("frame_path")
         frame_captured_at_ts = detection_details.get("frame_captured_at_ts") or camera_details.get("frame_captured_at_ts")
+        visual_tracking = body_snapshot.get("visual_tracking", {})
+        if not isinstance(visual_tracking, dict):
+            visual_tracking = {}
         data_status = "live" if frame_path else "waiting_for_frame"
-        enabled = bool(camera or detection or identity or frame_path or detections or identity_candidates)
         return {
-            "enabled": enabled,
-            "data_health": "healthy" if frame_path else ("waiting" if enabled else "unavailable"),
+            "enabled": bool(frame_path or detections or identity_candidates),
+            "data_health": "healthy" if frame_path else "degraded",
             "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
@@ -379,6 +380,15 @@ class OperatorConsoleApp:
             "identity_summary": identity_details.get("identity_summary", "waiting for identity data"),
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
+            "frame_age_s": self._age_seconds(frame_captured_at_ts),
+            "tracking_status": visual_tracking.get("status", "idle"),
+            "tracking_updated_at_ts": visual_tracking.get("updated_at_ts"),
+            "tracking_age_s": self._age_seconds(visual_tracking.get("updated_at_ts")),
+            "tracking_running": bool(visual_tracking.get("running", False)),
+            "tracking_target": visual_tracking.get("target"),
+            "tracking_miss_count": int(visual_tracking.get("miss_count", 0) or 0),
+            "tracking_last_outcome_status": visual_tracking.get("last_outcome_status"),
+            "tracking_last_error": str(visual_tracking.get("last_error", "") or ""),
         }
 
     def _build_audio_diagnostics(self, organs: dict[str, object], *, traces: list[dict[str, object]] | None = None) -> dict[str, object]:
@@ -485,6 +495,12 @@ class OperatorConsoleApp:
         return {}
 
     @staticmethod
+    def _age_seconds(timestamp: object) -> float | None:
+        if not isinstance(timestamp, (int, float)):
+            return None
+        return round(max(0.0, time.time() - float(timestamp)), 2)
+
+    @staticmethod
     def _build_dialogue_diagnostics(
         *,
         body_snapshot: dict[str, object],
@@ -525,13 +541,6 @@ class OperatorConsoleApp:
         }.get(str(probe.get("health", "unknown")), 3)
         return (priority, str(probe.get("id", "")))
 
-    @classmethod
-    def _capability_is_expected(cls, capability_name: str, organs: dict[str, object]) -> bool:
-        organ_name = cls.CAPABILITY_ORGANS.get(capability_name)
-        if organ_name is None:
-            return True
-        return organ_name in organs
-
     @staticmethod
     def _data_health(data_status: str, fallback_health: str = "unknown") -> str:
         if data_status in {"live", "recent_trace", "played", "planned"}:
@@ -539,7 +548,7 @@ class OperatorConsoleApp:
         if fallback_health == "unavailable":
             return "unavailable"
         if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
-            return "waiting"
+            return "degraded"
         return "degraded"
 
     @staticmethod
@@ -550,8 +559,6 @@ class OperatorConsoleApp:
         status: str,
         details: dict[str, object],
     ) -> str:
-        if details.get("driver") == "noop":
-            return "no_data"
         if status == "live_probe_skipped":
             return "waiting_for_data"
         if organ_name == "eye":

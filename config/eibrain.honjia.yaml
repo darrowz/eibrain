@@ -164,7 +164,7 @@ body:
           labels:
             - person
             - face
-          refresh_interval_s: 1.5
+          refresh_interval_s: 0.5
       identity:
         driver:
           kind: command
@@ -369,9 +369,7 @@ monitoring:
 
 memory:
   openclaw:
-    provider: eimemory_rpc
-    endpoint: ${EIMEMORY_ENDPOINT:-http://honxin:8091/}
+    provider: ${EIBRAIN_MEMORY_PROVIDER:-eimemory_rpc}
+    endpoint: ${EIBRAIN_MEMORY_ENDPOINT:-http://127.0.0.1:18792}
     api_key: ${OPENCLAW_API_KEY}
-    timeout_s: 3.0
-    agent_id: honxin
-    workspace_id: honjia
+    timeout_s: 5.0

@@ -17,7 +17,7 @@ class EyeOrgan(BaseOrgan):
 
     def __init__(self, *, config=None) -> None:
         super().__init__(config=config)
-        self._cache_ttl_s = self._read_float_config("detection", "refresh_interval_s", default=1.5)
+        self._cache_ttl_s = self._read_float_config("detection", "refresh_interval_s", default=0.5)
         frame_dir = Path(tempfile.gettempdir()) / "eibrain-eye"
         frame_dir.mkdir(parents=True, exist_ok=True)
         self._frame_path = frame_dir / "latest.jpg"
