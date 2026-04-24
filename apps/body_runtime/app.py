@@ -11,6 +11,7 @@ from eibrain.protocol.actions import PlaySpeechAction
 from eibrain.body.health import DegradationManager
 from eibrain.body.ear_stream import EarStreamProcessor
 from eibrain.body.ear_stream import ArecordStreamCapture
+from eibrain.body.ear_stream import pcm_signal_stats
 from eibrain.body.organs.ear.organ import EarOrgan
 from eibrain.body.organs.eye.organ import EyeOrgan
 from eibrain.body.organs.mouth.organ import MouthOrgan
@@ -150,12 +151,23 @@ class BodyRuntimeApp:
                 actor_id=actor_id,
                 status="speech_playback_active",
             )
+        if self.ear_processor is None:
+            try:
+                self.ear_processor = self.build_default_ear_processor()
+            except RuntimeError:
+                self.ear_processor = None
         if self.ear_processor is not None:
-            return self.ear_processor.transcribe_window(
+            started = time.perf_counter()
+            observation = self.ear_processor.transcribe_window(
                 chunk_count=chunk_count,
                 session_id=session_id,
                 actor_id=actor_id,
             )
+            self._record_ear_processor_event(
+                observation=observation,
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+            )
+            return observation
         ear = next((organ for organ in self.organs if organ.name == "ear"), None)
         if ear is not None and hasattr(ear, "heartbeat"):
             original_chunk_count = getattr(ear, "_chunk_count", None)
@@ -214,9 +226,8 @@ class BodyRuntimeApp:
                 }
             )
             return observation
-        if self.ear_processor is None:
-            self.ear_processor = self.build_default_ear_processor()
-        return self.ear_processor.transcribe_window(
+        self.ear_processor = self.build_default_ear_processor()
+        return self.transcribe_audio_window(
             chunk_count=chunk_count,
             session_id=session_id,
             actor_id=actor_id,
@@ -244,6 +255,44 @@ class BodyRuntimeApp:
             }
         )
         return observation
+
+    def _record_ear_processor_event(self, *, observation: AudioTranscriptFinal, elapsed_ms: float) -> None:
+        capture = getattr(self.ear_processor, "capture", None)
+        recognizer = getattr(self.ear_processor, "recognizer", None)
+        chunks = list(getattr(capture, "last_chunks", []) or [])
+        stats = pcm_signal_stats(chunks, channels=int(getattr(capture, "channels", 1) or 1)) if chunks else {}
+        text = observation.text.strip()
+        self._recent_events.append(
+            {
+                "kind": observation.kind,
+                "source": observation.source,
+                "status": "ok" if text else "degraded",
+                "session_id": observation.session_id,
+                "recorded_at_ts": time.time(),
+                "details": {
+                    "text": text,
+                    "speech_window_summary": "transcribed speech" if text else "no vad speech trigger",
+                    "asr_status": "transcribed" if text else "silence",
+                    "asr_voice_activity": bool(text),
+                    "recognizer_prewarmed": getattr(recognizer, "prewarmed", None),
+                    "recognizer_prewarm_error": getattr(recognizer, "prewarm_error", ""),
+                    "dbfs": stats.get("dbfs"),
+                    "rms_level": stats.get("rms_level"),
+                    "peak_level": stats.get("peak_level"),
+                    "payload_bytes": sum(len(chunk) for chunk in chunks),
+                    "capture_device": getattr(capture, "device", None),
+                    "sample_rate": getattr(capture, "sample_rate", None),
+                    "channels": getattr(capture, "channels", None),
+                    "chunk_count": len(chunks),
+                    "voice_activity": stats.get("voice_activity", False),
+                    "streaming_vad": getattr(capture, "streaming_vad", False),
+                    "vad_triggered": getattr(capture, "last_vad_triggered", None),
+                    "vad_elapsed_ms": getattr(capture, "last_vad_elapsed_ms", None),
+                    "captured_at_ts": time.time(),
+                    "asr_elapsed_ms": elapsed_ms,
+                },
+            }
+        )
 
     def update_voice_dialogue_state(self, **updates: object) -> None:
         phase = updates.get("phase")

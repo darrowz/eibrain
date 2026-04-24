@@ -35,6 +35,7 @@ class ArecordStreamCapture:
     last_vad_frame_count: int = 0
     last_vad_voice_frame_count: int = 0
     last_vad_elapsed_ms: float = 0.0
+    last_chunks: list[bytes] = field(default_factory=list)
 
     def build_command(self) -> list[str]:
         return [
@@ -64,8 +65,10 @@ class ArecordStreamCapture:
         command = self.build_command() + ["-d", str(max(1, duration_s))]
         payload = self._run_arecord(command)
         if not payload:
+            self.last_chunks = []
             return []
-        return [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
+        self.last_chunks = [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
+        return list(self.last_chunks)
 
     def read_voice_window(self, max_duration_s: int, *, chunk_bytes: int = 4096) -> list[bytes]:
         command = self.build_command()
@@ -77,8 +80,10 @@ class ArecordStreamCapture:
         all_frames: list[bytes] = []
         captured_frames: list[bytes] = []
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_frames)
+        pending_voice: list[bytes] = []
         triggered = False
         voice_frames = 0
+        consecutive_voice_frames = 0
         silence_after_voice = 0
         started = time.perf_counter()
         self.last_command = list(command)
@@ -99,12 +104,20 @@ class ArecordStreamCapture:
                         stats = pcm_signal_stats([frame], channels=self.channels)
                         is_voice = bool(stats["rms_level"] >= self.vad_rms_threshold)
                         if not triggered:
-                            pre_roll.append(frame)
                             if not is_voice:
+                                pre_roll.append(frame)
+                                pending_voice.clear()
+                                consecutive_voice_frames = 0
+                                continue
+                            pending_voice.append(frame)
+                            consecutive_voice_frames += 1
+                            if consecutive_voice_frames < min_voice_frames:
                                 continue
                             triggered = True
                             captured_frames.extend(pre_roll)
-                            voice_frames = 1
+                            captured_frames.extend(pending_voice)
+                            voice_frames = consecutive_voice_frames
+                            pending_voice.clear()
                             silence_after_voice = 0
                             continue
                         captured_frames.append(frame)
@@ -230,11 +243,14 @@ class EarStreamProcessor:
             chunks = list(self.capture.read_window(chunk_count))
         else:
             chunks = list(self.capture.read_chunks(chunk_count))
-        text = self.recognizer.transcribe(
-            chunks,
-            sample_rate=self.capture.sample_rate,
-            channels=self.capture.channels,
-        )
+        if getattr(self.capture, "streaming_vad", False) and not getattr(self.capture, "last_vad_triggered", True):
+            text = ""
+        else:
+            text = self.recognizer.transcribe(
+                chunks,
+                sample_rate=self.capture.sample_rate,
+                channels=self.capture.channels,
+            )
         return AudioTranscriptFinal(
             ts=1.0,
             source="ear.asr",
