@@ -43,9 +43,9 @@ body:
             - /dev/snd
             - --label
             - audio-input
-          device: plughw:CARD=U4K,DEV=0
-          sample_rate: 48000
-          channels: 2
+          device: plughw:CARD=SPA3700,DEV=0
+          sample_rate: 16000
+          channels: 1
           chunk_count: 2
           refresh_interval_s: 1.5
           streaming_vad: true
@@ -86,26 +86,19 @@ body:
             - python3
             - -m
             - apps.body_runtime.device_ops
-            - probe-faster-whisper-model
-            - --model-name
-            - Systran/faster-whisper-tiny
-            - --python-executable
-            - /home/darrow/dev-project/eibrain/.venv/bin/python
+            - probe-sherpa-model
+            - --model-dir
+            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
           health_command:
             - python3
             - -m
             - apps.body_runtime.device_ops
-            - probe-faster-whisper-model
-            - --model-name
-            - Systran/faster-whisper-tiny
-            - --python-executable
-            - /home/darrow/dev-project/eibrain/.venv/bin/python
-          provider: faster_whisper
-          model_name: Systran/faster-whisper-tiny
-          compute_type: int8
-          beam_size: 1
-          vad_filter: false
-          python_executable: /home/darrow/dev-project/eibrain/.venv/bin/python
+            - probe-sherpa-model
+            - --model-dir
+            - /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          provider: sherpa_onnx
+          model_dir: /home/darrow/eibrain/models/asr/sherpa-onnx-streaming
+          model_type: lstm
           language: zh
           min_asr_dbfs: -35.0
           transcript_replacements:
