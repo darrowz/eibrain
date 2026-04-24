@@ -361,7 +361,7 @@ monitoring:
 memory:
   openclaw:
     provider: eimemory_rpc
-    endpoint: ${EIMEMORY_ENDPOINT:-http://127.0.0.1:8091/}
+    endpoint: ${EIMEMORY_ENDPOINT:-http://honxin:8091/}
     api_key: ${OPENCLAW_API_KEY}
     timeout_s: 3.0
     agent_id: honxin

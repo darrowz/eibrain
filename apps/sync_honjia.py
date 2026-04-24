@@ -23,7 +23,7 @@ OPTIONAL_PATHS = (
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync deployable eibrain files to honjia.")
-    parser.add_argument("--target-host", required=True, help="honjia ssh target, e.g. darrow@100.81.78.119")
+    parser.add_argument("--target-host", required=True, help="honjia ssh target, e.g. darrow@honjia")
     parser.add_argument("--target-dir", default="/home/darrow/dev-project/eibrain", help="Remote deployment dir")
     parser.add_argument(
         "--config-source",
