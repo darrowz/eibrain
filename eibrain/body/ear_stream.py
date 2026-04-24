@@ -226,7 +226,10 @@ class EarStreamProcessor:
         session_id: str,
         actor_id: str,
     ) -> AudioTranscriptFinal:
-        chunks = list(self.capture.read_chunks(chunk_count))
+        if hasattr(self.capture, "read_window"):
+            chunks = list(self.capture.read_window(chunk_count))
+        else:
+            chunks = list(self.capture.read_chunks(chunk_count))
         text = self.recognizer.transcribe(
             chunks,
             sample_rate=self.capture.sample_rate,

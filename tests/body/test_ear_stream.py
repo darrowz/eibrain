@@ -160,3 +160,35 @@ def test_ear_stream_processor_emits_audio_transcript_observation() -> None:
 
     assert observation.text == "ni hao eibrain"
     assert observation.session_id == "session-1"
+
+
+def test_ear_stream_processor_prefers_vad_window_capture() -> None:
+    from eibrain.body.ear_stream import EarStreamProcessor
+
+    class _Capture:
+        sample_rate = 48000
+        channels = 2
+
+        def read_window(self, duration_s: int):
+            assert duration_s == 3
+            return [b"voice"]
+
+        def read_chunks(self, chunk_count: int):  # pragma: no cover - should not be used when VAD is available
+            raise AssertionError("read_chunks bypasses streaming VAD")
+
+    class _Recognizer:
+        def transcribe(self, pcm_chunks: list[bytes], *, sample_rate: int, channels: int) -> str:
+            assert pcm_chunks == [b"voice"]
+            assert sample_rate == 48000
+            assert channels == 2
+            return "你好鸿途"
+
+    processor = EarStreamProcessor(capture=_Capture(), recognizer=_Recognizer())
+
+    observation = processor.transcribe_window(
+        chunk_count=3,
+        session_id="session-2",
+        actor_id="user-2",
+    )
+
+    assert observation.text == "你好鸿途"
