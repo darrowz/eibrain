@@ -180,3 +180,17 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
     assert config.memory.openclaw.endpoint == "http://honxin:8091/"
     assert config.memory.openclaw.agent_id == "honxin"
     assert config.memory.openclaw.workspace_id == "honjia"
+
+def test_primary_config_uses_reachable_eimemory_endpoint(monkeypatch) -> None:
+    from pathlib import Path
+
+    from eibrain.infra.config import load_config
+
+    monkeypatch.delenv("EIMEMORY_ENDPOINT", raising=False)
+    config_path = Path(__file__).resolve().parents[2] / "config" / "eibrain.yaml"
+
+    config = load_config(config_path)
+
+    assert config.memory.openclaw.provider == "eimemory_rpc"
+    assert config.memory.openclaw.endpoint == "http://100.66.161.64:8091/"
+
