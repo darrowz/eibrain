@@ -749,8 +749,12 @@ class MonitoringWebServer:
       const dialogue = report.dialogue_diagnostics || {{}};
       const latency = dialogue.last_latency_s || {{}};
       const llm = dialogue.last_llm_status || {{}};
+      const sessionState = !dialogue.enabled ? 'off' : (!dialogue.running ? 'stopped' : (dialogue.conversation_active ? 'awake' : 'sleeping'));
       document.getElementById('dialogue-summary').innerHTML = [
         ['Loop', dialogue.running ? 'running' : (dialogue.enabled ? 'stopped' : 'off')],
+        ['Session', sessionState],
+        ['Wake', dialogue.wake_word || '-'],
+        ['Sleep', dialogue.sleep_word || '-'],
         ['Phase', dialogue.phase || 'idle'],
         ['Phase age', fmtSeconds(dialogue.current_phase_elapsed_s)],
         ['Status', dialogue.last_status || 'idle'],

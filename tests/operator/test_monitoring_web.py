@@ -46,6 +46,10 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "Audio diagnostics" in html
     assert "Visual diagnostics" in html
     assert "/metrics.json" in html
+    assert "const sessionState = !dialogue.enabled ? 'off'" in html
+    assert "['Session', sessionState]" in html
+    assert "['Wake', dialogue.wake_word || '-']" in html
+    assert "['Sleep', dialogue.sleep_word || '-']" in html
 
 
 def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:

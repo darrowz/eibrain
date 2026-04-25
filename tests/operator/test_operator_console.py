@@ -65,6 +65,9 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
             "voice_dialogue": {
                 "enabled": True,
                 "running": True,
+                "conversation_active": True,
+                "wake_word": "\u9e3f\u9014",
+                "sleep_word": "\u7ed3\u675f\u5bf9\u8bdd",
                 "phase": "thinking",
                 "last_status": "transcribed",
                 "turn_count": 3,
@@ -86,6 +89,9 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     dialogue = report["dialogue_diagnostics"]
 
     assert dialogue["running"] is True
+    assert dialogue["conversation_active"] is True
+    assert dialogue["wake_word"] == "\u9e3f\u9014"
+    assert dialogue["sleep_word"] == "\u7ed3\u675f\u5bf9\u8bdd"
     assert dialogue["phase"] == "thinking"
     assert dialogue["turn_count"] == 3
     assert dialogue["last_transcript"] == "福州小吃"

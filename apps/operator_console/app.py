@@ -555,6 +555,9 @@ class OperatorConsoleApp:
         return {
             "enabled": bool(loop.get("enabled")),
             "running": bool(loop.get("running")),
+            "conversation_active": bool(loop.get("conversation_active")),
+            "wake_word": loop.get("wake_word", ""),
+            "sleep_word": loop.get("sleep_word", ""),
             "phase": loop.get("phase", "idle"),
             "phase_started_at_ts": loop.get("phase_started_at_ts"),
             "current_phase_elapsed_s": current_phase_elapsed_s,
