@@ -140,7 +140,7 @@ class OperatorConsoleApp:
                     }
                 )
             live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
-            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "waiting")
             data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
@@ -395,10 +395,11 @@ class OperatorConsoleApp:
                     "source": "session_registration",
                 }
                 identity_candidates = [registered_candidate, *identity_candidates]
+        pipeline_enabled = bool(subfunctions or frame_path or detections or identity_candidates or registered_identity.get("registered"))
         data_status = "live" if frame_path else "waiting_for_frame"
         return {
-            "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
-            "data_health": "healthy" if frame_path else "degraded",
+            "enabled": pipeline_enabled,
+            "data_health": "healthy" if frame_path else ("waiting" if pipeline_enabled else "unavailable"),
             "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
@@ -586,7 +587,7 @@ class OperatorConsoleApp:
         if fallback_health == "unavailable":
             return "unavailable"
         if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
-            return "degraded"
+            return "waiting"
         return "degraded"
 
     @staticmethod

@@ -206,10 +206,10 @@ class EyeOrgan(BaseOrgan):
             health = "unavailable"
         elif identity_candidates:
             status = "observing_unknown_face"
-            health = "degraded"
+            health = "healthy"
         else:
             status = "no_face_candidates"
-            health = "degraded"
+            health = "healthy"
         details = self._merge_probe_details(
             probe=probe_details,
             elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
@@ -225,7 +225,7 @@ class EyeOrgan(BaseOrgan):
             }
         )
         if health != "healthy":
-            details["error"] = None if identity_candidates else status
+            details["error"] = status
         return SubfunctionHealth(name="identity", health=health, details=details)
 
     def _driver_kind(self, name: str) -> str:

@@ -298,13 +298,14 @@ def test_operator_console_distinguishes_health_from_live_data() -> None:
     neck_card = next(card for card in report["organ_cards"] if card["name"] == "neck")
 
     assert eye_card["health"] == "healthy"
-    assert eye_card["data_health"] == "degraded"
+    assert eye_card["data_health"] == "waiting"
     assert eye_card["data_status"] == "waiting_for_data"
     assert eye_card["live_data_subfunctions"] == 0
     assert eye_card["subfunctions"][0]["data_status"] == "waiting_for_data"
     assert neck_card["data_status"] == "waiting_for_data"
     assert report["summary"]["live_data_subfunction_count"] == 0
     assert report["summary"]["waiting_data_subfunction_count"] == 3
+    assert report["visual_diagnostics"]["data_health"] == "waiting"
     assert report["visual_diagnostics"]["data_status"] == "waiting_for_frame"
 
 

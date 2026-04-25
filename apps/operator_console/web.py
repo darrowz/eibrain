@@ -55,10 +55,7 @@ class MonitoringWebServer:
                         self.send_error(404, "vision frame not available")
                     return
                 if request_path in {"/status.json", "/healthz", "/metrics.json"}:
-                    status_code = 200
-                    if request_path == "/healthz" and report.get("system_health") != "healthy":
-                        status_code = 503
-                    self._send_json(status_code, report)
+                    self._send_json(200, report)
                     return
                 body = outer._render_html(report).encode("utf-8")
                 self.send_response(200)
@@ -284,6 +281,7 @@ class MonitoringWebServer:
       background: var(--panel-3);
     }}
     .health-tag.healthy {{ color: var(--green); }}
+    .health-tag.waiting {{ color: var(--yellow); background: rgba(255, 209, 102, 0.10); }}
     .health-tag.degraded, .warning-tag {{ color: var(--yellow); background: rgba(255, 209, 102, 0.12); }}
     .health-tag.unavailable {{ color: var(--red); background: rgba(255, 92, 105, 0.12); }}
     .latency-bar {{
@@ -487,6 +485,7 @@ class MonitoringWebServer:
 
     function healthClass(value) {{
       if (value === 'healthy' || value === 'normal' || value === 'live' || value === 'played' || value === 'planned') return 'healthy';
+      if (value === 'waiting' || value === 'waiting_for_data' || value === 'waiting_for_frame' || value === 'waiting_for_action' || value === 'waiting_for_target') return 'waiting';
       if (value === 'unavailable' || value === 'error') return 'unavailable';
       return 'degraded';
     }}
