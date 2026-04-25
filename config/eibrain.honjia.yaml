@@ -256,6 +256,8 @@ body:
             - "32000"
             - --channel
             - "1"
+            - --cache-dir
+            - /tmp/eibrain-tts-cache
           health_command:
             - python3
             - -m

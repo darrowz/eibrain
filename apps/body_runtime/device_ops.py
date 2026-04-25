@@ -61,6 +61,7 @@ def main() -> None:
     speak.add_argument("--emotion", default="")
     speak.add_argument("--language-boost", default="auto")
     speak.add_argument("--timeout-s", type=int, default=30)
+    speak.add_argument("--cache-dir", default="")
 
     gimbal = subparsers.add_parser("move-gimbal")
     gimbal.add_argument("--servo-id", type=int, default=1)
@@ -122,6 +123,7 @@ def main() -> None:
             emotion=args.emotion,
             language_boost=args.language_boost,
             timeout_s=args.timeout_s,
+            cache_dir=args.cache_dir or None,
         )
     elif args.command == "move-gimbal":
         payload = json.loads(sys.stdin.read() or "{}")

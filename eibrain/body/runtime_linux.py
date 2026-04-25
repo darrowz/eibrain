@@ -123,6 +123,7 @@ def speak_text(
     timeout_s: int = 30,
     runner=subprocess.run,
     urlopen=request.urlopen,
+    cache_dir: str | Path | None = None,
     temp_dir: str | Path | None = None,
 ) -> dict[str, object]:
     if backend == "minimax":
@@ -145,6 +146,7 @@ def speak_text(
             timeout_s=timeout_s,
             runner=runner,
             urlopen=urlopen,
+            cache_dir=cache_dir,
             temp_dir=temp_dir,
         )
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=temp_dir) as handle:
@@ -233,6 +235,7 @@ def _speak_text_with_minimax(
     timeout_s: int,
     runner,
     urlopen,
+    cache_dir: str | Path | None,
     temp_dir: str | Path | None,
 ) -> dict[str, object]:
     if not api_key:
@@ -255,8 +258,40 @@ def _speak_text_with_minimax(
             },
         }
 
-    with tempfile.NamedTemporaryFile(suffix=f".{audio_format.lower()}", delete=False, dir=temp_dir) as handle:
-        audio_path = Path(handle.name)
+    cache_path = _minimax_audio_cache_path(
+        cache_dir=cache_dir,
+        text=text,
+        model=model,
+        voice_id=voice_id,
+        audio_format=audio_format,
+        sample_rate=sample_rate,
+        bitrate=bitrate,
+        channel=channel,
+        speed=speed,
+        volume=volume,
+        pitch=pitch,
+        emotion=emotion,
+        language_boost=language_boost,
+    ) if cache_dir else None
+    if cache_path is not None and cache_path.exists() and cache_path.stat().st_size > 0:
+        return _play_minimax_audio_file(
+            audio_path=cache_path,
+            output_device=output_device,
+            runner=runner,
+            details={
+                "backend": "minimax",
+                "model": model,
+                "voice_id": voice_id,
+                "audio_format": audio_format.lower(),
+                "cache_hit": True,
+                "cache_key": cache_path.stem,
+                "cache_path": str(cache_path),
+            },
+        )
+
+    audio_path: Path | None = None
+    delete_audio_path = False
+    cache_error = ""
     try:
         synthesized = synthesize_minimax_speech(
             text=text,
@@ -282,30 +317,116 @@ def _speak_text_with_minimax(
             return {"status": "error", "details": details}
 
         audio_bytes = synthesized["audio_bytes"]
-        audio_path.write_bytes(audio_bytes)
-        playback = runner(
-            ["aplay", "-D", output_device, str(audio_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        if cache_path is not None:
+            try:
+                _write_audio_cache(cache_path=cache_path, audio_bytes=audio_bytes)
+                audio_path = cache_path
+            except OSError as exc:
+                cache_error = str(exc)
+        if audio_path is None:
+            audio_path = _write_temp_audio(audio_bytes=audio_bytes, audio_format=audio_format, temp_dir=temp_dir)
+            delete_audio_path = True
+
         synth_details = dict(synthesized.get("details", {}))
         synth_details.update(
             {
                 "backend": "minimax",
                 "output_device": output_device,
-                "audio_path": str(audio_path),
-                "returncode": playback.returncode,
-                "stdout": playback.stdout.strip(),
-                "stderr": playback.stderr.strip(),
+                "cache_hit": False,
+                "cache_key": cache_path.stem if cache_path is not None else "",
+                "cache_path": str(cache_path) if cache_path is not None else "",
             }
         )
-        return {
-            "status": "ok" if playback.returncode == 0 else "error",
-            "details": synth_details,
-        }
+        if cache_error:
+            synth_details["cache_error"] = cache_error
+        return _play_minimax_audio_file(
+            audio_path=audio_path,
+            output_device=output_device,
+            runner=runner,
+            details=synth_details,
+        )
     finally:
-        audio_path.unlink(missing_ok=True)
+        if delete_audio_path and audio_path is not None:
+            audio_path.unlink(missing_ok=True)
+
+
+
+def _minimax_audio_cache_path(
+    *,
+    cache_dir: str | Path | None,
+    text: str,
+    model: str,
+    voice_id: str,
+    audio_format: str,
+    sample_rate: int,
+    bitrate: int,
+    channel: int,
+    speed: float,
+    volume: float,
+    pitch: float,
+    emotion: str,
+    language_boost: str,
+) -> Path | None:
+    if not cache_dir:
+        return None
+    cache_key_payload = {
+        "text": text,
+        "model": model,
+        "voice_id": voice_id,
+        "audio_format": audio_format.lower(),
+        "sample_rate": sample_rate,
+        "bitrate": bitrate,
+        "channel": channel,
+        "speed": _normalize_minimax_number(speed),
+        "volume": _normalize_minimax_number(volume),
+        "pitch": _normalize_minimax_number(pitch),
+        "emotion": emotion,
+        "language_boost": language_boost,
+    }
+    encoded = json.dumps(cache_key_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    cache_key = hashlib.sha256(encoded).hexdigest()
+    return Path(cache_dir).expanduser() / f"{cache_key}.{audio_format.lower()}"
+
+
+def _write_audio_cache(*, cache_path: Path, audio_bytes: bytes) -> None:
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=cache_path.suffix, delete=False, dir=cache_path.parent) as handle:
+            handle.write(audio_bytes)
+            temp_path = Path(handle.name)
+        temp_path.replace(cache_path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink(missing_ok=True)
+
+
+def _write_temp_audio(*, audio_bytes: bytes, audio_format: str, temp_dir: str | Path | None) -> Path:
+    with tempfile.NamedTemporaryFile(suffix=f".{audio_format.lower()}", delete=False, dir=temp_dir) as handle:
+        handle.write(audio_bytes)
+        return Path(handle.name)
+
+
+def _play_minimax_audio_file(*, audio_path: Path, output_device: str, runner, details: dict[str, object]) -> dict[str, object]:
+    playback = runner(
+        ["aplay", "-D", output_device, str(audio_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    playback_details = dict(details)
+    playback_details.update(
+        {
+            "audio_path": str(audio_path),
+            "returncode": playback.returncode,
+            "stdout": playback.stdout.strip(),
+            "stderr": playback.stderr.strip(),
+        }
+    )
+    return {
+        "status": "ok" if playback.returncode == 0 else "error",
+        "details": playback_details,
+    }
 
 
 def synthesize_minimax_speech(

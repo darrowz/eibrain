@@ -133,6 +133,77 @@ def test_speak_text_uses_minimax_t2a_and_aplay(tmp_path) -> None:
     assert calls[0][:3] == ["aplay", "-D", "plughw:2,0"]
 
 
+
+def test_speak_text_reuses_minimax_audio_cache(tmp_path) -> None:
+    from eibrain.body.runtime_linux import speak_text
+
+    calls: list[list[str]] = []
+    url_calls = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "data": {"audio": "52494646", "status": 2},
+                    "extra_info": {
+                        "audio_size": 4,
+                        "audio_length": 100,
+                        "audio_sample_rate": 32000,
+                        "audio_format": "wav",
+                        "audio_channel": 1,
+                    },
+                    "trace_id": "trace-cache",
+                    "base_resp": {"status_code": 0, "status_msg": "success"},
+                }
+            ).encode("utf-8")
+
+    def _runner(command: list[str], **kwargs):
+        calls.append(command)
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    def _urlopen(req, timeout=0):
+        url_calls.append(req)
+        return _Response()
+
+    common = {
+        "text": "hello honjia",
+        "output_device": "plughw:2,0",
+        "backend": "minimax",
+        "api_key": "secret",
+        "runner": _runner,
+        "cache_dir": tmp_path / "tts-cache",
+    }
+
+    first = speak_text(**common, urlopen=_urlopen, temp_dir=tmp_path)
+    second = speak_text(
+        **common,
+        urlopen=lambda req, timeout=0: (_ for _ in ()).throw(AssertionError("cache hit should not call network")),
+        temp_dir=tmp_path,
+    )
+
+    assert first["status"] == "ok"
+    assert second["status"] == "ok"
+    assert first["details"]["cache_hit"] is False
+    assert second["details"]["cache_hit"] is True
+    assert len(url_calls) == 1
+    assert calls[0][:3] == ["aplay", "-D", "plughw:2,0"]
+    assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
+    assert calls[0][-1] == calls[1][-1]
+    assert Path(calls[0][-1]).parent == tmp_path / "tts-cache"
+
+
 def test_probe_tts_playback_requires_minimax_api_key(monkeypatch) -> None:
     from eibrain.body.runtime_linux import probe_tts_playback
 
