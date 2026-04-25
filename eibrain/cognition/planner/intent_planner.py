@@ -5,6 +5,7 @@ from eibrain.cognition.dialogue.llm_router import LLMRouter
 from eibrain.cognition.dialogue.prompt_builder import PromptBuilder
 from eibrain.cognition.policy.engine import PolicyEngine
 from eibrain.memory.contracts import MemoryResult
+from eibrain.protocol.events import CognitiveDecision
 from eibrain.protocol.intents import OrientIntent, PauseIntent, SpeakIntent
 from eibrain.state.embodied import EmbodiedState
 
@@ -23,7 +24,12 @@ class IntentPlanner:
         self.llm_router = llm_router or LLMRouter()
         self.dialogue_manager = dialogue_manager or DialogueManager()
 
-    def plan(self, state: EmbodiedState, memory: MemoryResult) -> list[SpeakIntent | OrientIntent | PauseIntent]:
+    def plan(
+        self,
+        state: EmbodiedState,
+        memory: MemoryResult,
+        decision: CognitiveDecision | None = None,
+    ) -> list[SpeakIntent | OrientIntent | PauseIntent]:
         if state.engagement.phase == "interrupted":
             return [
                 PauseIntent(
@@ -38,8 +44,9 @@ class IntentPlanner:
 
         intents: list[SpeakIntent | OrientIntent | PauseIntent] = []
         prompt = self.prompt_builder.build(state, memory)
-        llm_text = self.llm_router.generate(prompt) if self.policy.should_reply(state) else ""
-        reply_text = self.dialogue_manager.build_reply_text(state, memory, llm_text).strip()
+        allow_reply = self.policy.should_reply(state, decision)
+        llm_text = self.llm_router.generate(prompt) if allow_reply else ""
+        reply_text = self.dialogue_manager.build_reply_text(state, memory, llm_text).strip() if allow_reply else ""
         if reply_text:
             intents.append(
                 SpeakIntent(

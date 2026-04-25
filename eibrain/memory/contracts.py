@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -10,6 +11,7 @@ class MemoryQuery:
     query: str
     session_id: str | None = None
     actor_id: str | None = None
+    task_context: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

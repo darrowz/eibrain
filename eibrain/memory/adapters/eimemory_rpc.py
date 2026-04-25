@@ -17,16 +17,18 @@ class EIMemoryRPCAdapter:
         self._sessions: dict[str, str] = {}
 
     def retrieve_context(self, query: MemoryQuery) -> MemoryResult:
+        task_context = {
+            "task_type": "brain.respond",
+            "goal": "retrieve memory for embodied response",
+        }
+        task_context.update(dict(query.task_context or {}))
         payload = {
             "method": "memory.recall",
             "params": {
                 "query": query.query,
                 "limit": 8,
                 "scope": self._scope(query),
-                "task_context": {
-                    "task_type": "brain.respond",
-                    "goal": "retrieve memory for embodied response",
-                },
+                "task_context": task_context,
             },
         }
         try:
@@ -46,6 +48,7 @@ class EIMemoryRPCAdapter:
         source: str = "eibrain.dialogue",
         modality: str = "text",
         organ: str = "cognition",
+        outcome: dict[str, object] | None = None,
     ) -> None:
         cleaned_summary = str(summary or "").strip()
         if not cleaned_summary:
@@ -63,10 +66,19 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
                 "organ": organ,
                 "modality": modality,
+                "outcome": dict(outcome or {}),
             },
         }
         try:
             self._post_json(payload)
+            self._observe_failed_outcome(
+                outcome=outcome,
+                session_id=session_id,
+                actor_id=actor_id,
+                source=source,
+                modality=modality,
+                organ=organ,
+            )
         except (URLError, OSError, ValueError, TypeError, KeyError):
             return
 
@@ -118,6 +130,98 @@ class EIMemoryRPCAdapter:
         if session_id is None:
             return ""
         return self._sessions.get(session_id, "")
+
+    def observe_outcome(
+        self,
+        *,
+        signal_type: str,
+        payload: dict[str, object],
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> None:
+        if not self.config.endpoint:
+            return
+        body = {
+            "method": "evolution.observe",
+            "params": {
+                "signal_type": signal_type,
+                "payload": dict(payload or {}),
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+            },
+        }
+        try:
+            self._post_json(body)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return
+
+    def observe(
+        self,
+        signal_type: str,
+        payload: dict[str, object],
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        if not self.config.endpoint:
+            return {}
+        body = {
+            "method": "evolution.observe",
+            "params": {
+                "signal_type": signal_type,
+                "payload": dict(payload or {}),
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+            },
+        }
+        try:
+            return self._post_json(body)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return {}
+
+    def get_active_policy(
+        self,
+        *,
+        task_type: str = "brain.respond",
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        if not self.config.endpoint:
+            return {}
+        body = {
+            "method": "evolution.get_active_policy",
+            "params": {
+                "task_type": task_type,
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+            },
+        }
+        try:
+            result = self._post_json(body)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return {}
+        policy = result.get("result", {})
+        return dict(policy) if isinstance(policy, dict) else {}
+
+    def _observe_failed_outcome(
+        self,
+        *,
+        outcome: dict[str, object] | None,
+        session_id: str,
+        actor_id: str | None,
+        source: str,
+        modality: str,
+        organ: str,
+    ) -> None:
+        payload = dict(outcome or {})
+        status = str(payload.get("status") or "").lower()
+        failed = payload.get("success") is False or status in {"error", "failed"}
+        if not failed:
+            return
+        payload.update({"source": source, "modality": modality, "organ": organ})
+        self.observe_outcome(
+            signal_type="incident",
+            payload=payload,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
 
     def _scope(self, query: MemoryQuery) -> dict[str, str]:
         return self._scope_from_ids(session_id=query.session_id, actor_id=query.actor_id)

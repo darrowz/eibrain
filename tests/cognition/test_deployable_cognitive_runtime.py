@@ -149,6 +149,11 @@ def test_cognitive_runtime_records_audio_episode_for_memory() -> None:
     assert payload["source"] == "eibrain.audio_dialogue"
     assert payload["modality"] == "audio_text"
     assert payload["organ"] == "ear"
+    assert payload["outcome"]["status"] == "planned"
+    assert payload["outcome"]["action_count"] == 1
+    snapshot = runtime.snapshot()
+    assert snapshot["last_attention"]["should_reply"] is True
+    assert snapshot["last_policy_decision"]["decision_type"] == "reply"
 
 
 def test_cognitive_runtime_records_visual_episode_for_memory() -> None:
@@ -195,6 +200,42 @@ def test_cognitive_runtime_records_visual_episode_for_memory() -> None:
     assert payload["source"] == "eibrain.visual_frame"
     assert payload["modality"] == "vision"
     assert payload["organ"] == "eye"
+    assert payload["outcome"]["status"] == "planned"
+    assert "modality" in runtime.memory.queries[0].task_context
+    assert runtime.memory.queries[0].task_context["task_type"] == "brain.orient"
+    assert runtime.memory.queries[0].task_context["modality"] == "vision"
+
+
+def test_cognitive_runtime_observes_outcome_when_memory_supports_it() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        def __init__(self) -> None:
+            self.observed: list[dict[str, object]] = []
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="Prefer concise spoken replies.")
+
+        def remember_episode(self, **kwargs):
+            pass
+
+        def observe_outcome(self, **kwargs):
+            self.observed.append(dict(kwargs))
+
+        def get_active_policy(self, **kwargs):
+            return {"response_policy": {"reply_style": "concise"}}
+
+    runtime = CognitiveRuntimeApp()
+    runtime.memory = _MemoryAdapter()
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="hello", session_id="s1", actor_id="user-1")
+    )
+
+    assert runtime.memory.observed
+    assert runtime.memory.observed[0]["signal_type"] == "cognitive_turn"
+    assert runtime.memory.observed[0]["payload"]["decision"] == "reply"
 
 
 def test_cognitive_runtime_prefers_minimax_cli_provider(tmp_path) -> None:

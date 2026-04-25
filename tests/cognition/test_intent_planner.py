@@ -58,6 +58,32 @@ def test_intent_planner_generates_pause_intent_on_interrupt() -> None:
     assert intents[0].kind == "pause_intent"
 
 
+def test_intent_planner_respects_no_reply_decision() -> None:
+    from eibrain.cognition.planner.intent_planner import IntentPlanner
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.events import CognitiveDecision
+    from eibrain.state.embodied import EmbodiedState
+
+    planner = IntentPlanner()
+    state = EmbodiedState.create_default().with_transcript(
+        text="hello",
+        session_id="s1",
+        actor_id="user-1",
+        ts=1.0,
+    )
+    decision = CognitiveDecision(
+        decision_type="ignore",
+        reason="low_salience",
+        should_reply=False,
+        should_orient=False,
+        should_writeback=False,
+    )
+
+    intents = planner.plan(state=state, memory=MemoryResult(summary="memory fallback"), decision=decision)
+
+    assert not any(intent.kind == "speak_intent" for intent in intents)
+
+
 def test_dialogue_manager_prepares_llm_text_for_speech() -> None:
     from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
     from eibrain.memory.contracts import MemoryResult

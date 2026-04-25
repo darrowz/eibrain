@@ -60,6 +60,52 @@ def test_eimemory_rpc_adapter_posts_recall_request(monkeypatch) -> None:
     }
 
 
+def test_eimemory_rpc_adapter_merges_custom_task_context(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"items": [], "rules": [], "explanation": {}}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.retrieve_context(
+        MemoryQuery(
+            query="hello",
+            task_context={
+                "goal": "respond to spoken user input",
+                "organ": "ear",
+                "modality": "audio_text",
+                "recall_profile": "precision",
+            },
+        )
+    )
+
+    task_context = captured["body"]["params"]["task_context"]
+    assert task_context["task_type"] == "brain.respond"
+    assert task_context["goal"] == "respond to spoken user input"
+    assert task_context["organ"] == "ear"
+    assert task_context["modality"] == "audio_text"
+    assert task_context["recall_profile"] == "precision"
+
+
 def test_eimemory_rpc_adapter_maps_recall_bundle_to_memory_result(monkeypatch) -> None:
     import json
 
@@ -150,6 +196,7 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
         source="eibrain.audio_dialogue",
         modality="audio_text",
         organ="ear",
+        outcome={"success": True, "status": "planned", "action_count": 1},
     )
 
     assert captured["body"] == {
@@ -167,8 +214,117 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
             },
             "organ": "ear",
             "modality": "audio_text",
+            "outcome": {"success": True, "status": "planned", "action_count": 1},
         },
     }
+
+
+def test_eimemory_rpc_adapter_observes_failed_episode_as_incident(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured.append(json.loads(req.data.decode("utf-8")))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_episode(
+        session_id="voice-session",
+        actor_id="user-1",
+        summary="user:hello | reply:",
+        source="eibrain.audio_dialogue",
+        modality="audio_text",
+        organ="ear",
+        outcome={"success": False, "status": "failed", "action_count": 0},
+    )
+
+    assert [payload["method"] for payload in captured] == ["memory.ingest", "evolution.observe"]
+    incident = captured[1]["params"]
+    assert incident["signal_type"] == "incident"
+    assert incident["payload"]["status"] == "failed"
+    assert incident["payload"]["organ"] == "ear"
+
+
+def test_eimemory_rpc_adapter_gets_active_policy(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"ok": True, "result": {"retrieval_policy": {"recall_profile": "precision"}}}
+            ).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    policy = adapter.get_active_policy(task_type="brain.respond", session_id="s1", actor_id="user-1")
+
+    assert policy == {"retrieval_policy": {"recall_profile": "precision"}}
+    assert captured["body"]["method"] == "evolution.get_active_policy"
+    assert captured["body"]["params"]["task_type"] == "brain.respond"
+
+
+def test_eimemory_rpc_adapter_observe_posts_evolution_observe(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "obs_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.observe("cognitive_turn", {"action_count": 1}, session_id="s1", actor_id="user-1")
+
+    assert captured["body"]["method"] == "evolution.observe"
+    assert captured["body"]["params"]["signal_type"] == "cognitive_turn"
+    assert captured["body"]["params"]["payload"] == {"action_count": 1}
 
 
 def test_eimemory_rpc_adapter_posts_memory_ingest_for_preference(monkeypatch) -> None:
