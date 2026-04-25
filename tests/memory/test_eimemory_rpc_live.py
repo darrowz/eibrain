@@ -56,3 +56,45 @@ def test_eimemory_rpc_adapter_reads_from_live_server(tmp_path) -> None:
         runtime.close()
 
     assert "concise" in result.summary.lower()
+
+
+def test_eimemory_rpc_adapter_writes_episode_to_live_server(tmp_path) -> None:
+    _ensure_eimemory_repo_on_path()
+
+    from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer
+    from eimemory.api.runtime import Runtime
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery
+
+    runtime = Runtime.create(root=tmp_path / "eimemory-runtime")
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
+    server.start()
+    try:
+        adapter = EIMemoryRPCAdapter(
+            OpenClawConfig(
+                provider="eimemory_rpc",
+                endpoint=f"http://{server.address[0]}:{server.address[1]}/",
+                agent_id="honxin",
+                workspace_id="honjia",
+            )
+        )
+        adapter.remember_episode(
+            session_id="voice-session",
+            actor_id="user-1",
+            summary="user:hello | reply:hi",
+            title="Audio dialogue turn",
+            memory_type="conversation",
+            source="eibrain.audio_dialogue",
+            modality="audio_text",
+            organ="ear",
+        )
+        result = adapter.retrieve_context(
+            MemoryQuery(query="hello hi audio dialogue", session_id="voice-session", actor_id="user-1")
+        )
+    finally:
+        server.stop()
+        runtime.close()
+
+    assert "hello" in result.summary.lower() or "reply" in result.summary.lower()

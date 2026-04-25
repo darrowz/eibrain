@@ -35,11 +35,78 @@ class EIMemoryRPCAdapter:
         except (URLError, OSError, ValueError, TypeError, KeyError):
             return self._fallback_result(query)
 
-    def remember_episode(self, *, session_id: str, summary: str) -> None:
-        self._sessions[session_id] = summary
+    def remember_episode(
+        self,
+        *,
+        session_id: str,
+        summary: str,
+        actor_id: str | None = None,
+        title: str = "",
+        memory_type: str = "conversation",
+        source: str = "eibrain.dialogue",
+        modality: str = "text",
+        organ: str = "cognition",
+    ) -> None:
+        cleaned_summary = str(summary or "").strip()
+        if not cleaned_summary:
+            return
+        self._sessions[session_id] = cleaned_summary
+        if not self.config.endpoint:
+            return
+        payload = {
+            "method": "memory.ingest",
+            "params": {
+                "text": cleaned_summary,
+                "title": title or "Embodied episode",
+                "memory_type": memory_type,
+                "source": source,
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "organ": organ,
+                "modality": modality,
+            },
+        }
+        try:
+            self._post_json(payload)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return
 
-    def remember_preference(self, *, actor_id: str, profile: dict[str, str]) -> None:
-        self._profiles[actor_id] = dict(profile)
+    def remember_preference(
+        self,
+        *,
+        actor_id: str,
+        profile: dict[str, str],
+        title: str = "",
+        source: str = "eibrain.preference",
+        modality: str = "text",
+        organ: str = "cognition",
+    ) -> None:
+        normalized_profile = {str(key): str(value) for key, value in dict(profile or {}).items()}
+        self._profiles[actor_id] = dict(normalized_profile)
+        if not normalized_profile or not self.config.endpoint:
+            return
+        profile_summary = ", ".join(
+            f"{key}={value}"
+            for key, value in sorted(normalized_profile.items())
+            if key.strip() and value.strip()
+        )
+        if not profile_summary:
+            return
+        payload = {
+            "method": "memory.ingest",
+            "params": {
+                "text": f"Preference profile for {actor_id}: {profile_summary}",
+                "title": title or f"Preference profile: {actor_id}",
+                "memory_type": "preference",
+                "source": source,
+                "scope": self._scope_from_ids(actor_id=actor_id),
+                "organ": organ,
+                "modality": modality,
+            },
+        }
+        try:
+            self._post_json(payload)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return
 
     def load_actor_profile(self, actor_id: str | None) -> dict[str, str] | None:
         if actor_id is None:
@@ -53,18 +120,23 @@ class EIMemoryRPCAdapter:
         return self._sessions.get(session_id, "")
 
     def _scope(self, query: MemoryQuery) -> dict[str, str]:
+        return self._scope_from_ids(session_id=query.session_id, actor_id=query.actor_id)
+
+    def _scope_from_ids(self, *, session_id: str | None = None, actor_id: str | None = None) -> dict[str, str]:
         scope: dict[str, str] = {}
         if self.config.agent_id:
             scope["agent_id"] = self.config.agent_id
         if self.config.workspace_id:
             scope["workspace_id"] = self.config.workspace_id
-        if query.session_id:
-            scope["session_id"] = query.session_id
-        if query.actor_id:
-            scope["actor_id"] = query.actor_id
+        if session_id:
+            scope["session_id"] = session_id
+        if actor_id:
+            scope["actor_id"] = actor_id
         return scope
 
     def _post_json(self, payload: dict[str, object]) -> dict[str, object]:
+        if not self.config.endpoint:
+            raise ValueError("eimemory RPC endpoint is not configured")
         req = request.Request(
             self.config.endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -72,7 +144,10 @@ class EIMemoryRPCAdapter:
             headers=self._headers(),
         )
         with request.urlopen(req, timeout=self.config.timeout_s) as response:
-            return json.loads(response.read().decode("utf-8"))
+            result = json.loads(response.read().decode("utf-8"))
+        if not isinstance(result, dict) or result.get("ok") is False:
+            raise ValueError("eimemory RPC request failed")
+        return result
 
     def _map_result(self, payload: dict[str, object]) -> MemoryResult:
         result = dict(payload.get("result", {}))

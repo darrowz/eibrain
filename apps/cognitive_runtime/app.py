@@ -84,7 +84,13 @@ class CognitiveRuntimeApp:
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
         self.memory.remember_episode(
             session_id=state.session.active_session_id or "unknown-session",
+            actor_id=state.world.current_speaker_id,
             summary=f"user:{state.world.last_transcript} | reply:{self.last_reply}",
+            title="Audio dialogue turn",
+            memory_type="conversation",
+            source="eibrain.audio_dialogue",
+            modality="audio_text",
+            organ="ear",
         )
         self._record_learning(
             event_type=observation.kind,
@@ -118,8 +124,28 @@ class CognitiveRuntimeApp:
             target_x=target_x,
             ts=1.0,
         )
-        intents = self.planner.plan(state=state, memory=self.memory.retrieve_context(MemoryQuery(query=understanding.summary)))
+        visual_session_id = f"vision:{actor_id or 'visual-target'}"
+        intents = self.planner.plan(
+            state=state,
+            memory=self.memory.retrieve_context(
+                MemoryQuery(
+                    query=understanding.summary,
+                    session_id=visual_session_id,
+                    actor_id=actor_id or "visual-target",
+                )
+            ),
+        )
         actions = self.compiler.compile(intents)
+        self.memory.remember_episode(
+            session_id=visual_session_id,
+            actor_id=actor_id or "visual-target",
+            summary=understanding.summary,
+            title="Visual frame understanding",
+            memory_type="fact",
+            source="eibrain.visual_frame",
+            modality="vision",
+            organ="eye",
+        )
         self.trace_recorder.record(
             trace_id=f"vision:{actor_id or 'visual-target'}",
             kind="vision_frame_captured",

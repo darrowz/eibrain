@@ -109,6 +109,120 @@ def test_eimemory_rpc_adapter_maps_recall_bundle_to_memory_result(monkeypatch) -
     assert result.session_summary == "Recent dialogue is concise."
 
 
+def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    adapter.remember_episode(
+        session_id="voice-session",
+        actor_id="user-1",
+        summary="user:hello | reply:hi",
+        title="Audio dialogue turn",
+        memory_type="conversation",
+        source="eibrain.audio_dialogue",
+        modality="audio_text",
+        organ="ear",
+    )
+
+    assert captured["body"] == {
+        "method": "memory.ingest",
+        "params": {
+            "text": "user:hello | reply:hi",
+            "title": "Audio dialogue turn",
+            "memory_type": "conversation",
+            "source": "eibrain.audio_dialogue",
+            "scope": {
+                "agent_id": "honxin",
+                "workspace_id": "honjia",
+                "session_id": "voice-session",
+                "actor_id": "user-1",
+            },
+            "organ": "ear",
+            "modality": "audio_text",
+        },
+    }
+
+
+def test_eimemory_rpc_adapter_posts_memory_ingest_for_preference(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_pref"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    adapter.remember_preference(actor_id="user-1", profile={"style": "concise", "tea": "oolong"})
+
+    assert captured["body"] == {
+        "method": "memory.ingest",
+        "params": {
+            "text": "Preference profile for user-1: style=concise, tea=oolong",
+            "title": "Preference profile: user-1",
+            "memory_type": "preference",
+            "source": "eibrain.preference",
+            "scope": {
+                "agent_id": "honxin",
+                "workspace_id": "honjia",
+                "actor_id": "user-1",
+            },
+            "organ": "cognition",
+            "modality": "text",
+        },
+    }
+
+
 
 def test_eimemory_rpc_adapter_gracefully_degrades_on_transport_failure(monkeypatch) -> None:
     from urllib.error import URLError

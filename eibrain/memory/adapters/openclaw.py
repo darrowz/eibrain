@@ -35,7 +35,7 @@ class OpenClawMemoryAdapter:
             session_summary=session_summary,
         )
 
-    def remember_episode(self, *, session_id: str, summary: str) -> None:
+    def remember_episode(self, *, session_id: str, summary: str, **_: object) -> None:
         if self.config.provider == "http_json" and self.config.endpoint:
             try:
                 self._post_json("/remember_episode", {"session_id": session_id, "summary": summary})
@@ -44,7 +44,7 @@ class OpenClawMemoryAdapter:
                 pass
         self._sessions[session_id] = summary
 
-    def remember_preference(self, *, actor_id: str, profile: dict[str, str]) -> None:
+    def remember_preference(self, *, actor_id: str, profile: dict[str, str], **_: object) -> None:
         if self.config.provider == "http_json" and self.config.endpoint:
             try:
                 self._post_json("/remember_preference", {"actor_id": actor_id, "profile": profile})

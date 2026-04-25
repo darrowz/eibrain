@@ -121,6 +121,82 @@ def test_cognitive_runtime_can_handle_visual_focus_with_mcp_adapter() -> None:
     assert actions[0].target_x == 0.8
 
 
+def test_cognitive_runtime_records_audio_episode_for_memory() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        def __init__(self) -> None:
+            self.remembered: list[dict[str, object]] = []
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="Prefer concise spoken replies.")
+
+        def remember_episode(self, **kwargs):
+            self.remembered.append(dict(kwargs))
+
+    runtime = CognitiveRuntimeApp()
+    runtime.memory = _MemoryAdapter()
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="hello", session_id="s1", actor_id="user-1")
+    )
+
+    assert runtime.memory.remembered
+    payload = runtime.memory.remembered[0]
+    assert payload["session_id"] == "s1"
+    assert payload["actor_id"] == "user-1"
+    assert payload["source"] == "eibrain.audio_dialogue"
+    assert payload["modality"] == "audio_text"
+    assert payload["organ"] == "ear"
+
+
+def test_cognitive_runtime_records_visual_episode_for_memory() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+
+    class _VisionAdapter:
+        def understand_image(self, *, prompt: str, image_url: str):
+            from eibrain.vision.minimax_mcp import VisionUnderstandingResult
+
+            return VisionUnderstandingResult(
+                summary="a person is centered in frame",
+                primary_subject="person",
+                confidence=0.9,
+            )
+
+    class _MemoryAdapter:
+        def __init__(self) -> None:
+            self.remembered: list[dict[str, object]] = []
+            self.queries: list[object] = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(summary="Track the current speaker.")
+
+        def remember_episode(self, **kwargs):
+            self.remembered.append(dict(kwargs))
+
+    runtime = CognitiveRuntimeApp(vision_adapter=_VisionAdapter())
+    runtime.memory = _MemoryAdapter()
+    runtime.handle_visual_frame(
+        image_url="https://example.com/frame.jpg",
+        actor_id="user-1",
+        target_x=0.8,
+    )
+
+    assert runtime.memory.queries
+    assert runtime.memory.queries[0].session_id == "vision:user-1"
+    assert runtime.memory.queries[0].actor_id == "user-1"
+    assert runtime.memory.remembered
+    payload = runtime.memory.remembered[0]
+    assert payload["session_id"] == "vision:user-1"
+    assert payload["actor_id"] == "user-1"
+    assert payload["source"] == "eibrain.visual_frame"
+    assert payload["modality"] == "vision"
+    assert payload["organ"] == "eye"
+
+
 def test_cognitive_runtime_prefers_minimax_cli_provider(tmp_path) -> None:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
 
