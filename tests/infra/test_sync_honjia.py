@@ -25,6 +25,12 @@ def test_sync_honjia_cli_runs_expected_ssh_and_scp(monkeypatch, capsys) -> None:
     output = capsys.readouterr().out
     assert output.strip().startswith("synced=darrow@honjia:")
     assert calls[0][:2] == ["ssh", "darrow@honjia"]
+    cleanup_calls = [
+        command for command in calls if command[:2] == ["ssh", "darrow@honjia"] and "rm -rf --" in command[2]
+    ]
+    assert cleanup_calls
+    assert "/eibrain/apps" in cleanup_calls[0][2]
+    assert "/eibrain/tests" in cleanup_calls[0][2]
     assert any(command[:2] == ["scp", "-r"] for command in calls)
     assert any(str(command[-1]).endswith("/config/eibrain.honjia.yaml") for command in calls if command[:1] == ["scp"])
     assert any(str(command[-1]).endswith("/config/eibrain.yaml") for command in calls if command[:1] == ["scp"])

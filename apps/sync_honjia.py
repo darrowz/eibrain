@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import shlex
 import subprocess
 
 
@@ -39,6 +40,7 @@ def main() -> int:
     if not config_source.is_file():
         raise SystemExit(f"missing config source: {config_source}")
     _run(["ssh", args.target_host, f"mkdir -p {args.target_dir}"])
+    _cleanup_target(args.target_host, args.target_dir)
     for rel in DEPLOY_PATHS:
         source = repo_root / rel
         _run(["scp", "-r", str(source), f"{args.target_host}:{args.target_dir}/"])
@@ -58,6 +60,17 @@ def main() -> int:
     print(f"config_source={config_source}")
     print(f"include_tests={args.include_tests}")
     return 0
+
+
+def _cleanup_target(target_host: str, target_dir: str) -> None:
+    remote_paths = " ".join(
+        shlex.quote(_remote_path(target_dir, rel)) for rel in (*DEPLOY_PATHS, *OPTIONAL_PATHS)
+    )
+    _run(["ssh", target_host, f"rm -rf -- {remote_paths}"])
+
+
+def _remote_path(target_dir: str, rel: str) -> str:
+    return f"{target_dir.rstrip('/')}/{rel}"
 
 
 def _run(command: list[str]) -> None:
