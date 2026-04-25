@@ -163,3 +163,20 @@ def test_load_config_normalizes_driver_health_command_string(tmp_path) -> None:
     config = load_config(config_path)
 
     assert config.body.organs["ear"].subfunctions["capture"].driver.extra["health_command"] == ["python"]
+
+
+def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
+    from pathlib import Path
+
+    from eibrain.infra.config import load_config
+
+    monkeypatch.setenv("EIMEMORY_ENDPOINT", "http://honxin:8091/")
+    monkeypatch.delenv("EIBRAIN_MEMORY_ENDPOINT", raising=False)
+    config_path = Path(__file__).resolve().parents[2] / "config" / "eibrain.honjia.yaml"
+
+    config = load_config(config_path)
+
+    assert config.memory.openclaw.provider == "eimemory_rpc"
+    assert config.memory.openclaw.endpoint == "http://honxin:8091/"
+    assert config.memory.openclaw.agent_id == "honxin"
+    assert config.memory.openclaw.workspace_id == "honjia"
