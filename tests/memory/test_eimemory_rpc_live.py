@@ -27,15 +27,21 @@ def test_eimemory_rpc_adapter_reads_from_live_server(tmp_path) -> None:
     from eibrain.memory.contracts import MemoryQuery
 
     runtime = Runtime.create(root=tmp_path / "eimemory-runtime")
-    runtime.memory.ingest(
-        text="Prefer concise embodied replies.",
-        memory_type="preference",
-        title="Reply style",
-        scope={"agent_id": "honxin", "workspace_id": "robot"},
-    )
     server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0)
     server.start()
     try:
+        ingest_response = server.request(
+            {
+                "method": "memory.ingest",
+                "params": {
+                    "text": "Prefer concise embodied replies.",
+                    "memory_type": "preference",
+                    "title": "Reply style",
+                    "scope": {"agent_id": "honxin", "workspace_id": "robot"},
+                },
+            }
+        )
+        assert ingest_response["ok"] is True
         adapter = EIMemoryRPCAdapter(
             OpenClawConfig(
                 provider="eimemory_rpc",
