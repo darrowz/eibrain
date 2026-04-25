@@ -43,6 +43,7 @@ def main() -> None:
     speaker_probe.add_argument("--api-base-url", default="https://api.minimaxi.com")
     speaker_probe.add_argument("--model", default="speech-2.8-hd")
     speaker_probe.add_argument("--voice-id", default="female-shaonv")
+    speaker_probe.add_argument("--moss-command", default="moss-tts-nano")
 
     speak = subparsers.add_parser("speak")
     speak.add_argument("--output-device", required=True)
@@ -62,6 +63,12 @@ def main() -> None:
     speak.add_argument("--language-boost", default="auto")
     speak.add_argument("--timeout-s", type=int, default=30)
     speak.add_argument("--cache-dir", default="")
+    speak.add_argument("--moss-command", default="moss-tts-nano")
+    speak.add_argument("--moss-prompt-audio-path", default="")
+    speak.add_argument("--moss-cpu-threads", type=int, default=4)
+    speak.add_argument("--moss-max-new-frames", type=int, default=375)
+    speak.add_argument("--moss-voice-clone-max-text-tokens", type=int, default=75)
+    speak.add_argument("--moss-sample-mode", default="fixed")
 
     gimbal = subparsers.add_parser("move-gimbal")
     gimbal.add_argument("--servo-id", type=int, default=1)
@@ -102,6 +109,7 @@ def main() -> None:
             api_base_url=args.api_base_url,
             model=args.model,
             voice_id=args.voice_id,
+            moss_command=args.moss_command,
         )
     elif args.command == "speak":
         payload = json.loads(sys.stdin.read() or "{}")
@@ -124,6 +132,12 @@ def main() -> None:
             language_boost=args.language_boost,
             timeout_s=args.timeout_s,
             cache_dir=args.cache_dir or None,
+            moss_command=args.moss_command,
+            moss_prompt_audio_path=args.moss_prompt_audio_path,
+            moss_cpu_threads=args.moss_cpu_threads,
+            moss_max_new_frames=args.moss_max_new_frames,
+            moss_voice_clone_max_text_tokens=args.moss_voice_clone_max_text_tokens,
+            moss_sample_mode=args.moss_sample_mode,
         )
     elif args.command == "move-gimbal":
         payload = json.loads(sys.stdin.read() or "{}")

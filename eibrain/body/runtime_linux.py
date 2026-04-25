@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def probe_sherpa_model_dir(model_dir: str) -> dict[str, object]:
@@ -125,6 +126,12 @@ def speak_text(
     urlopen=request.urlopen,
     cache_dir: str | Path | None = None,
     temp_dir: str | Path | None = None,
+    moss_command: str = "moss-tts-nano",
+    moss_prompt_audio_path: str = "",
+    moss_cpu_threads: int = 4,
+    moss_max_new_frames: int = 375,
+    moss_voice_clone_max_text_tokens: int = 75,
+    moss_sample_mode: str = "fixed",
 ) -> dict[str, object]:
     if backend == "minimax":
         return _speak_text_with_minimax(
@@ -148,6 +155,22 @@ def speak_text(
             urlopen=urlopen,
             cache_dir=cache_dir,
             temp_dir=temp_dir,
+        )
+    if backend == "moss_onnx":
+        return _speak_text_with_moss_onnx(
+            text=text,
+            output_device=output_device,
+            model_dir=model,
+            voice_id=voice_id,
+            runner=runner,
+            temp_dir=temp_dir,
+            moss_command=moss_command,
+            prompt_audio_path=moss_prompt_audio_path,
+            timeout_s=timeout_s,
+            cpu_threads=moss_cpu_threads,
+            max_new_frames=moss_max_new_frames,
+            voice_clone_max_text_tokens=moss_voice_clone_max_text_tokens,
+            sample_mode=moss_sample_mode,
         )
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=temp_dir) as handle:
         wav_path = Path(handle.name)
@@ -187,6 +210,7 @@ def probe_tts_playback(
     api_base_url: str = "https://api.minimaxi.com",
     model: str = "speech-2.8-hd",
     voice_id: str = "female-shaonv",
+    moss_command: str = "moss-tts-nano",
 ) -> dict[str, object]:
     playback_probe = probe_binary_device(binary_name="aplay", device_path="/dev/snd", label=f"speaker:{output_device}")
     details = dict(playback_probe.get("details", {}))
@@ -200,6 +224,22 @@ def probe_tts_playback(
             "api_key_present": bool(api_key),
         }
     )
+    if backend == "moss_onnx":
+        command_path = _resolve_command_path(moss_command)
+        model_dir_exists = bool(model) and Path(model).expanduser().exists()
+        details.update(
+            {
+                "moss_command": moss_command,
+                "moss_command_path": command_path,
+                "moss_command_exists": bool(command_path),
+                "model_dir": model,
+                "model_dir_exists": model_dir_exists,
+            }
+        )
+        status = playback_probe["status"]
+        if status == "healthy" and (not command_path or (model and not model_dir_exists)):
+            status = "degraded"
+        return {"status": status, "details": details}
     if backend != "minimax":
         return {
             "status": playback_probe["status"],
@@ -213,6 +253,87 @@ def probe_tts_playback(
         "status": playback_probe["status"],
         "details": details,
     }
+
+
+def _speak_text_with_moss_onnx(
+    *,
+    text: str,
+    output_device: str,
+    model_dir: str,
+    voice_id: str,
+    runner,
+    temp_dir: str | Path | None,
+    moss_command: str,
+    prompt_audio_path: str,
+    timeout_s: int,
+    cpu_threads: int,
+    max_new_frames: int,
+    voice_clone_max_text_tokens: int,
+    sample_mode: str,
+) -> dict[str, object]:
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False, dir=temp_dir) as handle:
+        audio_path = Path(handle.name)
+    try:
+        command = [
+            moss_command,
+            "generate",
+            "--backend",
+            "onnx",
+            "--output-audio-path",
+            str(audio_path),
+            "--voice",
+            voice_id,
+            "--cpu-threads",
+            str(max(1, int(cpu_threads))),
+            "--max-new-frames",
+            str(max(1, int(max_new_frames))),
+            "--voice-clone-max-text-tokens",
+            str(max(1, int(voice_clone_max_text_tokens))),
+            "--sample-mode",
+            _normalize_moss_sample_mode(sample_mode),
+            "--text",
+            text,
+        ]
+        if model_dir:
+            command.extend(["--onnx-model-dir", model_dir])
+        if prompt_audio_path:
+            command.extend(["--prompt-speech", prompt_audio_path])
+        started = time.perf_counter()
+        generated = runner(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout_s,
+        )
+        generate_elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        details = {
+            "backend": "moss_onnx",
+            "model_dir": model_dir,
+            "voice_id": voice_id,
+            "prompt_audio_path": prompt_audio_path,
+            "moss_command": moss_command,
+            "generate_command": command,
+            "generate_returncode": generated.returncode,
+            "generate_stdout": generated.stdout.strip(),
+            "generate_stderr": generated.stderr.strip(),
+            "generate_elapsed_ms": generate_elapsed_ms,
+            "audio_path": str(audio_path),
+        }
+        if generated.returncode != 0:
+            details["reason"] = "moss_generate_failed"
+            return {"status": "error", "details": details}
+        if not audio_path.exists() or audio_path.stat().st_size <= 0:
+            details["reason"] = "missing_generated_audio"
+            return {"status": "error", "details": details}
+        return _play_minimax_audio_file(
+            audio_path=audio_path,
+            output_device=output_device,
+            runner=runner,
+            details=details,
+        )
+    finally:
+        audio_path.unlink(missing_ok=True)
 
 
 def _speak_text_with_minimax(
@@ -348,7 +469,6 @@ def _speak_text_with_minimax(
     finally:
         if delete_audio_path and audio_path is not None:
             audio_path.unlink(missing_ok=True)
-
 
 
 def _minimax_audio_cache_path(
@@ -582,6 +702,20 @@ def _minimax_t2a_url(api_base_url: str) -> str:
     if endpoint.endswith("/v1/t2a_v2"):
         return endpoint
     return f"{endpoint}/v1/t2a_v2"
+
+
+def _resolve_command_path(command: str) -> str:
+    if not command:
+        return ""
+    candidate = Path(command).expanduser()
+    if candidate.exists():
+        return str(candidate)
+    return shutil.which(command) or ""
+
+
+def _normalize_moss_sample_mode(sample_mode: str) -> str:
+    normalized = str(sample_mode or "fixed").strip().lower()
+    return normalized if normalized in {"greedy", "fixed", "full"} else "fixed"
 
 
 def _normalize_minimax_number(value: float | int) -> float | int:

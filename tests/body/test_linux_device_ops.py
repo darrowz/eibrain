@@ -133,7 +133,6 @@ def test_speak_text_uses_minimax_t2a_and_aplay(tmp_path) -> None:
     assert calls[0][:3] == ["aplay", "-D", "plughw:2,0"]
 
 
-
 def test_speak_text_reuses_minimax_audio_cache(tmp_path) -> None:
     from eibrain.body.runtime_linux import speak_text
 
@@ -202,6 +201,72 @@ def test_speak_text_reuses_minimax_audio_cache(tmp_path) -> None:
     assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
     assert calls[0][-1] == calls[1][-1]
     assert Path(calls[0][-1]).parent == tmp_path / "tts-cache"
+
+
+def test_speak_text_uses_moss_onnx_generate_and_aplay(tmp_path) -> None:
+    from eibrain.body.runtime_linux import speak_text
+
+    calls: list[list[str]] = []
+    model_dir = tmp_path / "moss-models"
+    model_dir.mkdir()
+
+    def _runner(command: list[str], **kwargs):
+        calls.append(command)
+        if command[:3] == ["moss-tts-nano", "generate", "--backend"]:
+            output_path = Path(command[command.index("--output-audio-path") + 1])
+            output_path.write_bytes(b"RIFF")
+
+        class _Completed:
+            returncode = 0
+            stdout = "generated"
+            stderr = ""
+
+        return _Completed()
+
+    result = speak_text(
+        text="\u4f60\u597d\u9e3f\u9014",
+        output_device="plughw:2,0",
+        backend="moss_onnx",
+        model=str(model_dir),
+        voice_id="Junhao",
+        runner=_runner,
+        temp_dir=tmp_path,
+    )
+
+    assert result["status"] == "ok"
+    assert result["details"]["backend"] == "moss_onnx"
+    assert result["details"]["model_dir"] == str(model_dir)
+    assert result["details"]["voice_id"] == "Junhao"
+    assert calls[0][:4] == ["moss-tts-nano", "generate", "--backend", "onnx"]
+    assert "--onnx-model-dir" in calls[0]
+    assert calls[0][calls[0].index("--text") + 1] == "\u4f60\u597d\u9e3f\u9014"
+    assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
+
+
+def test_probe_tts_playback_reports_moss_onnx_model_state(monkeypatch, tmp_path) -> None:
+    from eibrain.body.runtime_linux import probe_tts_playback
+
+    model_dir = tmp_path / "moss-models"
+    model_dir.mkdir()
+
+    def _which(name: str):
+        if name in {"aplay", "moss-tts-nano"}:
+            return f"/usr/bin/{name}"
+        return None
+
+    monkeypatch.setattr("eibrain.body.runtime_linux.shutil.which", _which)
+
+    result = probe_tts_playback(
+        output_device="plughw:2,0",
+        backend="moss_onnx",
+        model=str(model_dir),
+        voice_id="Junhao",
+    )
+
+    assert result["status"] == "healthy"
+    assert result["details"]["backend"] == "moss_onnx"
+    assert result["details"]["moss_command_exists"] is True
+    assert result["details"]["model_dir_exists"] is True
 
 
 def test_probe_tts_playback_requires_minimax_api_key(monkeypatch) -> None:
