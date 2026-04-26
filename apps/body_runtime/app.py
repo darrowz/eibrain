@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 import json
 from pathlib import Path
+import threading
 import time
 
 from eibrain.protocol.actions import PlaySpeechAction
@@ -30,6 +31,7 @@ class BodyRuntimeApp:
         self.degradation_manager = DegradationManager()
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
+        self._visual_lock = threading.RLock()
         self._visual_tracking_misses = 0
         self._speech_busy_until = 0.0
         self.voice_dialogue_state: dict[str, object] = {
@@ -392,6 +394,22 @@ class BodyRuntimeApp:
         session_id: str = "tracking-session",
         actor_id: str = "vision-runtime",
     ):
+        with self._visual_lock:
+            return self._track_visual_target_once_locked(
+                preferred_labels=preferred_labels,
+                recenter_after_misses=recenter_after_misses,
+                session_id=session_id,
+                actor_id=actor_id,
+            )
+
+    def _track_visual_target_once_locked(
+        self,
+        *,
+        preferred_labels: tuple[str, ...],
+        recenter_after_misses: int,
+        session_id: str,
+        actor_id: str,
+    ):
         target, eye_details = self._select_visual_tracking_target(preferred_labels=preferred_labels)
         self._update_visual_tracking_state(
             running=True,
@@ -587,7 +605,11 @@ class BodyRuntimeApp:
                 return organ.passive_heartbeat()
         if organ.name == "eye" and self.voice_dialogue_state.get("running"):
             if hasattr(organ, "passive_heartbeat"):
-                return organ.passive_heartbeat()
+                with self._visual_lock:
+                    return organ.passive_heartbeat()
+        if organ.name == "eye":
+            with self._visual_lock:
+                return organ.heartbeat()
         return organ.heartbeat()
 
     def recent_events(self) -> list[dict[str, object]]:
@@ -604,7 +626,8 @@ class BodyRuntimeApp:
         target = self.visual_tracking_state.get("target")
         if isinstance(target, dict) and target.get("label") and target.get("bbox"):
             return dict(target)
-        target, _eye_details = self._select_visual_tracking_target(preferred_labels=("face", "person"))
+        with self._visual_lock:
+            target, _eye_details = self._select_visual_tracking_target(preferred_labels=("face", "person"))
         if target is not None:
             return dict(target)
         return None

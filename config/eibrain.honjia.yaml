@@ -143,6 +143,9 @@ body:
             - --label
             - camera
           device: /dev/video0
+          input_format: mjpeg
+          video_size: 640x480
+          timeout_s: 5.0
       detection:
         driver:
           kind: command

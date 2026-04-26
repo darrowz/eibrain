@@ -626,6 +626,9 @@ def capture_frame(
     *,
     device: str,
     output_path: str | Path,
+    input_format: str = "",
+    video_size: str = "",
+    timeout_s: float = 5.0,
     runner=subprocess.run,
 ) -> dict[str, object]:
     frame_path = Path(output_path)
@@ -637,15 +640,21 @@ def capture_frame(
         "error",
         "-f",
         "v4l2",
+    ]
+    if input_format:
+        command.extend(["-input_format", input_format])
+    if video_size:
+        command.extend(["-video_size", video_size])
+    command.extend([
         "-i",
         device,
         "-frames:v",
         "1",
         "-y",
         str(frame_path),
-    ]
+    ])
     try:
-        completed = runner(command, capture_output=True, text=True, check=False, timeout=3)
+        completed = runner(command, capture_output=True, text=True, check=False, timeout=timeout_s)
     except subprocess.TimeoutExpired:
         return {
             "status": "error",
@@ -653,7 +662,7 @@ def capture_frame(
                 "device": device,
                 "output_path": str(frame_path),
                 "reason": "capture_timeout",
-                "timeout_s": 3,
+                "timeout_s": timeout_s,
             },
         }
     return {

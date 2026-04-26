@@ -81,9 +81,18 @@ class EyeOrgan(BaseOrgan):
             return self._subfunction_health("camera")
         config = self.config.subfunctions.get("camera")
         device = str(config.driver.extra.get("device", "/dev/video0")) if config is not None else "/dev/video0"
+        input_format = str(config.driver.extra.get("input_format", "") or "") if config is not None else ""
+        video_size = str(config.driver.extra.get("video_size", "") or "") if config is not None else ""
+        timeout_s = self._read_float_config("camera", "timeout_s", default=5.0)
         started = time.perf_counter()
         probe = self.drivers["camera"].heartbeat()
-        capture_result = capture_frame(device=device, output_path=self._frame_path)
+        capture_result = capture_frame(
+            device=device,
+            output_path=self._frame_path,
+            input_format=input_format,
+            video_size=video_size,
+            timeout_s=timeout_s,
+        )
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         details = self._merge_probe_details(
             probe=probe.details,
@@ -93,6 +102,9 @@ class EyeOrgan(BaseOrgan):
         details.update(
             {
                 "device": device,
+                "input_format": input_format,
+                "video_size": video_size,
+                "timeout_s": timeout_s,
                 "frame_path": str(self._frame_path),
                 "frame_captured_at_ts": now_ts,
                 "capture_result": dict(capture_result.get("details", {})),

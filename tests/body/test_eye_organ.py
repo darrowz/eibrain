@@ -7,7 +7,7 @@ def test_eye_organ_builds_live_detection_and_identity_details(tmp_path, monkeypa
     from eibrain.body.organs.eye.organ import EyeOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
 
-    def _capture_frame(*, device: str, output_path: str | Path, runner=None):
+    def _capture_frame(*, device: str, output_path: str | Path, runner=None, **_kwargs):
         Path(output_path).write_bytes(b"frame-data")
         return {
             "status": "ok",
@@ -98,7 +98,7 @@ def test_eye_organ_keeps_identity_healthy_when_no_face_candidates(tmp_path, monk
     from eibrain.body.organs.eye.organ import EyeOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
 
-    def _capture_frame(*, device: str, output_path: str | Path, runner=None):
+    def _capture_frame(*, device: str, output_path: str | Path, runner=None, **_kwargs):
         Path(output_path).write_bytes(b"frame-data")
         return {"status": "ok", "details": {"device": device}}
 
@@ -148,7 +148,7 @@ def test_eye_organ_uses_cached_heartbeat_until_refresh_interval_expires(monkeypa
 
     capture_calls: list[int] = []
 
-    def _capture_frame(*, device: str, output_path: str | Path, runner=None):
+    def _capture_frame(*, device: str, output_path: str | Path, runner=None, **_kwargs):
         capture_calls.append(1)
         Path(output_path).write_bytes(b"frame-data")
         return {"status": "ok", "details": {"device": device}}

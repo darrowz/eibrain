@@ -41,6 +41,43 @@ def test_capture_frame_uses_ffmpeg_command() -> None:
         shutil.rmtree(tmp_path, ignore_errors=True)
 
 
+def test_capture_frame_accepts_camera_format_hints() -> None:
+    from eibrain.body.runtime_linux import capture_frame
+
+    calls: list[list[str]] = []
+
+    def _runner(command: list[str], **kwargs):
+        calls.append(command)
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        Path(command[-1]).write_bytes(b"jpeg")
+        return _Completed()
+
+    tmp_path = _make_tmp_dir("capture-frame-format")
+    try:
+        output_path = tmp_path / "frame.jpg"
+        result = capture_frame(
+            device="/dev/video0",
+            output_path=output_path,
+            input_format="mjpeg",
+            video_size="640x480",
+            timeout_s=7.5,
+            runner=_runner,
+        )
+
+        assert result["status"] == "ok"
+        assert "-input_format" in calls[0]
+        assert "mjpeg" in calls[0]
+        assert "-video_size" in calls[0]
+        assert "640x480" in calls[0]
+    finally:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+
+
 def test_compare_frame_hashes_reports_difference() -> None:
     from eibrain.body.runtime_linux import compare_frame_hashes
 
