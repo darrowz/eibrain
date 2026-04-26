@@ -434,7 +434,7 @@ class BodyRuntimeApp:
                 miss_count=self._visual_tracking_misses,
                 last_outcome_status=None,
             )
-            if self._visual_tracking_misses < recenter_after_misses:
+            if self._visual_tracking_misses != recenter_after_misses:
                 return None
             action = MoveHeadAction(
                 ts=1.0,

@@ -407,6 +407,9 @@ def test_body_runtime_marks_visual_tracking_waiting_when_no_target() -> None:
     class _Eye:
         name = "eye"
 
+        def supports_action(self, action) -> bool:
+            return False
+
         def heartbeat(self):
             return OrganHealth(
                 organ="eye",
@@ -434,3 +437,67 @@ def test_body_runtime_marks_visual_tracking_waiting_when_no_target() -> None:
     assert tracking["status"] == "waiting_for_target"
     assert tracking["detection_count"] == 0
     assert tracking["miss_count"] == 1
+
+
+def test_body_runtime_recenters_once_per_lost_visual_target_episode() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    runtime = BodyRuntimeApp()
+
+    class _Eye:
+        name = "eye"
+
+        def supports_action(self, action) -> bool:
+            return False
+
+        def heartbeat(self):
+            return OrganHealth(
+                organ="eye",
+                health="healthy",
+                subfunctions={
+                    "detection": SubfunctionHealth(
+                        name="detection",
+                        health="healthy",
+                        details={"detections": [], "detection_count": 0, "top_detection": None},
+                    )
+                },
+            )
+
+    class _Neck:
+        name = "neck"
+
+        def __init__(self) -> None:
+            self.actions = []
+
+        def supports_action(self, action) -> bool:
+            return True
+
+        def heartbeat(self):
+            return OrganHealth(organ="neck", health="healthy", subfunctions={})
+
+        def handle_action(self, action):
+            from eibrain.protocol.outcomes import ActionExecuted
+
+            self.actions.append(action)
+            return ActionExecuted(
+                ts=action.ts,
+                source="neck.motor",
+                status="ok",
+                session_id=action.session_id,
+                actor_id=action.actor_id,
+                target_id=action.target_id,
+                action_kind=action.kind,
+                details={"target_name": action.target_name, "target_angle": action.target_angle},
+            )
+
+    neck = _Neck()
+    runtime.organs = [_Eye(), neck]
+
+    for _ in range(6):
+        runtime.track_visual_target_once(recenter_after_misses=3)
+
+    assert len(neck.actions) == 1
+    assert neck.actions[0].target_name == "recenter"
+    assert runtime.visual_tracking_state["status"] == "waiting_for_target"
+    assert runtime.visual_tracking_state["miss_count"] == 6
