@@ -1,14 +1,14 @@
 [Unit]
 Description=eibrain monitoring web
-After=network-online.target
-Wants=network-online.target
+After=network-online.target eibrain-vision-hailo.service
+Wants=network-online.target eibrain-vision-hailo.service
 
 [Service]
 Type=simple
 WorkingDirectory=/home/darrow/dev-project/eibrain
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=-/usr/bin/amixer -c U4K sset Mic 24
-ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --disable-visual-tracking-loop
+ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --visual-tracking-source state
 Restart=always
 RestartSec=3
 StandardOutput=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-monitor.service.log

@@ -20,6 +20,7 @@ def main() -> None:
     parser.add_argument("--disable-visual-tracking-loop", action="store_true")
     parser.add_argument("--voice-chunk-count", type=int, default=3)
     parser.add_argument("--visual-tracking-interval", type=float, default=0.5)
+    parser.add_argument("--visual-tracking-source", choices=("active", "state"), default="active")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -38,6 +39,7 @@ def main() -> None:
         visual_loop = VisualTrackingLoop(
             body_runtime=runtime,
             interval_s=args.visual_tracking_interval,
+            source=args.visual_tracking_source,
         )
         visual_loop.start()
     server = MonitoringWebServer(

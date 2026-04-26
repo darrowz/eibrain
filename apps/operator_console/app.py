@@ -386,6 +386,12 @@ class OperatorConsoleApp:
             identity_candidates = []
         frame_path = detection_details.get("frame_path") or camera_details.get("frame_path")
         frame_captured_at_ts = detection_details.get("frame_captured_at_ts") or camera_details.get("frame_captured_at_ts")
+        state_age_s = detection_details.get("state_age_s", camera_details.get("state_age_s"))
+        state_updated_at_ts = detection_details.get("state_updated_at_ts", camera_details.get("state_updated_at_ts"))
+        frame_updated_at_ts = detection_details.get("frame_updated_at_ts", frame_captured_at_ts)
+        backend = detection_details.get("backend", camera_details.get("backend", ""))
+        service_status = detection_details.get("service_status", camera_details.get("service_status", detection_details.get("status")))
+        state_path = detection_details.get("state_path", camera_details.get("state_path", ""))
         visual_tracking = body_snapshot.get("visual_tracking", {})
         if not isinstance(visual_tracking, dict):
             visual_tracking = {}
@@ -436,6 +442,12 @@ class OperatorConsoleApp:
             "detection_health": detection.get("health", "unknown"),
             "identity_health": identity.get("health", "unknown"),
             "detection_status": detection_details.get("status", detection.get("health", "unknown")),
+            "vision_service_status": service_status,
+            "backend": backend,
+            "state_path": state_path,
+            "state_age_s": state_age_s,
+            "state_updated_at_ts": state_updated_at_ts,
+            "frame_updated_at_ts": frame_updated_at_ts,
             "identity_status": identity_details.get("status", identity.get("health", "unknown")),
             "detection_count": len(detections),
             "detections": detections,
@@ -446,8 +458,12 @@ class OperatorConsoleApp:
             "identity_summary": identity_summary,
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
+            "top_detection_bbox": (detection_details.get("top_detection") or {}).get("bbox")
+            if isinstance(detection_details.get("top_detection"), dict)
+            else None,
             "frame_age_s": self._age_seconds(frame_captured_at_ts),
             "tracking_status": visual_tracking.get("status", "idle"),
+            "tracking_source": visual_tracking.get("source", "inactive"),
             "tracking_updated_at_ts": visual_tracking.get("updated_at_ts"),
             "tracking_age_s": self._age_seconds(visual_tracking.get("updated_at_ts")),
             "tracking_running": bool(visual_tracking.get("running", False)),

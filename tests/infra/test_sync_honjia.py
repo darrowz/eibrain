@@ -18,7 +18,7 @@ def test_sync_honjia_cli_runs_expected_ssh_and_scp(monkeypatch, capsys) -> None:
     monkeypatch.setattr(sync_honjia, "_run", _fake_run)
     monkeypatch.setattr(
         "sys.argv",
-        ["sync-honjia", "--target-host", "darrow@honjia", "--restart-monitor", "--include-tests"],
+        ["sync-honjia", "--target-host", "darrow@honjia", "--restart-services", "--include-tests"],
     )
 
     assert sync_honjia.main() == 0
@@ -35,4 +35,6 @@ def test_sync_honjia_cli_runs_expected_ssh_and_scp(monkeypatch, capsys) -> None:
     assert any(str(command[-1]).endswith("/config/eibrain.honjia.yaml") for command in calls if command[:1] == ["scp"])
     assert any(str(command[-1]).endswith("/config/eibrain.yaml") for command in calls if command[:1] == ["scp"])
     assert any(str(command[2]).endswith("tests") for command in calls if command[:2] == ["scp", "-r"])
-    assert calls[-1][:4] == ["ssh", "darrow@honjia", "systemctl", "--user"]
+    assert any(command[:5] == ["ssh", "darrow@honjia", "systemctl", "--user", "restart"] and command[-1] == "eibrain-vision-hailo.service" for command in calls)
+    assert any(command[:4] == ["ssh", "darrow@honjia", "python3", "-c"] for command in calls)
+    assert calls[-1] == ["ssh", "darrow@honjia", "systemctl", "--user", "restart", "eibrain-monitor.service"]

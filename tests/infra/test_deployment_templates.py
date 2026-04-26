@@ -9,7 +9,9 @@ def test_eibrain_monitor_systemd_template_uses_local_deploy_config() -> None:
     assert 'WorkingDirectory=/home/darrow/dev-project/eibrain' in unit_text
     assert 'ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console' in unit_text
     assert '--config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml' in unit_text
-    assert '--disable-visual-tracking-loop' in unit_text
+    assert '--visual-tracking-source state' in unit_text
+    assert 'Wants=network-online.target eibrain-vision-hailo.service' in unit_text
+    assert 'After=network-online.target eibrain-vision-hailo.service' in unit_text
 
 
 def test_eibrain_vision_hailo_systemd_template_owns_camera_pipeline() -> None:

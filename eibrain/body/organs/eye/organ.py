@@ -89,6 +89,24 @@ class EyeOrgan(BaseOrgan):
             for name in ("camera", "detection", "identity")
         )
 
+    def read_visual_tracking_snapshot(self) -> dict[str, object]:
+        """Read detections from vision state without probing camera/Hailo drivers."""
+        if self._vision_state_reader is None:
+            return {}
+        try:
+            snapshot = self._vision_state_reader.read()
+        except Exception as exc:
+            return {
+                "detections": [],
+                "detection_count": 0,
+                "top_detection": None,
+                "status": "state_unavailable",
+                "error": str(exc),
+                "source": "vision_state",
+                "state_path": str(self._vision_state_reader.state_path),
+            }
+        return self._vision_state_detection_details(snapshot=snapshot, elapsed_ms=0.0)
+
     def _build_vision_state_reader(self) -> VisionStateReader | None:
         config = self._vision_state_config()
         if config is None:
@@ -128,6 +146,29 @@ class EyeOrgan(BaseOrgan):
             )
             return OrganHealth(organ=self.name, health="unavailable", subfunctions=subfunctions)
 
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        details = self._vision_state_detection_details(snapshot=snapshot, elapsed_ms=elapsed_ms)
+        status = str(details.get("service_status", "ok") or "ok")
+        stale_note = str(details.get("status", "live"))
+        camera_health = "degraded" if snapshot.stale or status != "ok" else "healthy"
+        detection_health = camera_health
+        camera_state = SubfunctionHealth(
+            name="camera",
+            health=camera_health,
+            details={**details, "capture_result": {"status": status}},
+        )
+        detection_state = SubfunctionHealth(
+            name="detection",
+            health=detection_health,
+            details=details,
+        )
+        identity_state = self._identity_from_detection_state(detection_state=detection_state, now_ts=now_ts)
+        subfunctions = {"camera": camera_state, "detection": detection_state, "identity": identity_state}
+        statuses = [state.health for state in subfunctions.values()]
+        health = "healthy" if all(item == "healthy" for item in statuses) else "degraded"
+        return OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
+
+    def _vision_state_detection_details(self, *, snapshot, elapsed_ms: float) -> dict[str, object]:
         payload = snapshot.payload
         detections = payload.get("detections", [])
         if not isinstance(detections, list):
@@ -138,51 +179,35 @@ class EyeOrgan(BaseOrgan):
             top_detection = None
         frame_path = payload.get("frame_path") or self._vision_state_frame_path()
         frame_captured_at_ts = payload.get("frame_captured_at_ts") or payload.get("updated_at_ts")
-        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         status = str(payload.get("status", "ok") or "ok")
-        stale_note = "stale" if snapshot.stale else "live"
-        camera_health = "degraded" if snapshot.stale or status != "ok" else "healthy"
-        detection_health = camera_health
-        details_base = {
+        details = {
             "driver": "vision_state",
             "elapsed_ms": elapsed_ms,
-            "status": stale_note if status == "ok" else status,
+            "status": "stale" if snapshot.stale else ("live" if status == "ok" else status),
+            "service_status": status,
+            "source": "vision_state",
             "state_path": str(self._vision_state_reader.state_path),
             "state_age_s": snapshot.age_s,
+            "state_updated_at_ts": payload.get("updated_at_ts"),
             "stale_after_s": self._vision_state_reader.stale_after_s,
             "frame_path": str(frame_path) if frame_path else None,
             "frame_captured_at_ts": frame_captured_at_ts,
+            "frame_updated_at_ts": frame_captured_at_ts,
             "backend": payload.get("backend", "hailo8_service"),
             "details": dict(payload.get("details", {})) if isinstance(payload.get("details"), dict) else {},
+            "detections": detections,
+            "detection_count": len(detections),
+            "top_detection": top_detection or (detections[0] if detections else None),
+            "scene_labels": payload.get("scene_labels")
+            if isinstance(payload.get("scene_labels"), list)
+            else sorted({str(item.get("label", "unknown")) for item in detections}),
+            "scene_summary": str(payload.get("scene_summary") or summarize_detections(detections)),
         }
         if snapshot.stale:
-            details_base["error"] = "vision_state_stale"
+            details["error"] = "vision_state_stale"
         elif status != "ok":
-            details_base["error"] = payload.get("error", status)
-        camera_state = SubfunctionHealth(
-            name="camera",
-            health=camera_health,
-            details={**details_base, "capture_result": {"status": status}},
-        )
-        detection_state = SubfunctionHealth(
-            name="detection",
-            health=detection_health,
-            details={
-                **details_base,
-                "detections": detections,
-                "detection_count": len(detections),
-                "top_detection": top_detection or (detections[0] if detections else None),
-                "scene_labels": payload.get("scene_labels")
-                if isinstance(payload.get("scene_labels"), list)
-                else sorted({str(item.get("label", "unknown")) for item in detections}),
-                "scene_summary": str(payload.get("scene_summary") or summarize_detections(detections)),
-            },
-        )
-        identity_state = self._identity_health(detection_state=detection_state, now_ts=now_ts)
-        subfunctions = {"camera": camera_state, "detection": detection_state, "identity": identity_state}
-        statuses = [state.health for state in subfunctions.values()]
-        health = "healthy" if all(item == "healthy" for item in statuses) else "degraded"
-        return OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
+            details["error"] = payload.get("error", status)
+        return details
 
     def _vision_state_unavailable_subfunctions(
         self,
@@ -400,6 +425,48 @@ class EyeOrgan(BaseOrgan):
                 "identity_summary": self._summarize_identity(identity_candidates, status=status),
             }
         )
+        if health != "healthy":
+            details["error"] = status
+        return SubfunctionHealth(name="identity", health=health, details=details)
+
+    def _identity_from_detection_state(
+        self,
+        *,
+        detection_state: SubfunctionHealth,
+        now_ts: float,
+    ) -> SubfunctionHealth:
+        detections = detection_state.details.get("detections", [])
+        if not isinstance(detections, list):
+            detections = []
+        face_candidates = [item for item in detections if isinstance(item, dict) and str(item.get("label")) == "face"]
+        identity_candidates = [
+            {
+                "candidate_id": f"unknown-face-{index + 1}",
+                "identity": "unknown",
+                "score": candidate.get("score"),
+                "bbox": candidate.get("bbox"),
+            }
+            for index, candidate in enumerate(face_candidates)
+        ]
+        if detection_state.health != "healthy":
+            status = "detection_unavailable"
+            health = "unavailable"
+        elif identity_candidates:
+            status = "observing_unknown_face"
+            health = "healthy"
+        else:
+            status = "no_face_candidates"
+            health = "healthy"
+        details = {
+            "driver": "vision_state",
+            "status": status,
+            "source": "vision_state",
+            "frame_path": self.latest_frame_path,
+            "frame_captured_at_ts": now_ts,
+            "identity_candidates": identity_candidates,
+            "face_candidate_count": len(identity_candidates),
+            "identity_summary": self._summarize_identity(identity_candidates, status=status),
+        }
         if health != "healthy":
             details["error"] = status
         return SubfunctionHealth(name="identity", health=health, details=details)

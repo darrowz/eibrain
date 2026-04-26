@@ -29,3 +29,28 @@ def test_visual_tracking_loop_calls_runtime_until_stopped() -> None:
 
     assert calls_after_stop >= 2
     assert runtime.calls == calls_after_stop
+
+
+def test_visual_tracking_loop_passes_state_source_when_configured() -> None:
+    from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.sources: list[str] = []
+
+        def track_visual_target_once(self, *, session_id: str, actor_id: str, source: str):
+            self.sources.append(source)
+            return None
+
+    runtime = _Runtime()
+    loop = VisualTrackingLoop(body_runtime=runtime, interval_s=0.05, source="state")
+    loop.start()
+    try:
+        deadline = time.time() + 1.0
+        while not runtime.sources and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        loop.stop()
+
+    assert runtime.sources
+    assert set(runtime.sources) == {"state"}

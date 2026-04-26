@@ -638,6 +638,12 @@ class MonitoringWebServer:
       const identityCandidates = visual.identity_candidates || [];
       const registeredIdentity = visual.registered_identity || {{}};
       const recognizedIdentity = visual.recognized_identity || {{}};
+      const topDetection = visual.top_detection || {{}};
+      const topBbox = visual.top_detection_bbox || topDetection.bbox || {{}};
+      const topLabel = topDetection.label ? `${{topDetection.label}} ${{Number(topDetection.score || 0).toFixed(2)}}` : 'none';
+      const bboxSummary = topBbox.x_min !== undefined
+        ? `x:${{Number(topBbox.x_min || 0).toFixed(2)}}-${{Number(topBbox.x_max || 0).toFixed(2)}} y:${{Number(topBbox.y_min || 0).toFixed(2)}}-${{Number(topBbox.y_max || 0).toFixed(2)}}`
+        : 'none';
       const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
       document.getElementById('identity-action-status').textContent = registeredIdentity.registered
         ? `Registered: ${{identityName || 'known person'}}`
@@ -646,10 +652,15 @@ class MonitoringWebServer:
         ['Frame', visual.frame_available ? 'live' : 'missing'],
         ['Frame age', fmtSeconds(visual.frame_age_s)],
         ['Data', visual.data_status || 'unknown'],
+        ['Backend', visual.backend || 'unknown'],
+        ['Service', visual.vision_service_status || 'unknown'],
+        ['State age', fmtSeconds(visual.state_age_s)],
         ['Detection', visual.detection_status || visual.detection_health || 'unknown'],
-        ['Tracking', visual.tracking_status || 'idle'],
+        ['Tracking', `${{visual.tracking_status || 'idle'}} / ${{visual.tracking_source || 'inactive'}}`],
         ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
+        ['Top', topLabel],
+        ['BBox', bboxSummary],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
       if (visual.frame_url) {{
@@ -682,6 +693,7 @@ class MonitoringWebServer:
       if (visual.scene_summary) {{
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Scene</strong><span class="health-tag ${{healthClass(visual.detection_health || 'unknown')}}">${{visual.detection_status || visual.detection_health || 'unknown'}}</span></div><div class="metric-label">${{visual.scene_summary}}</div></div>`);
       }}
+      listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Vision service</strong><span class="health-tag ${{healthClass(visual.vision_service_status === 'ok' ? 'healthy' : 'degraded')}}">${{visual.vision_service_status || 'unknown'}}</span></div><div class="metric-label">backend ${{visual.backend || 'unknown'}} | state ${{fmtSeconds(visual.state_age_s)}} old | frame updated ${{fmtTime(visual.frame_updated_at_ts)}} | state ${{visual.state_path || 'unknown'}}</div></div>`);
       if (visual.identity_summary) {{
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Identity</strong><span class="health-tag ${{healthClass(visual.identity_health || 'unknown')}}">${{visual.identity_status || visual.identity_health || 'unknown'}}</span></div><div class="metric-label">${{visual.identity_summary}}</div></div>`);
       }}

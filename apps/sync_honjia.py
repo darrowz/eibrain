@@ -11,6 +11,7 @@ import subprocess
 DEPLOY_PATHS = (
     "apps",
     "eibrain",
+    "deploy",
     "scripts",
     "pyproject.toml",
     "README.md",
@@ -33,6 +34,8 @@ def main() -> int:
     )
     parser.add_argument("--include-tests", action="store_true", help="Also sync the tests directory for remote validation")
     parser.add_argument("--restart-monitor", action="store_true", help="Restart eibrain-monitor after sync")
+    parser.add_argument("--restart-vision", action="store_true", help="Restart eibrain-vision-hailo after sync")
+    parser.add_argument("--restart-services", action="store_true", help="Restart vision first, then monitor")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -54,7 +57,25 @@ def main() -> int:
     _run(["scp", str(config_source), f"{args.target_host}:{config_target}"])
     _run(["ssh", args.target_host, f"mkdir -p {args.target_dir}/config"])
     _run(["scp", str(config_source), f"{args.target_host}:{args.target_dir}/config/eibrain.yaml"])
-    if args.restart_monitor:
+    if args.restart_services or args.restart_vision:
+        _run(["ssh", args.target_host, "systemctl", "--user", "restart", "eibrain-vision-hailo.service"])
+    if args.restart_services:
+        _run(
+            [
+                "ssh",
+                args.target_host,
+                "python3",
+                "-c",
+                "import json,time,pathlib; p=pathlib.Path('/tmp/eibrain-vision/state.json'); deadline=time.time()+10\n"
+                "while time.time()<deadline:\n"
+                "    if p.exists():\n"
+                "        data=json.loads(p.read_text()); ts=float(data.get('updated_at_ts',0) or 0)\n"
+                "        if time.time()-ts<5: raise SystemExit(0)\n"
+                "    time.sleep(0.5)\n"
+                "raise SystemExit('vision state did not become fresh')",
+            ]
+        )
+    if args.restart_services or args.restart_monitor:
         _run(["ssh", args.target_host, "systemctl", "--user", "restart", "eibrain-monitor.service"])
     print(f"synced={args.target_host}:{args.target_dir}")
     print(f"config_source={config_source}")

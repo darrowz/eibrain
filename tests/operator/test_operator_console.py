@@ -182,6 +182,7 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
             "visual_tracking": {
                 "running": True,
                 "status": "tracking",
+                "source": "state",
                 "updated_at_ts": 124.0,
                 "miss_count": 0,
                 "last_outcome_status": "ok",
@@ -221,11 +222,27 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
                             "details": {
                                 "driver": "command",
                                 "status": "healthy",
+                                "backend": "gstreamer_hailo",
+                                "service_status": "ok",
+                                "state_path": "/tmp/eibrain-vision/state.json",
+                                "state_age_s": 0.25,
+                                "state_updated_at_ts": 122.9,
                                 "elapsed_ms": 70.0,
                                 "frame_path": "/tmp/latest.jpg",
                                 "frame_captured_at_ts": 123.0,
+                                "frame_updated_at_ts": 123.0,
                                 "scene_summary": "1 face, 1 person",
                                 "scene_labels": ["face", "person"],
+                                "top_detection": {
+                                    "label": "face",
+                                    "score": 0.91,
+                                    "bbox": {
+                                        "x_min": 0.2,
+                                        "y_min": 0.1,
+                                        "x_max": 0.6,
+                                        "y_max": 0.7,
+                                    },
+                                },
                                 "detections": [
                                     {
                                         "label": "face",
@@ -269,7 +286,13 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
     assert report["visual_diagnostics"]["detections"][0]["label"] == "face"
     assert report["visual_diagnostics"]["identity_candidates"][0]["candidate_id"] == "unknown-face-1"
     assert report["visual_diagnostics"]["tracking_status"] == "tracking"
+    assert report["visual_diagnostics"]["tracking_source"] == "state"
     assert report["visual_diagnostics"]["tracking_target"]["label"] == "face"
+    assert report["visual_diagnostics"]["backend"] == "gstreamer_hailo"
+    assert report["visual_diagnostics"]["vision_service_status"] == "ok"
+    assert report["visual_diagnostics"]["state_age_s"] == 0.25
+    assert report["visual_diagnostics"]["state_path"] == "/tmp/eibrain-vision/state.json"
+    assert report["visual_diagnostics"]["top_detection_bbox"]["x_min"] == 0.2
 
 
 def test_operator_console_distinguishes_health_from_live_data() -> None:

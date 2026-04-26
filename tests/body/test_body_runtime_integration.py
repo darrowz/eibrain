@@ -159,6 +159,88 @@ def test_body_runtime_can_dispatch_visual_tracking_to_neck() -> None:
     assert outcome.details["target_x"] == 0.7
 
 
+def test_body_runtime_state_tracking_reads_state_without_identity_probe(tmp_path) -> None:
+    import json
+    import time
+
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.organs.eye.organ import EyeOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    frame_path = tmp_path / "latest.jpg"
+    state_path = tmp_path / "state.json"
+    frame_path.write_bytes(b"frame")
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "backend": "gstreamer_hailo",
+                "updated_at_ts": time.time(),
+                "frame_path": str(frame_path),
+                "frame_captured_at_ts": 50.0,
+                "detections": [
+                    {
+                        "label": "face",
+                        "score": 0.88,
+                        "bbox": {"x_min": 0.6, "y_min": 0.1, "x_max": 0.8, "y_max": 0.5},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    eye = EyeOrgan(
+        config=OrganConfig(
+            enabled=True,
+            subfunctions={
+                "camera": SubfunctionConfig(
+                    driver=DriverConfig(kind="command", command=["python"], extra={"provider": "vision_state", "state_path": str(state_path)}),
+                ),
+                "detection": SubfunctionConfig(
+                    driver=DriverConfig(kind="command", command=["python"], extra={"provider": "vision_state", "state_path": str(state_path)}),
+                ),
+                "identity": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+            },
+        )
+    )
+    eye.drivers["identity"].heartbeat = lambda: (_ for _ in ()).throw(AssertionError("identity probe must not run"))
+
+    class _Neck:
+        name = "neck"
+
+        def supports_action(self, action) -> bool:
+            return True
+
+        def heartbeat(self):
+            from eibrain.body.health.organ_health import OrganHealth
+
+            return OrganHealth(organ="neck", health="healthy", subfunctions={})
+
+        def handle_action(self, action):
+            from eibrain.protocol.outcomes import ActionExecuted
+
+            return ActionExecuted(
+                ts=action.ts,
+                source="neck.motor",
+                status="ok",
+                session_id=action.session_id,
+                actor_id=action.actor_id,
+                target_id=action.target_id,
+                action_kind=action.kind,
+                details={"target_x": action.target_x, "target_name": action.target_name},
+            )
+
+    runtime = BodyRuntimeApp()
+    runtime.organs = [eye, _Neck()]
+
+    outcome = runtime.track_visual_target_once(source="state")
+
+    assert outcome is not None
+    assert outcome.details["target_name"] == "face"
+    assert outcome.details["target_x"] == 0.7
+    assert runtime.visual_tracking_state["source"] == "state"
+
+
 def test_body_runtime_updates_interaction_state_when_visual_target_locks() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth

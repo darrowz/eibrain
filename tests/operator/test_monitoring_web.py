@@ -45,6 +45,9 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "Runtime posture" in html
     assert "Audio diagnostics" in html
     assert "Visual diagnostics" in html
+    assert "Vision service" in html
+    assert "Backend" in html
+    assert "State age" in html
     assert "/metrics.json" in html
     assert "const sessionState = !dialogue.enabled ? 'off'" in html
     assert "['Session', sessionState]" in html

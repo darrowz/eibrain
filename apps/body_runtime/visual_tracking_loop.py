@@ -16,10 +16,12 @@ class VisualTrackingLoop:
         body_runtime: BodyRuntimeApp,
         interval_s: float = 0.5,
         recenter_after_misses: int = 3,
+        source: str = "active",
     ) -> None:
         self.body_runtime = body_runtime
         self.interval_s = max(0.2, float(interval_s))
         self.recenter_after_misses = max(1, int(recenter_after_misses))
+        self.source = source
         self.session_id = "tracking-session"
         self.actor_id = "vision-runtime"
         self._stop = threading.Event()
@@ -60,4 +62,6 @@ class VisualTrackingLoop:
         accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
         if accepts_kwargs or "recenter_after_misses" in signature.parameters:
             kwargs["recenter_after_misses"] = self.recenter_after_misses
+        if accepts_kwargs or "source" in signature.parameters:
+            kwargs["source"] = self.source
         track(**kwargs)

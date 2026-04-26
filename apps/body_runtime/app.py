@@ -52,6 +52,7 @@ class BodyRuntimeApp:
         self.visual_tracking_state: dict[str, object] = {
             "running": False,
             "status": "idle",
+            "source": "inactive",
             "updated_at_ts": None,
             "frame_captured_at_ts": None,
             "detection_count": 0,
@@ -393,6 +394,7 @@ class BodyRuntimeApp:
         recenter_after_misses: int = 3,
         session_id: str = "tracking-session",
         actor_id: str = "vision-runtime",
+        source: str = "active",
     ):
         with self._visual_lock:
             return self._track_visual_target_once_locked(
@@ -400,6 +402,7 @@ class BodyRuntimeApp:
                 recenter_after_misses=recenter_after_misses,
                 session_id=session_id,
                 actor_id=actor_id,
+                source=source,
             )
 
     def _track_visual_target_once_locked(
@@ -409,10 +412,15 @@ class BodyRuntimeApp:
         recenter_after_misses: int,
         session_id: str,
         actor_id: str,
+        source: str,
     ):
-        target, eye_details = self._select_visual_tracking_target(preferred_labels=preferred_labels)
+        target, eye_details = self._select_visual_tracking_target(
+            preferred_labels=preferred_labels,
+            source=source,
+        )
         self._update_visual_tracking_state(
             running=True,
+            source=source,
             frame_captured_at_ts=eye_details.get("frame_captured_at_ts"),
             detection_count=eye_details.get("detection_count", 0),
             top_detection=eye_details.get("top_detection"),
@@ -627,7 +635,10 @@ class BodyRuntimeApp:
         if isinstance(target, dict) and target.get("label") and target.get("bbox"):
             return dict(target)
         with self._visual_lock:
-            target, _eye_details = self._select_visual_tracking_target(preferred_labels=("face", "person"))
+            target, _eye_details = self._select_visual_tracking_target(
+                preferred_labels=("face", "person"),
+                source="state",
+            )
         if target is not None:
             return dict(target)
         return None
@@ -669,21 +680,35 @@ class BodyRuntimeApp:
         self,
         *,
         preferred_labels: tuple[str, ...],
+        source: str = "active",
     ) -> tuple[dict[str, object] | None, dict[str, object]]:
         eye = next((organ for organ in self.organs if organ.name == "eye"), None)
         if eye is None:
             return None, {}
-        heartbeat = eye.heartbeat()
-        detection_state = heartbeat.subfunctions.get("detection")
-        if detection_state is None:
-            return None, {}
-        detections = detection_state.details.get("detections", [])
+        if source == "state":
+            read_state = getattr(eye, "read_visual_tracking_snapshot", None)
+            eye_details = read_state() if callable(read_state) else {}
+            if not isinstance(eye_details, dict):
+                eye_details = {}
+        else:
+            heartbeat = eye.heartbeat()
+            detection_state = heartbeat.subfunctions.get("detection")
+            if detection_state is None:
+                return None, {}
+            eye_details = {
+                "frame_captured_at_ts": detection_state.details.get("frame_captured_at_ts"),
+                "detection_count": 0,
+                "top_detection": detection_state.details.get("top_detection"),
+                "detections": detection_state.details.get("detections", []),
+            }
+        detections = eye_details.get("detections", [])
         if not isinstance(detections, list):
             detections = []
         eye_details = {
-            "frame_captured_at_ts": detection_state.details.get("frame_captured_at_ts"),
+            **eye_details,
             "detection_count": len(detections),
-            "top_detection": detection_state.details.get("top_detection"),
+            "top_detection": eye_details.get("top_detection"),
+            "tracking_source": source,
         }
         ranked: list[tuple[int, float, dict[str, object]]] = []
         for detection in detections:
