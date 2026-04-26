@@ -187,6 +187,33 @@ body:
           labels:
             - person
             - face
+          models:
+            - id: personface
+              kind: yolo
+              enabled: true
+              hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+              postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+              postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
+              postprocess_function: filter
+              labels:
+                - person
+                - face
+              score_threshold: 0.3
+              cadence_hz: 2.0
+              priority: 80
+              output_kind: detections
+            - id: yolov8s_h8
+              kind: yolo
+              enabled: true
+              hef_path: /usr/share/hailo-models/yolov8s_h8.hef
+              postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+              postprocess_config_path: ""
+              postprocess_function: yolov8s
+              label_set: coco80
+              score_threshold: 0.35
+              cadence_hz: 1.0
+              priority: 120
+              output_kind: objects
           refresh_interval_s: 0.5
       identity:
         driver:

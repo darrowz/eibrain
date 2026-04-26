@@ -53,12 +53,21 @@ class MultimodalMemoryPolicy:
         if task_type == "brain.orient" or modality == "vision" or organ == "eye":
             context.update(
                 {
-                    "allowed_sources": ["eibrain.visual_frame", "eibrain.identity", "eibrain.policy"],
+                    "allowed_sources": [
+                        "eibrain.visual_world",
+                        "eibrain.visual_frame",
+                        "eibrain.identity",
+                        "eibrain.policy",
+                    ],
                     "blocked_sources": [],
-                    "allowed_memory_types": ["identity", "fact", "policy", "semantic"],
+                    "allowed_memory_types": ["world_observation", "identity", "fact", "policy", "semantic"],
                     "preferred_modalities": ["vision", "multimodal"],
                     "organs": ["eye", "cognition"],
-                    "source_weights": {"eibrain.visual_frame": 1.4, "eibrain.identity": 1.3},
+                    "source_weights": {
+                        "eibrain.visual_world": 1.6,
+                        "eibrain.visual_frame": 1.4,
+                        "eibrain.identity": 1.3,
+                    },
                 }
             )
             return context

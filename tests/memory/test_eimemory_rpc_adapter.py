@@ -219,6 +219,98 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
     }
 
 
+def test_eimemory_rpc_adapter_passes_structured_episode_fields(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_structured"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_episode(
+        session_id="vision:user-1",
+        actor_id="user-1",
+        summary="person detected near desk",
+        memory_type="world_observation",
+        source="eibrain.visual_world",
+        modality="vision",
+        organ="eye",
+        content={"objects": [{"label": "person", "confidence": 0.91}]},
+        meta={"dedupe_key": "vision:person:desk", "confidence": 0.91},
+        tags=["vision", "world_observation"],
+        evidence=[{"type": "frame", "url": "https://example.com/frame.jpg"}],
+        links=[{"rel": "actor", "id": "user-1"}],
+    )
+
+    params = captured["body"]["params"]
+    assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
+    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91}
+    assert params["tags"] == ["vision", "world_observation"]
+    assert params["evidence"] == [{"type": "frame", "url": "https://example.com/frame.jpg"}]
+    assert params["links"] == [{"rel": "actor", "id": "user-1"}]
+
+
+def test_eimemory_rpc_adapter_posts_world_observation(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_world"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_world_observation(
+        session_id="vision:user-1",
+        actor_id="user-1",
+        summary="person detected near desk",
+        content={"objects": [{"label": "person", "confidence": 0.91}]},
+        meta={"dedupe_key": "vision:person:desk", "confidence": 0.91},
+        tags=["person"],
+    )
+
+    params = captured["body"]["params"]
+    assert params["memory_type"] == "world_observation"
+    assert params["source"] == "eibrain.visual_world"
+    assert params["modality"] == "vision"
+    assert params["organ"] == "eye"
+    assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
+    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91}
+    assert params["tags"] == ["person", "world_observation", "vision"]
+
+
 def test_eimemory_rpc_adapter_observes_failed_episode_as_incident(monkeypatch) -> None:
     import json
 

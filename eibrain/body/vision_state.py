@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import tempfile
@@ -14,6 +15,16 @@ from typing import Any
 DEFAULT_VISION_STATE_DIR = Path(tempfile.gettempdir()) / "eibrain-vision"
 DEFAULT_VISION_STATE_PATH = DEFAULT_VISION_STATE_DIR / "state.json"
 DEFAULT_VISION_FRAME_PATH = DEFAULT_VISION_STATE_DIR / "latest.jpg"
+DETECTION_EXTENSION_FIELDS = (
+    "category",
+    "source",
+    "model_id",
+    "attributes",
+    "spatial",
+    "stable_id",
+    "region",
+    "canonical_label",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +107,19 @@ def normalize_detection(raw: Any) -> dict[str, Any] | None:
         try:
             item["class_id"] = int(raw["class_id"])
         except (TypeError, ValueError):
-            item["class_id"] = raw["class_id"]
+            safe_class_id = _json_safe(raw["class_id"])
+            if safe_class_id is not _UNSAFE:
+                item["class_id"] = safe_class_id
     if raw.get("track_id") is not None:
-        item["track_id"] = raw["track_id"]
+        safe_track_id = _json_safe(raw["track_id"])
+        if safe_track_id is not _UNSAFE:
+            item["track_id"] = safe_track_id
+    for field in DETECTION_EXTENSION_FIELDS:
+        if field not in raw:
+            continue
+        safe_value = _json_safe(raw[field])
+        if safe_value is not _UNSAFE:
+            item[field] = safe_value
     return item
 
 
@@ -110,21 +131,53 @@ def build_vision_state(
     frame_captured_at_ts: float | None = None,
     backend: str = "hailo8",
     details: dict[str, Any] | None = None,
+    schema_version: int = 2,
+    pipeline: dict[str, Any] | None = None,
+    objects: list[dict[str, Any]] | None = None,
+    scene: dict[str, Any] | None = None,
+    spatial: dict[str, Any] | None = None,
+    events: list[dict[str, Any]] | None = None,
+    frame_id: str | None = None,
+    camera_id: str | None = None,
+    scene_id: str | None = None,
+    place_hint: str | None = None,
 ) -> dict[str, Any]:
     normalized = [item for item in (normalize_detection(detection) for detection in detections) if item is not None]
+    normalized_objects = (
+        normalized
+        if objects is None
+        else [item for item in (normalize_detection(obj) for obj in objects) if item is not None]
+    )
     captured_at = time.time() if frame_captured_at_ts is None else frame_captured_at_ts
+    scene_labels = sorted({str(item.get("label", "unknown")) for item in normalized})
+    scene_summary = summarize_detections(normalized)
+    normalized_scene = _normalize_scene(
+        scene,
+        summary=scene_summary,
+        labels=scene_labels,
+        place_hint=place_hint,
+    )
     return {
+        "schema_version": schema_version,
         "status": status,
         "backend": backend,
         "updated_at_ts": time.time(),
         "frame_path": str(frame_path) if frame_path is not None else None,
         "frame_captured_at_ts": captured_at,
+        "frame_id": frame_id,
+        "camera_id": camera_id,
+        "scene_id": scene_id,
         "detections": normalized,
+        "objects": normalized_objects,
         "detection_count": len(normalized),
         "top_detection": normalized[0] if normalized else None,
-        "scene_labels": sorted({str(item.get("label", "unknown")) for item in normalized}),
-        "scene_summary": summarize_detections(normalized),
-        "details": dict(details or {}),
+        "scene_labels": scene_labels,
+        "scene_summary": scene_summary,
+        "scene": normalized_scene,
+        "spatial": _normalize_spatial(spatial),
+        "events": _normalize_events(events),
+        "pipeline": _normalize_mapping(pipeline),
+        "details": _normalize_mapping(details),
     }
 
 
@@ -147,3 +200,66 @@ def _coerce_float(value: Any, *, default: float | None) -> float | None:
 
 def _clip01(value: float) -> float:
     return max(0.0, min(1.0, value))
+
+
+class _UnsafeJsonValue:
+    pass
+
+
+_UNSAFE = _UnsafeJsonValue()
+
+
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else _UNSAFE
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            safe_item = _json_safe(item)
+            if safe_item is not _UNSAFE:
+                items.append(safe_item)
+        return items
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            safe_item = _json_safe(item)
+            if safe_item is not _UNSAFE:
+                result[key] = safe_item
+        return result
+    return _UNSAFE
+
+
+def _normalize_mapping(value: dict[str, Any] | None) -> dict[str, Any]:
+    safe_value = _json_safe(value or {})
+    return safe_value if isinstance(safe_value, dict) else {}
+
+
+def _normalize_scene(
+    scene: dict[str, Any] | None,
+    *,
+    summary: str,
+    labels: list[str],
+    place_hint: str | None,
+) -> dict[str, Any]:
+    normalized = _normalize_mapping(scene)
+    normalized["summary"] = str(normalized.get("summary", summary))
+    raw_labels = normalized.get("labels", labels)
+    normalized["labels"] = [str(label) for label in raw_labels] if isinstance(raw_labels, list) else labels
+    normalized["place_hint"] = place_hint if place_hint is not None else normalized.get("place_hint")
+    return normalized
+
+
+def _normalize_spatial(spatial: dict[str, Any] | None) -> dict[str, Any]:
+    normalized = _normalize_mapping(spatial)
+    relations = normalized.get("relations")
+    normalized["relations"] = relations if isinstance(relations, list) else []
+    return normalized
+
+
+def _normalize_events(events: list[dict[str, Any]] | None) -> list[Any]:
+    safe_events = _json_safe(events or [])
+    return safe_events if isinstance(safe_events, list) else []

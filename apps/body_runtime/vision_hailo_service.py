@@ -8,6 +8,7 @@ from synchronously grabbing frames.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import signal
@@ -22,6 +23,106 @@ from eibrain.body.vision_state import build_vision_state
 from eibrain.infra.config import EIBrainConfig, load_config
 
 
+COCO80_LABELS = [
+    "person",
+    "bicycle",
+    "car",
+    "motorcycle",
+    "airplane",
+    "bus",
+    "train",
+    "truck",
+    "boat",
+    "traffic light",
+    "fire hydrant",
+    "stop sign",
+    "parking meter",
+    "bench",
+    "bird",
+    "cat",
+    "dog",
+    "horse",
+    "sheep",
+    "cow",
+    "elephant",
+    "bear",
+    "zebra",
+    "giraffe",
+    "backpack",
+    "umbrella",
+    "handbag",
+    "tie",
+    "suitcase",
+    "frisbee",
+    "skis",
+    "snowboard",
+    "sports ball",
+    "kite",
+    "baseball bat",
+    "baseball glove",
+    "skateboard",
+    "surfboard",
+    "tennis racket",
+    "bottle",
+    "wine glass",
+    "cup",
+    "fork",
+    "knife",
+    "spoon",
+    "bowl",
+    "banana",
+    "apple",
+    "sandwich",
+    "orange",
+    "broccoli",
+    "carrot",
+    "hot dog",
+    "pizza",
+    "donut",
+    "cake",
+    "chair",
+    "couch",
+    "potted plant",
+    "bed",
+    "dining table",
+    "toilet",
+    "tv",
+    "laptop",
+    "mouse",
+    "remote",
+    "keyboard",
+    "cell phone",
+    "microwave",
+    "oven",
+    "toaster",
+    "sink",
+    "refrigerator",
+    "book",
+    "clock",
+    "vase",
+    "scissors",
+    "teddy bear",
+    "hair drier",
+    "toothbrush",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class ModelConfig:
+    id: str
+    kind: str
+    hef_path: str
+    postprocess_so_path: str
+    postprocess_config_path: str
+    postprocess_function: str
+    labels: list[str]
+    score_threshold: float
+    cadence_hz: float
+    priority: int
+    output_kind: str
+    enabled: bool = True
+
+
 class SingleFrameHailoDetector:
     """Compatibility detector used as a fallback when GStreamer is unavailable."""
 
@@ -33,6 +134,7 @@ class SingleFrameHailoDetector:
         hef_path: str,
         labels: list[str],
         score_threshold: float,
+        model_id: str = "personface",
         input_format: str = "mjpeg",
         video_size: str = "640x480",
         timeout_s: float = 5.0,
@@ -40,6 +142,7 @@ class SingleFrameHailoDetector:
         self.camera_device = camera_device
         self.frame_path = Path(frame_path)
         self.hef_path = hef_path
+        self.model_id = model_id
         self.labels = labels
         self.score_threshold = score_threshold
         self.input_format = input_format
@@ -80,6 +183,7 @@ class SingleFrameHailoDetector:
             status="ok" if inference.get("status") == "ok" else "inference_failed",
             frame_captured_at_ts=captured_at,
             backend="hailort_single_frame",
+            pipeline={"model_id": self.model_id, "output_kind": "detections"},
             details={"capture_result": capture_result, "inference_details": details},
         )
 
@@ -93,9 +197,11 @@ class GStreamerHailoDetector:
         camera_device: str,
         frame_path: str | Path,
         hef_path: str,
+        model_id: str,
         postprocess_so_path: str,
         postprocess_config_path: str,
         postprocess_function: str,
+        labels: list[str],
         score_threshold: float,
         width: int = 640,
         height: int = 480,
@@ -104,9 +210,11 @@ class GStreamerHailoDetector:
         self.camera_device = camera_device
         self.frame_path = Path(frame_path)
         self.hef_path = hef_path
+        self.model_id = model_id
         self.postprocess_so_path = postprocess_so_path
         self.postprocess_config_path = postprocess_config_path
         self.postprocess_function = postprocess_function
+        self.labels = labels
         self.score_threshold = score_threshold
         self.width = width
         self.height = height
@@ -171,6 +279,8 @@ class GStreamerHailoDetector:
                     "label": str(detection.get_label()),
                     "class_id": int(detection.get_class_id()),
                     "score": confidence,
+                    "source": "hailo",
+                    "model_id": self.model_id,
                     "bbox": {
                         "x_min": float(bbox.xmin()),
                         "y_min": float(bbox.ymin()),
@@ -193,9 +303,16 @@ class GStreamerHailoDetector:
             return Gst.FlowReturn.OK
         self._latest_state = build_vision_state(
             detections=detections,
+            objects=detections,
             frame_path=self.frame_path,
             status="ok",
             backend="gstreamer_hailo",
+            pipeline={
+                "model_id": self.model_id,
+                "hef_path": self.hef_path,
+                "postprocess_function": self.postprocess_function,
+                "label_count": len(self.labels),
+            },
             details={"pipeline": "appsink_metadata"},
         )
         return Gst.FlowReturn.OK
@@ -211,14 +328,23 @@ class GStreamerHailoDetector:
             "t. ! queue max-size-buffers=2 leaky=downstream ! "
             f"hailonet hef-path={self.hef_path} scheduling-algorithm=0 is-active=true force-writable=true ! "
             "queue max-size-buffers=2 leaky=downstream ! "
-            f"hailofilter so-path={self.postprocess_so_path} "
-            f"config-path={self.postprocess_config_path} "
-            f"function-name={self.postprocess_function} qos=false ! "
+            f"{self._hailofilter_text()} ! "
             "hailotracker class-id=-1 ! "
             "appsink name=metadata_sink emit-signals=true sync=false max-buffers=1 drop=true "
             "t. ! queue max-size-buffers=1 leaky=downstream ! "
             f"videoconvert ! jpegenc ! multifilesink location={frame_location} max-files=1"
         )
+
+    def _hailofilter_text(self) -> str:
+        parts = [
+            "hailofilter",
+            f"so-path={self.postprocess_so_path}",
+            f"function-name={self.postprocess_function}",
+            "qos=false",
+        ]
+        if self.postprocess_config_path:
+            parts.insert(2, f"config-path={self.postprocess_config_path}")
+        return " ".join(parts)
 
 
 class VisionHailoService:
@@ -258,14 +384,15 @@ def detector_from_config(config: EIBrainConfig, *, backend: str) -> object:
     camera_extra = camera.driver.extra if camera is not None else {}
     detection_extra = detection.driver.extra if detection is not None else {}
     frame_path = Path(str(detection_extra.get("frame_path", camera_extra.get("frame_path", DEFAULT_VISION_FRAME_PATH))))
-    labels = _read_labels(detection_extra.get("labels"), default=["person", "face"])
+    model = _select_model_config(detection_extra)
     if backend == "single_frame":
         return SingleFrameHailoDetector(
             camera_device=str(camera_extra.get("device", "/dev/video0")),
             frame_path=frame_path,
-            hef_path=str(detection_extra.get("hef_path", "/usr/share/hailo-models/yolov5s_personface_h8l.hef")),
-            labels=labels,
-            score_threshold=float(detection_extra.get("score_threshold", 0.3)),
+            hef_path=model.hef_path,
+            model_id=model.id,
+            labels=model.labels,
+            score_threshold=model.score_threshold,
             input_format=str(camera_extra.get("input_format", "mjpeg") or "mjpeg"),
             video_size=str(camera_extra.get("video_size", "640x480") or "640x480"),
             timeout_s=float(camera_extra.get("timeout_s", 5.0)),
@@ -273,16 +400,13 @@ def detector_from_config(config: EIBrainConfig, *, backend: str) -> object:
     return GStreamerHailoDetector(
         camera_device=str(camera_extra.get("device", "/dev/video0")),
         frame_path=frame_path,
-        hef_path=str(detection_extra.get("hef_path", "/usr/share/hailo-models/yolov5s_personface_h8l.hef")),
-        postprocess_so_path=str(
-            detection_extra.get(
-                "postprocess_so_path",
-                "/usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so",
-            )
-        ),
-        postprocess_config_path=str(detection_extra.get("postprocess_config_path", "/usr/share/hailo-models/yolov5_personface.json")),
-        postprocess_function=str(detection_extra.get("postprocess_function", "filter")),
-        score_threshold=float(detection_extra.get("score_threshold", 0.3)),
+        hef_path=model.hef_path,
+        model_id=model.id,
+        postprocess_so_path=model.postprocess_so_path,
+        postprocess_config_path=model.postprocess_config_path,
+        postprocess_function=model.postprocess_function,
+        labels=model.labels,
+        score_threshold=model.score_threshold,
         width=int(camera_extra.get("pipeline_width", 640)),
         height=int(camera_extra.get("pipeline_height", 480)),
         framerate=int(camera_extra.get("pipeline_framerate", 30)),
@@ -345,7 +469,54 @@ def _read_track_id(detection) -> object | None:
     return None
 
 
-def _read_labels(value: object, *, default: list[str]) -> list[str]:
+def _select_model_config(detection_extra: dict[str, Any]) -> ModelConfig:
+    models = detection_extra.get("models")
+    if isinstance(models, list):
+        parsed_models = [_model_config_from_mapping(item, detection_extra) for item in models if isinstance(item, dict)]
+        enabled_models = [model for model in parsed_models if model.enabled]
+        if enabled_models:
+            return max(enabled_models, key=lambda model: model.priority)
+    return _legacy_model_config(detection_extra)
+
+
+def _legacy_model_config(detection_extra: dict[str, Any]) -> ModelConfig:
+    return _model_config_from_mapping({}, detection_extra)
+
+
+def _model_config_from_mapping(raw: dict[str, Any], detection_extra: dict[str, Any]) -> ModelConfig:
+    model_id = str(raw.get("id", detection_extra.get("model_id", "personface")))
+    return ModelConfig(
+        id=model_id,
+        kind=str(raw.get("kind", detection_extra.get("kind", "yolo"))),
+        hef_path=str(raw.get("hef_path", detection_extra.get("hef_path", "/usr/share/hailo-models/yolov5s_personface_h8l.hef"))),
+        postprocess_so_path=str(
+            raw.get(
+                "postprocess_so_path",
+                detection_extra.get(
+                    "postprocess_so_path",
+                    "/usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so",
+                ),
+            )
+        ),
+        postprocess_config_path=str(
+            raw.get(
+                "postprocess_config_path",
+                detection_extra.get("postprocess_config_path", "/usr/share/hailo-models/yolov5_personface.json"),
+            )
+        ),
+        postprocess_function=str(raw.get("postprocess_function", detection_extra.get("postprocess_function", "filter"))),
+        labels=_read_labels(raw.get("labels", detection_extra.get("labels")), label_set=raw.get("label_set", detection_extra.get("label_set")), default=["person", "face"]),
+        score_threshold=float(raw.get("score_threshold", detection_extra.get("score_threshold", 0.3))),
+        cadence_hz=float(raw.get("cadence_hz", detection_extra.get("cadence_hz", 0.0))),
+        priority=int(raw.get("priority", detection_extra.get("priority", 0))),
+        output_kind=str(raw.get("output_kind", detection_extra.get("output_kind", "detections"))),
+        enabled=bool(raw.get("enabled", True)),
+    )
+
+
+def _read_labels(value: object, *, label_set: object = None, default: list[str]) -> list[str]:
+    if str(label_set).lower() == "coco80":
+        return list(COCO80_LABELS)
     if isinstance(value, list):
         return [str(item) for item in value]
     return list(default)

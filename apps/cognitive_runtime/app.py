@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from eibrain.cognition.attention.manager import AttentionManager
@@ -284,6 +286,74 @@ class CognitiveRuntimeApp:
         )
         return [action for action in actions if action.kind == "move_head_action"]
 
+    def build_world_observation_payload(
+        self,
+        visual_state: dict[str, object],
+        *,
+        session_id: str,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        objects = self._normalize_world_objects(visual_state.get("objects") or visual_state.get("detections") or [])
+        confidence = max((float(item.get("confidence", 0.0)) for item in objects), default=0.0)
+        content: dict[str, object] = {
+            "source": str(visual_state.get("source") or visual_state.get("backend") or "visual_state"),
+            "objects": objects,
+            "confidence": confidence,
+        }
+        if visual_state.get("frame_path"):
+            content["frame_path"] = str(visual_state["frame_path"])
+        if visual_state.get("identity_candidates"):
+            content["identity_candidates"] = list(visual_state.get("identity_candidates") or [])
+
+        object_labels = [str(item.get("label", "")).strip() for item in objects if str(item.get("label", "")).strip()]
+        summary = "Observed visual scene"
+        if object_labels:
+            summary = f"Observed {', '.join(object_labels)}"
+        dedupe_key = self._world_observation_dedupe_key(content)
+        tags = self._unique_tags(["world_observation", "vision", *object_labels])
+        return {
+            "session_id": session_id,
+            "actor_id": actor_id,
+            "summary": summary,
+            "content": content,
+            "meta": {
+                "source": "eibrain.visual_world",
+                "modality": "vision",
+                "organ": "eye",
+                "session_id": session_id,
+                "actor_id": actor_id,
+                "dedupe_key": dedupe_key,
+                "confidence": confidence,
+            },
+            "tags": tags,
+        }
+
+    def remember_world_observation_from_state(
+        self,
+        visual_state: dict[str, object],
+        *,
+        session_id: str,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        payload = self.build_world_observation_payload(
+            visual_state,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        writer = getattr(self.memory, "remember_world_observation", None)
+        if not callable(writer):
+            return payload
+        writer(
+            session_id=str(payload["session_id"]),
+            actor_id=payload.get("actor_id") if isinstance(payload.get("actor_id"), str) else None,
+            summary=str(payload["summary"]),
+            content=dict(payload["content"]),
+            meta=dict(payload["meta"]),
+            tags=[str(tag) for tag in payload.get("tags", [])],
+        )
+        self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
+        return payload
+
     def _record_learning(self, *, event_type: str, transcript: str, reply: str, outcome: str) -> None:
         self.last_review = self.review.review_turn(
             event_type=event_type,
@@ -402,6 +472,39 @@ class CognitiveRuntimeApp:
             observer(signal_type=signal_type, payload=payload, session_id=session_id, actor_id=actor_id)
         except (OSError, ValueError, TypeError):
             return
+
+    def _normalize_world_objects(self, objects: object) -> list[dict[str, object]]:
+        if not isinstance(objects, list):
+            return []
+        normalized: list[dict[str, object]] = []
+        for item in objects:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or item.get("name") or item.get("class") or "").strip()
+            if not label:
+                continue
+            normalized_item = {
+                key: value
+                for key, value in item.items()
+                if key not in {"score", "class", "name"} and value is not None
+            }
+            normalized_item["label"] = label
+            normalized_item["confidence"] = float(item.get("confidence", item.get("score", 0.0)) or 0.0)
+            normalized.append(normalized_item)
+        return normalized
+
+    def _world_observation_dedupe_key(self, content: dict[str, object]) -> str:
+        fingerprint = json.dumps(content, sort_keys=True, ensure_ascii=True, default=str)
+        digest = hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:16]
+        return f"world_observation:{digest}"
+
+    def _unique_tags(self, tags: list[str]) -> list[str]:
+        unique: list[str] = []
+        for tag in tags:
+            cleaned = str(tag or "").strip()
+            if cleaned and cleaned not in unique:
+                unique.append(cleaned)
+        return unique
 
     def _record_attention_policy(self, *, salience, decision) -> None:
         self.last_attention = {

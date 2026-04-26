@@ -53,6 +53,11 @@ class EIMemoryRPCAdapter:
         modality: str = "text",
         organ: str = "cognition",
         outcome: dict[str, object] | None = None,
+        content: dict[str, object] | None = None,
+        meta: dict[str, object] | None = None,
+        tags: list[str] | None = None,
+        evidence: list[dict[str, object]] | None = None,
+        links: list[dict[str, object]] | None = None,
     ) -> None:
         cleaned_summary = str(summary or "").strip()
         if not cleaned_summary:
@@ -73,6 +78,17 @@ class EIMemoryRPCAdapter:
                 "outcome": dict(outcome or {}),
             },
         }
+        params = payload["params"]
+        if content is not None:
+            params["content"] = dict(content)
+        if meta is not None:
+            params["meta"] = dict(meta)
+        if tags is not None:
+            params["tags"] = [str(tag) for tag in tags]
+        if evidence is not None:
+            params["evidence"] = [dict(item) for item in evidence]
+        if links is not None:
+            params["links"] = [dict(item) for item in links]
         try:
             self._post_json(payload)
             self.last_writeback_status = {
@@ -94,6 +110,32 @@ class EIMemoryRPCAdapter:
         except (URLError, OSError, ValueError, TypeError, KeyError) as exc:
             self.last_writeback_status = {"status": "error", "error": f"{type(exc).__name__}: {exc}", "source": source}
             return
+
+    def remember_world_observation(
+        self,
+        *,
+        session_id: str,
+        summary: str,
+        actor_id: str | None = None,
+        content: dict[str, object] | None = None,
+        meta: dict[str, object] | None = None,
+        tags: list[str] | None = None,
+        title: str = "Visual world observation",
+    ) -> None:
+        observation_tags = self._merge_tags(tags, ["world_observation", "vision"])
+        self.remember_episode(
+            session_id=session_id,
+            actor_id=actor_id,
+            summary=summary,
+            title=title,
+            memory_type="world_observation",
+            source="eibrain.visual_world",
+            modality="vision",
+            organ="eye",
+            content=content,
+            meta=meta,
+            tags=observation_tags,
+        )
 
     def remember_preference(
         self,
@@ -250,6 +292,14 @@ class EIMemoryRPCAdapter:
         if actor_id:
             scope["actor_id"] = actor_id
         return scope
+
+    def _merge_tags(self, tags: list[str] | None, required_tags: list[str]) -> list[str]:
+        merged: list[str] = []
+        for tag in [*(tags or []), *required_tags]:
+            cleaned = str(tag or "").strip()
+            if cleaned and cleaned not in merged:
+                merged.append(cleaned)
+        return merged
 
     def _post_json(self, payload: dict[str, object]) -> dict[str, object]:
         if not self.config.endpoint:
