@@ -5,14 +5,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/eibrain/current
+WorkingDirectory=/home/darrow/dev-project/eibrain
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=-/usr/bin/amixer -c U4K sset Mic 24
-ExecStart=/opt/eibrain/.venv/bin/python -m apps.operator_console --config /opt/eibrain/current/config/eibrain.honjia.local.yaml
+ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --disable-visual-tracking-loop
 Restart=always
 RestartSec=3
-StandardOutput=append:/opt/eibrain/logs/eibrain-monitor.service.log
-StandardError=append:/opt/eibrain/logs/eibrain-monitor.service.log
+StandardOutput=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-monitor.service.log
+StandardError=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-monitor.service.log
 
 [Install]
 WantedBy=default.target

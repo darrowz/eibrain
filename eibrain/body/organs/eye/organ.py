@@ -9,6 +9,8 @@ import time
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
 from eibrain.body.organs.base import BaseOrgan
 from eibrain.body.runtime_linux import capture_frame, run_hailo_frame_inference
+from eibrain.body.vision_state import DEFAULT_VISION_STATE_PATH, VisionStateReader
+from eibrain.body.vision_state import summarize_detections
 
 
 class EyeOrgan(BaseOrgan):
@@ -23,14 +25,20 @@ class EyeOrgan(BaseOrgan):
         self._frame_path = frame_dir / "latest.jpg"
         self._cached_heartbeat: OrganHealth | None = None
         self._cached_heartbeat_at = 0.0
+        self._vision_state_reader = self._build_vision_state_reader()
 
     @property
     def latest_frame_path(self) -> str | None:
+        state_path = self._latest_state_frame_path()
+        if state_path:
+            return state_path
         if self._frame_path.exists():
             return str(self._frame_path)
         return None
 
     def passive_heartbeat(self) -> OrganHealth:
+        if self._vision_state_reader is not None:
+            return self.heartbeat()
         if self._cached_heartbeat is not None:
             return self._cached_heartbeat
         subfunctions = {
@@ -49,6 +57,11 @@ class EyeOrgan(BaseOrgan):
         now_ts = time.time()
         if self._cached_heartbeat is not None and now_ts - self._cached_heartbeat_at < self._cache_ttl_s:
             return self._cached_heartbeat
+        if self._vision_state_reader is not None:
+            heartbeat = self._heartbeat_from_vision_state(now_ts=now_ts)
+            self._cached_heartbeat = heartbeat
+            self._cached_heartbeat_at = now_ts
+            return heartbeat
 
         camera_state = self._camera_health(now_ts=now_ts)
         detection_state = self._detection_health(camera_state=camera_state, now_ts=now_ts)
@@ -75,6 +88,157 @@ class EyeOrgan(BaseOrgan):
             and self.config.subfunctions[name].driver.kind != "noop"
             for name in ("camera", "detection", "identity")
         )
+
+    def _build_vision_state_reader(self) -> VisionStateReader | None:
+        config = self._vision_state_config()
+        if config is None:
+            return None
+        state_path = str(config.get("state_path", DEFAULT_VISION_STATE_PATH))
+        stale_after_s = self._read_float_from_extra(config, "stale_after_s", default=3.0)
+        return VisionStateReader(state_path, stale_after_s=stale_after_s)
+
+    def _vision_state_config(self) -> dict[str, object] | None:
+        for name in ("camera", "detection", "identity"):
+            subfunction = self.config.subfunctions.get(name)
+            if subfunction is None:
+                continue
+            extra = subfunction.driver.extra
+            provider = str(extra.get("provider", "") or "")
+            if provider in {"vision_state", "hailo8_service"} or extra.get("state_path"):
+                return extra
+        return None
+
+    def _heartbeat_from_vision_state(self, *, now_ts: float) -> OrganHealth:
+        started = time.perf_counter()
+        try:
+            snapshot = self._vision_state_reader.read(now_ts=now_ts) if self._vision_state_reader is not None else None
+        except Exception as exc:
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            subfunctions = self._vision_state_unavailable_subfunctions(
+                elapsed_ms=elapsed_ms,
+                status="state_unavailable",
+                error=str(exc),
+            )
+            return OrganHealth(organ=self.name, health="unavailable", subfunctions=subfunctions)
+        if snapshot is None:
+            subfunctions = self._vision_state_unavailable_subfunctions(
+                elapsed_ms=round((time.perf_counter() - started) * 1000, 2),
+                status="state_unavailable",
+                error="vision_state_reader_not_configured",
+            )
+            return OrganHealth(organ=self.name, health="unavailable", subfunctions=subfunctions)
+
+        payload = snapshot.payload
+        detections = payload.get("detections", [])
+        if not isinstance(detections, list):
+            detections = []
+        detections = [item for item in detections if isinstance(item, dict)]
+        top_detection = payload.get("top_detection")
+        if top_detection is not None and not isinstance(top_detection, dict):
+            top_detection = None
+        frame_path = payload.get("frame_path") or self._vision_state_frame_path()
+        frame_captured_at_ts = payload.get("frame_captured_at_ts") or payload.get("updated_at_ts")
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+        status = str(payload.get("status", "ok") or "ok")
+        stale_note = "stale" if snapshot.stale else "live"
+        camera_health = "degraded" if snapshot.stale or status != "ok" else "healthy"
+        detection_health = camera_health
+        details_base = {
+            "driver": "vision_state",
+            "elapsed_ms": elapsed_ms,
+            "status": stale_note if status == "ok" else status,
+            "state_path": str(self._vision_state_reader.state_path),
+            "state_age_s": snapshot.age_s,
+            "stale_after_s": self._vision_state_reader.stale_after_s,
+            "frame_path": str(frame_path) if frame_path else None,
+            "frame_captured_at_ts": frame_captured_at_ts,
+            "backend": payload.get("backend", "hailo8_service"),
+            "details": dict(payload.get("details", {})) if isinstance(payload.get("details"), dict) else {},
+        }
+        if snapshot.stale:
+            details_base["error"] = "vision_state_stale"
+        elif status != "ok":
+            details_base["error"] = payload.get("error", status)
+        camera_state = SubfunctionHealth(
+            name="camera",
+            health=camera_health,
+            details={**details_base, "capture_result": {"status": status}},
+        )
+        detection_state = SubfunctionHealth(
+            name="detection",
+            health=detection_health,
+            details={
+                **details_base,
+                "detections": detections,
+                "detection_count": len(detections),
+                "top_detection": top_detection or (detections[0] if detections else None),
+                "scene_labels": payload.get("scene_labels")
+                if isinstance(payload.get("scene_labels"), list)
+                else sorted({str(item.get("label", "unknown")) for item in detections}),
+                "scene_summary": str(payload.get("scene_summary") or summarize_detections(detections)),
+            },
+        )
+        identity_state = self._identity_health(detection_state=detection_state, now_ts=now_ts)
+        subfunctions = {"camera": camera_state, "detection": detection_state, "identity": identity_state}
+        statuses = [state.health for state in subfunctions.values()]
+        health = "healthy" if all(item == "healthy" for item in statuses) else "degraded"
+        return OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
+
+    def _vision_state_unavailable_subfunctions(
+        self,
+        *,
+        elapsed_ms: float,
+        status: str,
+        error: str,
+    ) -> dict[str, SubfunctionHealth]:
+        state_path = str(self._vision_state_reader.state_path) if self._vision_state_reader is not None else ""
+        common = {
+            "driver": "vision_state",
+            "elapsed_ms": elapsed_ms,
+            "status": status,
+            "state_path": state_path,
+            "frame_path": None,
+            "frame_captured_at_ts": None,
+            "error": error,
+            "details": {},
+        }
+        return {
+            "camera": SubfunctionHealth(name="camera", health="unavailable", details=dict(common)),
+            "detection": SubfunctionHealth(
+                name="detection",
+                health="unavailable",
+                details={
+                    **common,
+                    "detections": [],
+                    "detection_count": 0,
+                    "top_detection": None,
+                    "scene_summary": "vision state unavailable",
+                },
+            ),
+            "identity": SubfunctionHealth(
+                name="identity",
+                health="unavailable",
+                details={
+                    **common,
+                    "identity_candidates": [],
+                    "face_candidate_count": 0,
+                    "identity_summary": "identity chain blocked by detection",
+                },
+            ),
+        }
+
+    def _latest_state_frame_path(self) -> str | None:
+        if self._vision_state_reader is None:
+            return None
+        frame_path = self._vision_state_frame_path()
+        return frame_path if frame_path and Path(frame_path).exists() else None
+
+    def _vision_state_frame_path(self) -> str | None:
+        config = self._vision_state_config()
+        if config is None:
+            return None
+        raw = config.get("frame_path")
+        return str(raw) if raw else None
 
     def _camera_health(self, *, now_ts: float) -> SubfunctionHealth:
         if self._driver_kind("camera") == "noop":
@@ -266,6 +430,14 @@ class EyeOrgan(BaseOrgan):
         return list(default)
 
     @staticmethod
+    def _read_float_from_extra(extra: dict[str, object], key: str, *, default: float) -> float:
+        value = extra.get(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
     def _merge_probe_details(
         *,
         probe: dict[str, object],
@@ -284,13 +456,7 @@ class EyeOrgan(BaseOrgan):
 
     @staticmethod
     def _summarize_detections(detections: list[dict[str, object]]) -> str:
-        if not detections:
-            return "no detections in current frame"
-        counts: dict[str, int] = {}
-        for detection in detections:
-            label = str(detection.get("label", "unknown"))
-            counts[label] = counts.get(label, 0) + 1
-        return ", ".join(f"{count} {label}" for label, count in sorted(counts.items()))
+        return summarize_detections(detections)
 
     @staticmethod
     def _summarize_identity(identity_candidates: list[dict[str, object]], *, status: str) -> str:

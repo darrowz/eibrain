@@ -1,0 +1,18 @@
+[Unit]
+Description=eibrain Hailo vision state service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/darrow/dev-project/eibrain
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-/home/darrow/dev-project/eibrain/.env
+ExecStart=/usr/bin/python3 -m apps.body_runtime.vision_hailo_service --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --backend gstreamer --interval-s 0.2
+Restart=always
+RestartSec=3
+StandardOutput=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-vision-hailo.service.log
+StandardError=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-vision-hailo.service.log
+
+[Install]
+WantedBy=default.target

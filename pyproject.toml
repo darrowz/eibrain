@@ -18,6 +18,7 @@ eibrain-check-deployment = "apps.check_deployment:main"
 eibrain-monitor = "apps.operator_console.__main__:main"
 eibrain-sync-honjia = "apps.sync_honjia:main"
 eibrain-verify-body = "apps.body_runtime.verify_hardware:main"
+eibrain-vision-hailo = "apps.body_runtime.vision_hailo_service:main"
 
 [tool.setuptools.packages.find]
 include = ["eibrain*", "apps*"]

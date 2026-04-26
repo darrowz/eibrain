@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import time
 
 
 def test_eye_organ_builds_live_detection_and_identity_details(tmp_path, monkeypatch) -> None:
@@ -173,3 +175,158 @@ def test_eye_organ_uses_cached_heartbeat_until_refresh_interval_expires(monkeypa
     organ.heartbeat()
 
     assert len(capture_calls) == 1
+
+
+def test_eye_organ_reads_vision_service_state_without_capturing(tmp_path, monkeypatch) -> None:
+    from eibrain.body.organs.eye.organ import EyeOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    def _should_not_capture(**_kwargs):
+        raise AssertionError("vision_state mode must not capture frames synchronously")
+
+    monkeypatch.setattr("eibrain.body.organs.eye.organ.capture_frame", _should_not_capture)
+    frame_path = tmp_path / "latest.jpg"
+    state_path = tmp_path / "state.json"
+    frame_path.write_bytes(b"frame")
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "backend": "gstreamer_hailo",
+                "updated_at_ts": time.time(),
+                "frame_path": str(frame_path),
+                "frame_captured_at_ts": 123.0,
+                "detections": [
+                    {
+                        "label": "face",
+                        "score": 0.95,
+                        "bbox": {"x_min": 0.4, "y_min": 0.1, "x_max": 0.6, "y_max": 0.5},
+                    }
+                ],
+                "top_detection": {
+                    "label": "face",
+                    "score": 0.95,
+                    "bbox": {"x_min": 0.4, "y_min": 0.1, "x_max": 0.6, "y_max": 0.5},
+                },
+                "scene_summary": "1 face",
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "camera": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "frame_path": str(frame_path)},
+                ),
+            ),
+            "detection": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "frame_path": str(frame_path)},
+                ),
+            ),
+            "identity": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+        },
+    )
+
+    organ = EyeOrgan(config=config)
+    heartbeat = organ.heartbeat()
+
+    assert heartbeat.health == "healthy"
+    assert heartbeat.subfunctions["camera"].details["driver"] == "vision_state"
+    assert heartbeat.subfunctions["detection"].details["detection_count"] == 1
+    assert heartbeat.subfunctions["detection"].details["top_detection"]["label"] == "face"
+    assert heartbeat.subfunctions["identity"].details["face_candidate_count"] == 1
+    assert organ.latest_frame_path == str(frame_path)
+
+
+def test_eye_organ_passive_heartbeat_reads_vision_state(tmp_path) -> None:
+    from eibrain.body.organs.eye.organ import EyeOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "updated_at_ts": time.time(),
+                "frame_path": str(tmp_path / "latest.jpg"),
+                "detections": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "camera": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path)},
+                ),
+            ),
+            "detection": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path)},
+                ),
+            ),
+            "identity": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+        },
+    )
+
+    heartbeat = EyeOrgan(config=config).passive_heartbeat()
+
+    assert heartbeat.subfunctions["camera"].details["driver"] == "vision_state"
+    assert heartbeat.subfunctions["detection"].details["status"] == "live"
+
+
+def test_eye_organ_degrades_when_vision_service_state_is_stale(tmp_path) -> None:
+    from eibrain.body.organs.eye.organ import EyeOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "updated_at_ts": time.time() - 60,
+                "detections": [],
+                "frame_path": str(tmp_path / "latest.jpg"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "camera": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "stale_after_s": 1.0},
+                ),
+            ),
+            "detection": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "stale_after_s": 1.0},
+                ),
+            ),
+            "identity": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+        },
+    )
+
+    heartbeat = EyeOrgan(config=config).heartbeat()
+
+    assert heartbeat.health == "degraded"
+    assert heartbeat.subfunctions["camera"].health == "degraded"
+    assert heartbeat.subfunctions["detection"].details["error"] == "vision_state_stale"

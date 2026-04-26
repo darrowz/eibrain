@@ -137,6 +137,13 @@ body:
           - /dev/video0
           - --label
           - camera
+          device: /dev/video0
+          input_format: mjpeg
+          video_size: 640x480
+          timeout_s: 5.0
+          frame_path: /tmp/eibrain-vision/latest.jpg
+          state_path: /tmp/eibrain-vision/state.json
+          stale_after_s: 3.0
       detection:
         driver:
           kind: command
@@ -162,8 +169,16 @@ body:
           - /dev/hailo0
           - --label
           - hailo8
+          provider: vision_state
+          device: /dev/hailo0
           hef_path: /usr/share/hailo-models/yolov5s_personface_h8l.hef
+          postprocess_so_path: /usr/lib/aarch64-linux-gnu/hailo/tappas/post_processes/libyolo_hailortpp_post.so
+          postprocess_config_path: /usr/share/hailo-models/yolov5_personface.json
+          postprocess_function: filter
           score_threshold: 0.3
+          state_path: /tmp/eibrain-vision/state.json
+          frame_path: /tmp/eibrain-vision/latest.jpg
+          stale_after_s: 3.0
           labels:
           - person
           - face
