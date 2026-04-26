@@ -27,6 +27,9 @@ class ArecordStreamCapture:
     vad_min_voice_ms: int = 160
     vad_end_silence_ms: int = 360
     vad_pre_roll_ms: int = 240
+    vad_min_capture_ms: int = 0
+    transcribe_vad_miss: bool = False
+    vad_miss_rms_threshold: float = 0.0
     last_returncode: int | None = None
     last_stderr: str = ""
     last_stdout_bytes: int = 0
@@ -77,6 +80,7 @@ class ArecordStreamCapture:
         pre_roll_frames = max(1, math.ceil(self.vad_pre_roll_ms / max(1, self.vad_frame_ms)))
         min_voice_frames = max(1, math.ceil(self.vad_min_voice_ms / max(1, self.vad_frame_ms)))
         end_silence_frames = max(1, math.ceil(self.vad_end_silence_ms / max(1, self.vad_frame_ms)))
+        min_capture_frames = max(0, math.ceil(self.vad_min_capture_ms / max(1, self.vad_frame_ms)))
         all_frames: list[bytes] = []
         captured_frames: list[bytes] = []
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_frames)
@@ -126,7 +130,11 @@ class ArecordStreamCapture:
                             silence_after_voice = 0
                         else:
                             silence_after_voice += 1
-                        if voice_frames >= min_voice_frames and silence_after_voice >= end_silence_frames:
+                        if (
+                            len(captured_frames) >= min_capture_frames
+                            and voice_frames >= min_voice_frames
+                            and silence_after_voice >= end_silence_frames
+                        ):
                             break
                 finally:
                     if process.poll() is None:
@@ -141,6 +149,8 @@ class ArecordStreamCapture:
         except TimeoutError as exc:
             self.last_returncode = None
             self.last_stderr = str(exc)
+            self.last_stdout_bytes = 0
+            self.last_chunks = []
             return []
         payload = b"".join(captured_frames if triggered else all_frames)
         self.last_stdout_bytes = len(payload)
@@ -149,8 +159,10 @@ class ArecordStreamCapture:
         self.last_vad_voice_frame_count = voice_frames
         self.last_vad_elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         if not payload:
+            self.last_chunks = []
             return []
-        return [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
+        self.last_chunks = [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
+        return list(self.last_chunks)
 
     def _run_arecord(self, command: list[str]) -> bytes:
         self.last_command = list(command)
@@ -243,14 +255,23 @@ class EarStreamProcessor:
             chunks = list(self.capture.read_window(chunk_count))
         else:
             chunks = list(self.capture.read_chunks(chunk_count))
-        if getattr(self.capture, "streaming_vad", False) and not getattr(self.capture, "last_vad_triggered", True):
-            text = ""
-        else:
+        vad_missed = bool(getattr(self.capture, "streaming_vad", False)) and not bool(
+            getattr(self.capture, "last_vad_triggered", True)
+        )
+        should_transcribe = bool(chunks)
+        if vad_missed:
+            stats = pcm_signal_stats(chunks, channels=int(getattr(self.capture, "channels", 1) or 1))
+            fallback_enabled = bool(getattr(self.capture, "transcribe_vad_miss", False))
+            fallback_threshold = float(getattr(self.capture, "vad_miss_rms_threshold", 0.0) or 0.0)
+            should_transcribe = fallback_enabled and float(stats.get("rms_level", 0.0) or 0.0) >= fallback_threshold
+        if should_transcribe:
             text = self.recognizer.transcribe(
                 chunks,
                 sample_rate=self.capture.sample_rate,
                 channels=self.capture.channels,
             )
+        else:
+            text = ""
         return AudioTranscriptFinal(
             ts=1.0,
             source="ear.asr",

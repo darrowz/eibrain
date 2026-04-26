@@ -18,7 +18,7 @@ def main() -> None:
     parser.add_argument("--config", default="config/eibrain.yaml")
     parser.add_argument("--disable-voice-dialogue-loop", action="store_true")
     parser.add_argument("--disable-visual-tracking-loop", action="store_true")
-    parser.add_argument("--voice-chunk-count", type=int, default=2)
+    parser.add_argument("--voice-chunk-count", type=int, default=3)
     parser.add_argument("--visual-tracking-interval", type=float, default=0.5)
     args = parser.parse_args()
 

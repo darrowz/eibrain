@@ -150,3 +150,18 @@ def test_body_runtime_builds_default_ear_processor_from_config() -> None:
         assert processor.recognizer == ("recognizer", "/models/default")
     finally:
         config_path.unlink(missing_ok=True)
+
+
+def test_pcm_to_float_samples_uses_loudest_channel_for_stereo() -> None:
+    from eibrain.body.sherpa_streaming import _pcm_to_float_samples
+
+    quiet = 100
+    loud = 3000
+    pcm = b"".join(
+        quiet.to_bytes(2, "little", signed=True) + loud.to_bytes(2, "little", signed=True)
+        for _ in range(4)
+    )
+
+    samples = _pcm_to_float_samples(pcm, channels=2)
+
+    assert samples == [loud / 32768.0] * 4

@@ -44,16 +44,19 @@ body:
             - --label
             - audio-input
           device: plughw:CARD=U4K,DEV=0
-          sample_rate: 48000
-          channels: 2
+          sample_rate: 16000
+          channels: 1
           chunk_count: 2
           refresh_interval_s: 1.5
           streaming_vad: true
           vad_frame_ms: 80
-          vad_rms_threshold: 0.03
-          vad_min_voice_ms: 320
-          vad_end_silence_ms: 240
-          vad_pre_roll_ms: 160
+          vad_rms_threshold: 0.1
+          vad_min_voice_ms: 160
+          vad_end_silence_ms: 800
+          vad_pre_roll_ms: 320
+          vad_min_capture_ms: 1600
+          transcribe_vad_miss: true
+          vad_miss_rms_threshold: 0.09
       vad:
         driver:
           kind: command

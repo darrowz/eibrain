@@ -118,6 +118,9 @@ class BodyRuntimeApp:
             vad_min_voice_ms=int(capture_cfg.driver.extra.get("vad_min_voice_ms", 160)),
             vad_end_silence_ms=int(capture_cfg.driver.extra.get("vad_end_silence_ms", 360)),
             vad_pre_roll_ms=int(capture_cfg.driver.extra.get("vad_pre_roll_ms", 240)),
+            vad_min_capture_ms=int(capture_cfg.driver.extra.get("vad_min_capture_ms", 0)),
+            transcribe_vad_miss=bool(capture_cfg.driver.extra.get("transcribe_vad_miss", False)),
+            vad_miss_rms_threshold=float(capture_cfg.driver.extra.get("vad_miss_rms_threshold", 0.0)),
         )
 
     def _make_recognizer(self, asr_cfg):
@@ -309,6 +312,16 @@ class BodyRuntimeApp:
         chunks = list(getattr(capture, "last_chunks", []) or [])
         stats = pcm_signal_stats(chunks, channels=int(getattr(capture, "channels", 1) or 1)) if chunks else {}
         text = observation.text.strip()
+        vad_triggered = bool(getattr(capture, "last_vad_triggered", False))
+        if text:
+            speech_window_summary = "transcribed speech"
+            asr_status = "transcribed"
+        elif vad_triggered:
+            speech_window_summary = "vad speech without transcript"
+            asr_status = "no_transcript"
+        else:
+            speech_window_summary = "no vad speech trigger"
+            asr_status = "silence"
         self._recent_events.append(
             {
                 "kind": observation.kind,
@@ -318,8 +331,8 @@ class BodyRuntimeApp:
                 "recorded_at_ts": time.time(),
                 "details": {
                     "text": text,
-                    "speech_window_summary": "transcribed speech" if text else "no vad speech trigger",
-                    "asr_status": "transcribed" if text else "silence",
+                    "speech_window_summary": speech_window_summary,
+                    "asr_status": asr_status,
                     "asr_voice_activity": bool(text),
                     "recognizer_prewarmed": bool(getattr(recognizer, "prewarmed", False)),
                     "recognizer_prewarm_error": getattr(recognizer, "prewarm_error", ""),

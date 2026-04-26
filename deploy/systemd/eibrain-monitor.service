@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/eibrain/current
 Environment=PYTHONUNBUFFERED=1
+ExecStartPre=-/usr/bin/amixer -c U4K sset Mic 24
 ExecStart=/opt/eibrain/.venv/bin/python -m apps.operator_console --config /opt/eibrain/current/config/eibrain.honjia.local.yaml
 Restart=always
 RestartSec=3

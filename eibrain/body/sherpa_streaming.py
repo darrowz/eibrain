@@ -19,12 +19,13 @@ def _pcm_to_float_samples(pcm_bytes: bytes, *, channels: int) -> list[float]:
     if channels <= 1:
         mono = samples
     else:
-        mono = array("h")
-        for idx in range(0, len(samples), channels):
-            frame = samples[idx : idx + channels]
-            if not frame:
-                continue
-            mono.append(int(sum(frame) / len(frame)))
+        channel_samples = [array("h") for _ in range(channels)]
+        for idx in range(0, len(samples) - (len(samples) % channels), channels):
+            for channel_index in range(channels):
+                channel_samples[channel_index].append(samples[idx + channel_index])
+        # USB microphone stereo channels can differ in gain or phase. Feeding
+        # the loudest channel is more reliable for ASR than averaging them.
+        mono = max(channel_samples, key=lambda values: sum(sample * sample for sample in values), default=array("h"))
     return [sample / 32768.0 for sample in mono]
 
 

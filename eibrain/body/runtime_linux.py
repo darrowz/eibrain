@@ -644,7 +644,18 @@ def capture_frame(
         "-y",
         str(frame_path),
     ]
-    completed = runner(command, capture_output=True, text=True, check=False)
+    try:
+        completed = runner(command, capture_output=True, text=True, check=False, timeout=3)
+    except subprocess.TimeoutExpired:
+        return {
+            "status": "error",
+            "details": {
+                "device": device,
+                "output_path": str(frame_path),
+                "reason": "capture_timeout",
+                "timeout_s": 3,
+            },
+        }
     return {
         "status": "ok" if completed.returncode == 0 and frame_path.exists() else "error",
         "details": {
