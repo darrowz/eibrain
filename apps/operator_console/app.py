@@ -116,8 +116,9 @@ class OperatorConsoleApp:
             if not isinstance(details, dict):
                 details = {}
                 sub_snapshot["details"] = details
-            details.setdefault("status", "listening_loop")
-            details.setdefault("driver", "voice_dialogue_loop")
+            if details.get("status") == "live_probe_skipped":
+                details["status"] = "listening_loop"
+            details["driver"] = "voice_dialogue_loop"
             details.setdefault("listening", True)
             details.setdefault("voice_loop_phase", loop.get("phase"))
             details.setdefault("voice_loop_status", loop.get("last_status"))
@@ -623,8 +624,6 @@ class OperatorConsoleApp:
         status: str,
         details: dict[str, object],
     ) -> str:
-        if status == "live_probe_skipped":
-            return "waiting_for_data"
         if organ_name == "eye":
             if details.get("frame_path") or details.get("frame_captured_at_ts"):
                 return "live"
@@ -644,6 +643,8 @@ class OperatorConsoleApp:
                 return "live"
             if details.get("captured_at_ts") or details.get("payload_bytes") or details.get("transcript"):
                 return "live"
+        if status == "live_probe_skipped":
+            return "waiting_for_data"
         if details.get("elapsed_ms") is not None:
             return "live"
         return status or "waiting_for_data"
