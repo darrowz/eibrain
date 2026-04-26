@@ -8,6 +8,7 @@ from eibrain.cognition.attention.manager import AttentionManager
 from eibrain.cognition.fusion.binder import ObservationBinder
 from eibrain.cognition.dialogue.llm_router import LLMRouter
 from eibrain.cognition.policy.engine import PolicyEngine
+from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
 from eibrain.cognition.planner.intent_planner import IntentPlanner
 from eibrain.infra import TraceRecorder
 from eibrain.infra.config import EIBrainConfig, load_config
@@ -30,6 +31,7 @@ class CognitiveRuntimeApp:
         self.binder = ObservationBinder()
         self.attention = AttentionManager()
         self.policy = PolicyEngine()
+        self.memory_policy = MultimodalMemoryPolicy()
         self.planner = IntentPlanner(policy=self.policy, llm_router=LLMRouter(self.config.cognition.llm))
         self.compiler = SkillCompiler()
         self.review = SelfReviewEngine()
@@ -46,6 +48,12 @@ class CognitiveRuntimeApp:
             "provider": self.planner.llm_router.config.provider,
             "status": "idle",
             "error": "",
+        }
+        self.last_memory_diagnostics: dict[str, object] = {
+            "last_query": "",
+            "task_context": {},
+            "last_recall": {},
+            "last_writeback": {},
         }
 
     @classmethod
@@ -89,22 +97,26 @@ class CognitiveRuntimeApp:
             active_policy=active_policy,
         )
         self._record_attention_policy(salience=salience, decision=decision)
+        query_text = moment.query_text or state.world.last_transcript
+        task_context = self._task_context(
+            task_type="brain.respond",
+            modality="audio_text",
+            organ="ear",
+            phase=state.engagement.phase,
+            salience_score=salience.score,
+            body_capabilities=moment.body_capabilities,
+            active_policy=active_policy,
+            query=query_text,
+        )
         memory_result = self.memory.retrieve_context(
             MemoryQuery(
-                query=moment.query_text or state.world.last_transcript,
+                query=query_text,
                 session_id=state.session.active_session_id,
                 actor_id=state.world.current_speaker_id,
-                task_context=self._task_context(
-                    task_type="brain.respond",
-                    modality="audio_text",
-                    organ="ear",
-                    phase=state.engagement.phase,
-                    salience_score=salience.score,
-                    body_capabilities=moment.body_capabilities,
-                    active_policy=active_policy,
-                ),
+                task_context=task_context,
             )
         )
+        self._record_memory_diagnostics(query=query_text, task_context=task_context, memory_result=memory_result)
         intents = self.planner.plan(state=state, memory=memory_result, decision=decision)
         router = self.planner.llm_router
         self.last_llm_status = {
@@ -130,9 +142,18 @@ class CognitiveRuntimeApp:
                     "status": "planned",
                     "action_count": len(actions),
                     "reply_present": bool(self.last_reply),
-                    "learning_decision": self.last_learning_decision,
+                    **self.memory_policy.writeback_outcome(
+                        modality="audio_text",
+                        organ="ear",
+                        success=bool(actions),
+                        status="planned",
+                        action_count=len(actions),
+                        reply_present=bool(self.last_reply),
+                        learning_decision=self.last_learning_decision,
+                    ),
                 },
             )
+            self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         self._record_learning(
             event_type=observation.kind,
             transcript=state.world.last_transcript,
@@ -199,21 +220,15 @@ class CognitiveRuntimeApp:
         self._record_attention_policy(salience=salience, decision=decision)
         intents = self.planner.plan(
             state=state,
-            memory=self.memory.retrieve_context(
-                MemoryQuery(
-                    query=moment.query_text or understanding.summary,
-                    session_id=visual_session_id,
-                    actor_id=actor_id or "visual-target",
-                    task_context=self._task_context(
-                        task_type="brain.orient",
-                        modality="vision",
-                        organ="eye",
-                        phase=state.engagement.phase,
-                        salience_score=salience.score,
-                        body_capabilities=moment.body_capabilities,
-                        active_policy=active_policy,
-                    ),
-                )
+            memory=self._retrieve_memory_for_visual(
+                query=moment.query_text or understanding.summary,
+                session_id=visual_session_id,
+                actor_id=actor_id or "visual-target",
+                phase=state.engagement.phase,
+                salience_score=salience.score,
+                body_capabilities=moment.body_capabilities,
+                active_policy=active_policy,
+                visual_context={"summary": understanding.summary, "target_x": target_x},
             ),
             decision=decision,
         )
@@ -233,9 +248,19 @@ class CognitiveRuntimeApp:
                     "status": "planned",
                     "action_count": len(actions),
                     "reply_present": False,
-                    "learning_decision": self.last_learning_decision,
+                    **self.memory_policy.writeback_outcome(
+                        modality="vision",
+                        organ="eye",
+                        success=bool(actions),
+                        status="planned",
+                        action_count=len(actions),
+                        reply_present=False,
+                        learning_decision=self.last_learning_decision,
+                        visual_context={"summary": understanding.summary, "target_x": target_x},
+                    ),
                 },
             )
+            self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         self.trace_recorder.record(
             trace_id=f"vision:{actor_id or 'visual-target'}",
             kind="vision_frame_captured",
@@ -277,6 +302,49 @@ class CognitiveRuntimeApp:
             "last_llm_status": dict(self.last_llm_status),
             "last_attention": dict(self.last_attention),
             "last_policy_decision": dict(self.last_policy_decision),
+            "memory_diagnostics": dict(self.last_memory_diagnostics),
+        }
+
+    def _retrieve_memory_for_visual(
+        self,
+        *,
+        query: str,
+        session_id: str,
+        actor_id: str,
+        phase: str,
+        salience_score: float,
+        body_capabilities: dict[str, bool],
+        active_policy: dict[str, object],
+        visual_context: dict[str, object],
+    ):
+        task_context = self._task_context(
+            task_type="brain.orient",
+            modality="vision",
+            organ="eye",
+            phase=phase,
+            salience_score=salience_score,
+            body_capabilities=body_capabilities,
+            active_policy=active_policy,
+            query=query,
+            visual_context=visual_context,
+        )
+        result = self.memory.retrieve_context(
+            MemoryQuery(
+                query=query,
+                session_id=session_id,
+                actor_id=actor_id,
+                task_context=task_context,
+            )
+        )
+        self._record_memory_diagnostics(query=query, task_context=task_context, memory_result=result)
+        return result
+
+    def _record_memory_diagnostics(self, *, query: str, task_context: dict[str, Any], memory_result) -> None:
+        self.last_memory_diagnostics = {
+            "last_query": query,
+            "task_context": dict(task_context),
+            "last_recall": dict(getattr(memory_result, "recall_diagnostics", {}) or {}),
+            "last_writeback": dict(getattr(self.memory, "last_writeback_status", {}) or {}),
         }
 
     def _task_context(
@@ -289,19 +357,20 @@ class CognitiveRuntimeApp:
         salience_score: float,
         body_capabilities: dict[str, bool],
         active_policy: dict[str, object],
+        query: str = "",
+        visual_context: dict[str, object] | None = None,
     ) -> dict[str, Any]:
-        context: dict[str, Any] = {
-            "task_type": task_type,
-            "goal": "retrieve memory for embodied response",
-            "modality": modality,
-            "organ": organ,
-            "phase": phase,
-            "salience_score": round(salience_score, 3),
-            "body_capabilities": dict(body_capabilities),
-        }
-        if active_policy:
-            context["active_policy"] = dict(active_policy)
-        return context
+        return self.memory_policy.build_recall_context(
+            task_type=task_type,
+            modality=modality,
+            organ=organ,
+            phase=phase,
+            salience_score=salience_score,
+            body_capabilities=body_capabilities,
+            active_policy=active_policy,
+            query=query,
+            visual_context=visual_context,
+        )
 
     def _get_active_policy(
         self,

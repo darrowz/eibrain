@@ -20,3 +20,4 @@ class MemoryResult:
     relevant_memories: list[str] = field(default_factory=list)
     actor_profile: dict[str, str] = field(default_factory=dict)
     session_summary: str = ""
+    recall_diagnostics: dict[str, Any] = field(default_factory=dict)

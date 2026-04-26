@@ -67,6 +67,7 @@ class OperatorConsoleApp:
             body_snapshot=body_snapshot,
             cognitive_snapshot=cognitive_snapshot,
         )
+        memory_diagnostics = self._build_memory_diagnostics(cognitive_snapshot)
         summary = self._build_summary(
             capabilities=capabilities,
             warnings=warnings,
@@ -90,6 +91,7 @@ class OperatorConsoleApp:
             "audio_diagnostics": audio_diagnostics,
             "visual_diagnostics": visual_diagnostics,
             "dialogue_diagnostics": dialogue_diagnostics,
+            "memory_diagnostics": memory_diagnostics,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
             "event_breakdown": self._build_event_breakdown(traces),
@@ -167,7 +169,7 @@ class OperatorConsoleApp:
                     }
                 )
             live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
-            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "waiting")
             data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
@@ -425,7 +427,7 @@ class OperatorConsoleApp:
         data_status = "live" if frame_path else "waiting_for_frame"
         return {
             "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
-            "data_health": "healthy" if frame_path else "degraded",
+            "data_health": self._data_health(data_status, str(eye.get("health", "unknown"))),
             "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
@@ -564,6 +566,41 @@ class OperatorConsoleApp:
             return None
         return round(max(0.0, time.time() - float(timestamp)), 2)
 
+
+    @staticmethod
+    def _build_memory_diagnostics(cognitive_snapshot: dict[str, object]) -> dict[str, object]:
+        raw = cognitive_snapshot.get("memory_diagnostics", {})
+        if not isinstance(raw, dict):
+            raw = {}
+        task_context = raw.get("task_context", {})
+        if not isinstance(task_context, dict):
+            task_context = {}
+        last_recall = raw.get("last_recall", {})
+        if not isinstance(last_recall, dict):
+            last_recall = {}
+        recall_filters = last_recall.get("recall_filters", {}) or task_context
+        if not isinstance(recall_filters, dict):
+            recall_filters = {}
+        last_writeback = raw.get("last_writeback", {})
+        if not isinstance(last_writeback, dict):
+            last_writeback = {}
+        return {
+            "enabled": bool(raw or task_context or last_recall or last_writeback),
+            "last_query": raw.get("last_query", ""),
+            "task_type": task_context.get("task_type", ""),
+            "recall_profile": task_context.get("recall_profile") or last_recall.get("recall_profile", ""),
+            "allowed_sources": list(task_context.get("allowed_sources", []) or []),
+            "blocked_sources": list(task_context.get("blocked_sources", []) or []),
+            "allowed_memory_types": list(task_context.get("allowed_memory_types", []) or []),
+            "preferred_modalities": list(task_context.get("preferred_modalities", []) or []),
+            "organs": list(task_context.get("organs", []) or []),
+            "selected_count": last_recall.get("selected_count", 0),
+            "source_composition": last_recall.get("source_composition", {}),
+            "selected_records": last_recall.get("selected_records", []),
+            "recall_filters": dict(recall_filters),
+            "last_writeback": dict(last_writeback),
+        }
+
     @staticmethod
     def _build_dialogue_diagnostics(
         *,
@@ -581,6 +618,9 @@ class OperatorConsoleApp:
         return {
             "enabled": bool(loop.get("enabled")),
             "running": bool(loop.get("running")),
+            "conversation_active": bool(loop.get("conversation_active")),
+            "wake_word": loop.get("wake_word", ""),
+            "sleep_word": loop.get("sleep_word", ""),
             "phase": loop.get("phase", "idle"),
             "phase_started_at_ts": loop.get("phase_started_at_ts"),
             "current_phase_elapsed_s": current_phase_elapsed_s,
@@ -613,7 +653,7 @@ class OperatorConsoleApp:
         if fallback_health == "unavailable":
             return "unavailable"
         if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
-            return "degraded"
+            return "waiting"
         return "degraded"
 
     @staticmethod
@@ -624,6 +664,8 @@ class OperatorConsoleApp:
         status: str,
         details: dict[str, object],
     ) -> str:
+        if status == "live_probe_skipped":
+            return "waiting_for_data"
         if organ_name == "eye":
             if details.get("frame_path") or details.get("frame_captured_at_ts"):
                 return "live"
@@ -643,8 +685,6 @@ class OperatorConsoleApp:
                 return "live"
             if details.get("captured_at_ts") or details.get("payload_bytes") or details.get("transcript"):
                 return "live"
-        if status == "live_probe_skipped":
-            return "waiting_for_data"
         if details.get("elapsed_ms") is not None:
             return "live"
         return status or "waiting_for_data"

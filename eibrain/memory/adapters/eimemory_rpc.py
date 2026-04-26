@@ -15,6 +15,8 @@ class EIMemoryRPCAdapter:
         self.config = config or OpenClawConfig(provider="eimemory_rpc")
         self._profiles: dict[str, dict[str, str]] = {}
         self._sessions: dict[str, str] = {}
+        self.last_recall_diagnostics: dict[str, object] = {}
+        self.last_writeback_status: dict[str, object] = {}
 
     def retrieve_context(self, query: MemoryQuery) -> MemoryResult:
         task_context = {
@@ -33,7 +35,9 @@ class EIMemoryRPCAdapter:
         }
         try:
             result = self._post_json(payload)
-            return self._map_result(result)
+            memory_result = self._map_result(result)
+            self.last_recall_diagnostics = dict(memory_result.recall_diagnostics)
+            return memory_result
         except (URLError, OSError, ValueError, TypeError, KeyError):
             return self._fallback_result(query)
 
@@ -71,6 +75,14 @@ class EIMemoryRPCAdapter:
         }
         try:
             self._post_json(payload)
+            self.last_writeback_status = {
+                "status": "ok",
+                "source": source,
+                "memory_type": memory_type,
+                "modality": modality,
+                "organ": organ,
+                "title": title or "Embodied episode",
+            }
             self._observe_failed_outcome(
                 outcome=outcome,
                 session_id=session_id,
@@ -79,7 +91,8 @@ class EIMemoryRPCAdapter:
                 modality=modality,
                 organ=organ,
             )
-        except (URLError, OSError, ValueError, TypeError, KeyError):
+        except (URLError, OSError, ValueError, TypeError, KeyError) as exc:
+            self.last_writeback_status = {"status": "error", "error": f"{type(exc).__name__}: {exc}", "source": source}
             return
 
     def remember_preference(
@@ -277,6 +290,15 @@ class EIMemoryRPCAdapter:
             relevant_memories=relevant_memories,
             actor_profile={},
             session_summary=str(explanation.get("session_summary", "")),
+            recall_diagnostics={
+                "query": explanation.get("query", ""),
+                "task_context": explanation.get("task_context", {}),
+                "recall_profile": explanation.get("recall_profile", ""),
+                "selected_count": explanation.get("selected_count", 0),
+                "source_composition": explanation.get("source_composition", {}),
+                "selected_records": explanation.get("selected_records", []),
+                "recall_filters": explanation.get("recall_filters", {}),
+            },
         )
 
     def _fallback_result(self, query: MemoryQuery) -> MemoryResult:

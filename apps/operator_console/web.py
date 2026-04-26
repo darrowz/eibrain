@@ -448,6 +448,12 @@ class MonitoringWebServer:
     </section>
 
     <section class="card" style="margin-top: 16px;">
+      <h2>Memory diagnostics</h2>
+      <div class="mini-grid" id="memory-summary"></div>
+      <div class="subfunction-list" id="memory-events" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
       <h2>Visual diagnostics</h2>
       <div class="vision-layout">
         <div class="vision-stage" id="vision-stage"></div>
@@ -776,6 +782,32 @@ class MonitoringWebServer:
       document.getElementById('dialogue-events').innerHTML = items.join('');
     }}
 
+
+    function renderMemory(report) {{
+      const memory = report.memory_diagnostics || {{}};
+      const selected = memory.selected_records || [];
+      const composition = memory.source_composition || {{}};
+      const bySource = composition.by_source || {{}};
+      const sourceSummary = Object.entries(bySource).map(([source, count]) => `${{source}}:${{count}}`).join(' · ') || 'No sources selected yet';
+      const writeback = memory.last_writeback || {{}};
+      document.getElementById('memory-summary').innerHTML = [
+        ['Task', memory.task_type || '—'],
+        ['Profile', memory.recall_profile || '—'],
+        ['Selected', String(memory.selected_count ?? selected.length ?? 0)],
+        ['Writeback', writeback.status || '—'],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      const items = [];
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Recall filters</strong><span class="health-tag ${{memory.recall_profile ? 'healthy' : 'waiting'}}">${{memory.recall_profile || 'waiting'}}</span></div><div class="metric-label">allowed=${{(memory.allowed_sources || []).join(', ') || '—'}} · blocked=${{(memory.blocked_sources || []).join(', ') || '—'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Modalities / organs</strong><span class="health-tag healthy">policy</span></div><div class="metric-label">types=${{(memory.allowed_memory_types || []).join(', ') || '—'}} · modalities=${{(memory.preferred_modalities || []).join(', ') || '—'}} · organs=${{(memory.organs || []).join(', ') || '—'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Source composition</strong><span class="health-tag ${{memory.selected_count ? 'healthy' : 'waiting'}}">${{memory.selected_count ?? 0}}</span></div><div class="metric-label">${{sourceSummary}}</div></div>`);
+      selected.slice(0, 4).forEach((record) => {{
+        items.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{record.title || record.record_id || 'memory'}}</strong><span class="health-tag healthy">${{record.kind || 'record'}}</span></div><div class="metric-label">${{record.source || 'unknown source'}} · ${{record.record_id || ''}}</div></div>`);
+      }});
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last writeback</strong><span class="health-tag ${{healthClass(writeback.status || 'waiting_for_data')}}">${{writeback.status || 'waiting'}}</span></div><div class="metric-label">${{writeback.source || '—'}} · ${{writeback.memory_type || '—'}} · ${{writeback.modality || '—'}}/${{writeback.organ || '—'}}</div></div>`);
+      document.getElementById('memory-events').innerHTML = items.join('');
+    }}
+
     function renderProbes(report) {{
       const probes = report.probe_metrics || [];
       document.getElementById('probe-table').innerHTML = probes.length
@@ -826,6 +858,7 @@ class MonitoringWebServer:
       renderWarnings(report);
       renderAudio(report);
       renderDialogue(report);
+      renderMemory(report);
       renderVision(report);
       renderProbes(report);
       renderTimeline(report);
