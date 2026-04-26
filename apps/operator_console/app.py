@@ -45,6 +45,7 @@ class OperatorConsoleApp:
             for organ_name, snapshot in organs.items()
             if isinstance(snapshot, dict) and snapshot.get("health") != "healthy"
         )
+        self._annotate_live_voice_loop(organs, body_snapshot=body_snapshot)
         organ_cards = self._build_organ_cards(organs)
         latency_metrics = self._build_latency_metrics(organs)
         if not latency_metrics:
@@ -97,6 +98,31 @@ class OperatorConsoleApp:
             "recent_traces": traces[-5:],
         }
 
+    @staticmethod
+    def _annotate_live_voice_loop(organs: dict[str, object], *, body_snapshot: dict[str, object]) -> None:
+        loop = body_snapshot.get("voice_dialogue", {})
+        if not isinstance(loop, dict) or not loop.get("running"):
+            return
+        ear = organs.get("ear")
+        if not isinstance(ear, dict):
+            return
+        subfunctions = ear.get("subfunctions", {})
+        if not isinstance(subfunctions, dict):
+            return
+        for sub_name, sub_snapshot in subfunctions.items():
+            if not isinstance(sub_snapshot, dict):
+                continue
+            details = sub_snapshot.get("details", {})
+            if not isinstance(details, dict):
+                details = {}
+                sub_snapshot["details"] = details
+            details.setdefault("status", "listening_loop")
+            details.setdefault("driver", "voice_dialogue_loop")
+            details.setdefault("listening", True)
+            details.setdefault("voice_loop_phase", loop.get("phase"))
+            details.setdefault("voice_loop_status", loop.get("last_status"))
+            details.setdefault("updated_at_ts", loop.get("updated_at_ts"))
+
     def _build_organ_cards(self, organs: dict[str, object]) -> list[dict[str, object]]:
         cards: list[dict[str, object]] = []
         for organ_name, snapshot in organs.items():
@@ -140,7 +166,7 @@ class OperatorConsoleApp:
                     }
                 )
             live_data_count = sum(1 for entry in entries if entry["data_health"] == "healthy")
-            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "waiting")
+            waiting_data_count = sum(1 for entry in entries if entry["data_health"] == "degraded")
             data_status = "live" if live_data_count else ("waiting_for_data" if waiting_data_count else "no_data")
             cards.append(
                 {
@@ -395,11 +421,10 @@ class OperatorConsoleApp:
                     "source": "session_registration",
                 }
                 identity_candidates = [registered_candidate, *identity_candidates]
-        pipeline_enabled = bool(subfunctions or frame_path or detections or identity_candidates or registered_identity.get("registered"))
         data_status = "live" if frame_path else "waiting_for_frame"
         return {
-            "enabled": pipeline_enabled,
-            "data_health": "healthy" if frame_path else ("waiting" if pipeline_enabled else "unavailable"),
+            "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
+            "data_health": "healthy" if frame_path else "degraded",
             "data_status": data_status,
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
@@ -555,9 +580,6 @@ class OperatorConsoleApp:
         return {
             "enabled": bool(loop.get("enabled")),
             "running": bool(loop.get("running")),
-            "conversation_active": bool(loop.get("conversation_active")),
-            "wake_word": loop.get("wake_word", ""),
-            "sleep_word": loop.get("sleep_word", ""),
             "phase": loop.get("phase", "idle"),
             "phase_started_at_ts": loop.get("phase_started_at_ts"),
             "current_phase_elapsed_s": current_phase_elapsed_s,
@@ -590,7 +612,7 @@ class OperatorConsoleApp:
         if fallback_health == "unavailable":
             return "unavailable"
         if data_status in {"waiting_for_data", "waiting_for_frame", "waiting_for_action", "waiting_for_target"}:
-            return "waiting"
+            return "degraded"
         return "degraded"
 
     @staticmethod
@@ -618,6 +640,8 @@ class OperatorConsoleApp:
                 return "live"
             return "waiting_for_target"
         if organ_name == "ear":
+            if status in {"listening", "listening_loop", "no_transcript", "short_transcript_ignored"}:
+                return "live"
             if details.get("captured_at_ts") or details.get("payload_bytes") or details.get("transcript"):
                 return "live"
         if details.get("elapsed_ms") is not None:
