@@ -12,6 +12,7 @@ from eibrain.cognition.dialogue.llm_router import LLMRouter
 from eibrain.cognition.policy.engine import PolicyEngine
 from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
 from eibrain.cognition.planner.intent_planner import IntentPlanner
+from eibrain.cognition.world import build_scene_graph
 from eibrain.infra import TraceRecorder
 from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.learning.adaptation import AdaptationEngine
@@ -292,12 +293,22 @@ class CognitiveRuntimeApp:
         *,
         session_id: str,
         actor_id: str | None = None,
+        previous_state: dict[str, object] | None = None,
+        previous_scene: dict[str, object] | None = None,
     ) -> dict[str, object]:
         objects = self._normalize_world_objects(visual_state.get("objects") or visual_state.get("detections") or [])
+        scene = build_scene_graph(
+            visual_state,
+            previous_state=previous_state,
+            previous_scene=previous_scene,
+        )
         confidence = max((float(item.get("confidence", 0.0)) for item in objects), default=0.0)
         content: dict[str, object] = {
             "source": str(visual_state.get("source") or visual_state.get("backend") or "visual_state"),
             "objects": objects,
+            "scene": scene,
+            "spatial": {"relations": list(scene.get("relations", []))},
+            "events": list(scene.get("events", [])),
             "confidence": confidence,
         }
         if visual_state.get("frame_path"):
@@ -309,6 +320,8 @@ class CognitiveRuntimeApp:
         summary = "Observed visual scene"
         if object_labels:
             summary = f"Observed {', '.join(object_labels)}"
+        if scene.get("objects") and scene.get("summary"):
+            summary = str(scene["summary"])
         dedupe_key = self._world_observation_dedupe_key(content)
         tags = self._unique_tags(["world_observation", "vision", *object_labels])
         return {
@@ -323,6 +336,10 @@ class CognitiveRuntimeApp:
                 "session_id": session_id,
                 "actor_id": actor_id,
                 "dedupe_key": dedupe_key,
+                "scene_dedupe_key": scene.get("dedupe_key", ""),
+                "scene_id": scene.get("scene_id", ""),
+                "scene_fingerprint": scene.get("fingerprint", ""),
+                "change_score": scene.get("change_score", 0.0),
                 "confidence": confidence,
             },
             "tags": tags,
