@@ -149,8 +149,8 @@ class EyeOrgan(BaseOrgan):
         elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         details = self._vision_state_detection_details(snapshot=snapshot, elapsed_ms=elapsed_ms)
         status = str(details.get("service_status", "ok") or "ok")
-        stale_note = str(details.get("status", "live"))
-        camera_health = "degraded" if snapshot.stale or status != "ok" else "healthy"
+        is_sleeping = status == "sleeping"
+        camera_health = "degraded" if snapshot.stale or (status != "ok" and not is_sleeping) else "healthy"
         detection_health = camera_health
         camera_state = SubfunctionHealth(
             name="camera",
@@ -205,7 +205,7 @@ class EyeOrgan(BaseOrgan):
         }
         if snapshot.stale:
             details["error"] = "vision_state_stale"
-        elif status != "ok":
+        elif status not in {"ok", "sleeping"}:
             details["error"] = payload.get("error", status)
         return details
 

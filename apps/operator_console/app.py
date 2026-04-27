@@ -430,7 +430,7 @@ class OperatorConsoleApp:
                     "source": "session_registration",
                 }
                 identity_candidates = [registered_candidate, *identity_candidates]
-        data_status = "live" if frame_path else "waiting_for_frame"
+        data_status = "sleeping" if service_status == "sleeping" else ("live" if frame_path else "waiting_for_frame")
         return {
             "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
             "data_health": self._data_health(data_status, str(eye.get("health", "unknown"))),
@@ -664,7 +664,7 @@ class OperatorConsoleApp:
 
     @staticmethod
     def _data_health(data_status: str, fallback_health: str = "unknown") -> str:
-        if data_status in {"live", "recent_trace", "played", "planned"}:
+        if data_status in {"live", "recent_trace", "played", "planned", "sleeping"}:
             return "healthy"
         if fallback_health == "unavailable":
             return "unavailable"

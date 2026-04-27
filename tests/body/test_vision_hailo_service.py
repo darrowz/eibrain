@@ -246,3 +246,52 @@ def test_gstreamer_detector_omits_empty_postprocess_config_path(tmp_path) -> Non
 
     assert "function-name=yolov8s" in pipeline
     assert "config-path=" not in pipeline
+
+
+def test_vision_service_writes_sleeping_state_without_detection(tmp_path) -> None:
+    from apps.body_runtime.engagement_state import EngagementStateReader
+    from apps.body_runtime.engagement_state import EngagementStateWriter
+    from apps.body_runtime.vision_hailo_service import VisionHailoService
+    from eibrain.body.vision_state import VisionStateWriter
+
+    class _Detector:
+        def __init__(self) -> None:
+            self.detect_calls = 0
+            self.stop_calls = 0
+
+        def detect_once(self):
+            self.detect_calls += 1
+            return {"status": "ok", "detections": []}
+
+        def stop(self) -> None:
+            self.stop_calls += 1
+
+    engagement_path = tmp_path / "engagement.json"
+    state_path = tmp_path / "state.json"
+    EngagementStateWriter(engagement_path).write(conversation_active=False, phase="idle")
+    detector = _Detector()
+    service = VisionHailoService(
+        detector=detector,
+        writer=VisionStateWriter(state_path),
+        interval_s=0.01,
+        sleeping_interval_s=0.01,
+        engagement_reader=EngagementStateReader(engagement_path),
+    )
+    service._running = True
+    # Exercise the sleep branch by running the loop in a short helper thread.
+    import threading
+    import time
+
+    thread = threading.Thread(target=service.run_forever, daemon=True)
+    thread.start()
+    time.sleep(0.03)
+    service.stop()
+    thread.join(timeout=1)
+
+    import json
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert detector.detect_calls == 0
+    assert detector.stop_calls >= 1
+    assert state["status"] == "sleeping"
+    assert state["backend"] == "vision_sleep_gate"

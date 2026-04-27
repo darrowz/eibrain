@@ -245,6 +245,53 @@ def test_eye_organ_reads_vision_service_state_without_capturing(tmp_path, monkey
     assert organ.latest_frame_path == str(frame_path)
 
 
+def test_eye_organ_treats_sleeping_vision_state_as_healthy_standby(tmp_path) -> None:
+    from eibrain.body.organs.eye.organ import EyeOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "status": "sleeping",
+                "backend": "vision_sleep_gate",
+                "updated_at_ts": time.time(),
+                "frame_path": None,
+                "detections": [],
+                "pipeline": {"mode": "sleeping"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "camera": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "stale_after_s": 3.0},
+                ),
+            ),
+            "detection": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["python"],
+                    extra={"provider": "vision_state", "state_path": str(state_path), "stale_after_s": 3.0},
+                ),
+            ),
+            "identity": SubfunctionConfig(driver=DriverConfig(kind="command", command=["python"])),
+        },
+    )
+
+    heartbeat = EyeOrgan(config=config).heartbeat()
+
+    assert heartbeat.health == "healthy"
+    assert heartbeat.subfunctions["camera"].health == "healthy"
+    assert heartbeat.subfunctions["detection"].details["status"] == "sleeping"
+    assert "error" not in heartbeat.subfunctions["detection"].details
+
+
 def test_eye_organ_passive_heartbeat_reads_vision_state(tmp_path) -> None:
     from eibrain.body.organs.eye.organ import EyeOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig

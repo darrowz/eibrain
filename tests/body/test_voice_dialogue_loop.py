@@ -113,6 +113,24 @@ def test_voice_dialogue_loop_wakes_on_wake_word_only_without_llm() -> None:
     assert wake_update["last_reply"] == "我在。"
 
 
+def test_voice_dialogue_loop_writes_engagement_state_on_wake_and_sleep(tmp_path) -> None:
+    import json
+
+    from apps.body_runtime.engagement_state import EngagementStateWriter
+
+    body = _Body(["鸿途", "结束对话"])
+    cognition = _Cognition()
+    writer = EngagementStateWriter(tmp_path / "engagement.json")
+    loop = _start_loop(body, cognition, engagement_writer=writer)
+
+    _wait_until(lambda: any(update.get("last_status") == "sleep_acknowledged" for update in body.updates), timeout_s=2.0)
+    loop.stop()
+
+    state = json.loads((tmp_path / "engagement.json").read_text(encoding="utf-8"))
+    assert state["conversation_active"] is False
+    assert state["phase"] == "stopped"
+
+
 def test_voice_dialogue_loop_strips_wake_word_before_cognition() -> None:
     body = _Body(["鸿途，介绍下你自己"])
     cognition = _Cognition(reply="我是 eibrain。")

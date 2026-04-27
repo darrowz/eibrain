@@ -7,6 +7,7 @@ import time
 
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from apps.body_runtime.app import BodyRuntimeApp
+from apps.body_runtime.engagement_state import EngagementStateWriter
 from eibrain.protocol.actions import PlaySpeechAction
 
 
@@ -34,6 +35,7 @@ class VoiceDialogueLoop:
         sleep_word: str = SLEEP_WORD,
         wake_ack_reply: str = WAKE_ACK_REPLY,
         sleep_ack_reply: str = SLEEP_ACK_REPLY,
+        engagement_writer: EngagementStateWriter | None = None,
     ) -> None:
         self.body_runtime = body_runtime
         self.cognitive_runtime = cognitive_runtime
@@ -47,6 +49,7 @@ class VoiceDialogueLoop:
         self.sleep_word = sleep_word
         self.wake_ack_reply = wake_ack_reply
         self.sleep_ack_reply = sleep_ack_reply
+        self.engagement_writer = engagement_writer
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -64,6 +67,7 @@ class VoiceDialogueLoop:
             sleep_word=self.sleep_word,
             last_error="",
         )
+        self._write_engagement_state(phase="starting", reason="voice_loop_start")
         self._thread = threading.Thread(target=self._run, name="voice-dialogue-loop", daemon=True)
         self._thread.start()
 
@@ -80,6 +84,7 @@ class VoiceDialogueLoop:
             wake_word=self.wake_word,
             sleep_word=self.sleep_word,
         )
+        self._write_engagement_state(phase="stopped", reason="voice_loop_stop")
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -134,6 +139,7 @@ class VoiceDialogueLoop:
                     continue
                 if self.conversation_active and self.sleep_word in transcript:
                     self.conversation_active = False
+                    self._write_engagement_state(phase="idle", reason="sleep_word")
                     self._dispatch_short_reply(
                         reply=self.sleep_ack_reply,
                         phase="idle",
@@ -159,6 +165,7 @@ class VoiceDialogueLoop:
                         self._sleep(self.empty_interval_s)
                         continue
                     self.conversation_active = True
+                    self._write_engagement_state(phase="idle", reason="wake_word")
                     transcript_after_wake = self._strip_wake_word(transcript)
                     if not transcript_after_wake:
                         self._dispatch_short_reply(
@@ -285,6 +292,18 @@ class VoiceDialogueLoop:
                 "total": round(time.perf_counter() - turn_started, 2),
             },
         )
+
+    def _write_engagement_state(self, *, phase: str, reason: str) -> None:
+        if self.engagement_writer is None:
+            return
+        try:
+            self.engagement_writer.write(
+                conversation_active=self.conversation_active,
+                phase=phase,
+                reason=reason,
+            )
+        except OSError:
+            return
 
     def _sleep(self, seconds: float) -> None:
         self._stop_event.wait(max(0.0, seconds))

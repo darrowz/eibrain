@@ -338,6 +338,52 @@ def test_operator_console_distinguishes_health_from_live_data() -> None:
     assert report["visual_diagnostics"]["data_status"] == "waiting_for_frame"
 
 
+def test_operator_console_treats_sleeping_vision_as_healthy_standby() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True},
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "vision_state",
+                                "status": "sleeping",
+                                "service_status": "sleeping",
+                                "backend": "vision_sleep_gate",
+                                "state_path": "/tmp/eibrain-vision/state.json",
+                            },
+                        },
+                        "detection": {
+                            "health": "healthy",
+                            "details": {
+                                "driver": "vision_state",
+                                "status": "sleeping",
+                                "service_status": "sleeping",
+                                "backend": "vision_sleep_gate",
+                                "detections": [],
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["system_health"] == "healthy"
+    assert report["visual_diagnostics"]["data_status"] == "sleeping"
+    assert report["visual_diagnostics"]["data_health"] == "healthy"
+    assert report["visual_diagnostics"]["vision_service_status"] == "sleeping"
+
+
 def test_operator_console_exposes_audio_diagnostics() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

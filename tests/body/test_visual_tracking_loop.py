@@ -54,3 +54,34 @@ def test_visual_tracking_loop_passes_state_source_when_configured() -> None:
 
     assert runtime.sources
     assert set(runtime.sources) == {"state"}
+
+
+def test_visual_tracking_loop_skips_tracking_while_sleeping(tmp_path) -> None:
+    from apps.body_runtime.engagement_state import EngagementStateReader
+    from apps.body_runtime.engagement_state import EngagementStateWriter
+    from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def track_visual_target_once(self, *, session_id: str, actor_id: str):
+            self.calls += 1
+            return None
+
+    state_path = tmp_path / "engagement.json"
+    EngagementStateWriter(state_path).write(conversation_active=False, phase="idle")
+    runtime = _Runtime()
+    loop = VisualTrackingLoop(
+        body_runtime=runtime,
+        interval_s=0.05,
+        sleeping_interval_s=0.05,
+        engagement_reader=EngagementStateReader(state_path),
+    )
+    loop.start()
+    try:
+        time.sleep(0.12)
+    finally:
+        loop.stop()
+
+    assert runtime.calls == 0

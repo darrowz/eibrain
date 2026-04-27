@@ -16,6 +16,8 @@ import time
 from typing import Any
 
 from eibrain.body.runtime_linux import capture_frame, run_hailo_frame_inference
+from apps.body_runtime.engagement_state import DEFAULT_ENGAGEMENT_STATE_PATH
+from apps.body_runtime.engagement_state import EngagementStateReader
 from eibrain.body.vision_state import DEFAULT_VISION_FRAME_PATH
 from eibrain.body.vision_state import DEFAULT_VISION_STATE_PATH
 from eibrain.body.vision_state import VisionStateWriter
@@ -354,24 +356,51 @@ class VisionHailoService:
         detector,
         writer: VisionStateWriter,
         interval_s: float = 0.2,
+        engagement_reader: EngagementStateReader | None = None,
+        sleeping_interval_s: float = 2.0,
     ) -> None:
         self.detector = detector
         self.writer = writer
         self.interval_s = interval_s
+        self.engagement_reader = engagement_reader
+        self.sleeping_interval_s = max(float(sleeping_interval_s), interval_s)
         self._running = False
 
     def run_forever(self) -> None:
         self._running = True
         while self._running:
             started = time.monotonic()
-            state = self.detector.detect_once()
+            if self._should_run_vision():
+                state = self.detector.detect_once()
+                interval_s = self.interval_s
+            else:
+                self._stop_detector_pipeline()
+                state = build_vision_state(
+                    detections=[],
+                    frame_path=None,
+                    status="sleeping",
+                    backend="vision_sleep_gate",
+                    pipeline={"mode": "sleeping", "reason": "conversation_inactive"},
+                    details={"engagement": self.engagement_reader.read() if self.engagement_reader else {}},
+                )
+                interval_s = self.sleeping_interval_s
             self.writer.write(state)
-            sleep_s = max(0.0, self.interval_s - (time.monotonic() - started))
+            sleep_s = max(0.0, interval_s - (time.monotonic() - started))
             if sleep_s:
                 time.sleep(sleep_s)
 
     def stop(self) -> None:
         self._running = False
+        stop = getattr(self.detector, "stop", None)
+        if callable(stop):
+            stop()
+
+    def _should_run_vision(self) -> bool:
+        if self.engagement_reader is None:
+            return True
+        return self.engagement_reader.should_run_vision()
+
+    def _stop_detector_pipeline(self) -> None:
         stop = getattr(self.detector, "stop", None)
         if callable(stop):
             stop()
@@ -419,12 +448,25 @@ def main() -> None:
     parser.add_argument("--backend", choices=("gstreamer", "single_frame"), default="gstreamer")
     parser.add_argument("--state-path", default="")
     parser.add_argument("--interval-s", type=float, default=0.2)
+    parser.add_argument("--engagement-state-path", default=str(DEFAULT_ENGAGEMENT_STATE_PATH))
+    parser.add_argument("--sleeping-interval-s", type=float, default=2.0)
+    parser.add_argument("--security-vision-always-on", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
     state_path = Path(args.state_path) if args.state_path else _state_path_from_config(config)
     detector = detector_from_config(config, backend=args.backend)
-    service = VisionHailoService(detector=detector, writer=VisionStateWriter(state_path), interval_s=args.interval_s)
+    engagement_reader = EngagementStateReader(
+        args.engagement_state_path,
+        security_mode=args.security_vision_always_on,
+    )
+    service = VisionHailoService(
+        detector=detector,
+        writer=VisionStateWriter(state_path),
+        interval_s=args.interval_s,
+        engagement_reader=engagement_reader,
+        sleeping_interval_s=args.sleeping_interval_s,
+    )
 
     def _stop(_signum, _frame) -> None:
         service.stop()

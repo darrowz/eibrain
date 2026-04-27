@@ -5,6 +5,9 @@ from __future__ import annotations
 import argparse
 
 from apps.body_runtime.app import BodyRuntimeApp
+from apps.body_runtime.engagement_state import DEFAULT_ENGAGEMENT_STATE_PATH
+from apps.body_runtime.engagement_state import EngagementStateReader
+from apps.body_runtime.engagement_state import EngagementStateWriter
 from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
 from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
@@ -21,17 +24,25 @@ def main() -> None:
     parser.add_argument("--voice-chunk-count", type=int, default=3)
     parser.add_argument("--visual-tracking-interval", type=float, default=0.5)
     parser.add_argument("--visual-tracking-source", choices=("active", "state"), default="active")
+    parser.add_argument("--engagement-state-path", default=str(DEFAULT_ENGAGEMENT_STATE_PATH))
+    parser.add_argument("--security-vision-always-on", action="store_true")
     args = parser.parse_args()
 
     config = load_config(args.config)
     runtime = BodyRuntimeApp(config=config)
     cognitive_runtime = CognitiveRuntimeApp(config=config)
+    engagement_writer = EngagementStateWriter(args.engagement_state_path)
+    engagement_reader = EngagementStateReader(
+        args.engagement_state_path,
+        security_mode=args.security_vision_always_on,
+    )
     voice_loop = None
     if not args.disable_voice_dialogue_loop:
         voice_loop = VoiceDialogueLoop(
             body_runtime=runtime,
             cognitive_runtime=cognitive_runtime,
             chunk_count=args.voice_chunk_count,
+            engagement_writer=engagement_writer,
         )
         voice_loop.start()
     visual_loop = None
@@ -40,6 +51,7 @@ def main() -> None:
             body_runtime=runtime,
             interval_s=args.visual_tracking_interval,
             source=args.visual_tracking_source,
+            engagement_reader=engagement_reader,
         )
         visual_loop.start()
     server = MonitoringWebServer(
