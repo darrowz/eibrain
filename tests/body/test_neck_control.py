@@ -16,6 +16,27 @@ def test_neck_policy_filters_non_face_tracking_label() -> None:
     assert state.state == "holding"
 
 
+def test_neck_policy_can_be_configured_to_track_faces_only() -> None:
+    from eibrain.body.neck_control import NeckControlConfig, NeckControlState, NeckIntent, NeckPolicy
+
+    policy = NeckPolicy(NeckControlConfig(allowed_tracking_labels=("face",)))
+    state = NeckControlState(last_angle=90, desired_angle=90)
+    person = policy.decide(
+        intent=NeckIntent(source="eye.tracking", target_name="person", target_x=0.9, created_at_ts=1.0),
+        state=state,
+        now_ts=1.1,
+    )
+    face = policy.decide(
+        intent=NeckIntent(source="eye.tracking", target_name="face", target_x=0.9, created_at_ts=1.2),
+        state=state,
+        now_ts=1.3,
+    )
+
+    assert person.should_command is False
+    assert person.reason == "label_not_trackable"
+    assert face.should_command is True
+
+
 def test_neck_policy_commands_face_with_rate_limit() -> None:
     from eibrain.body.neck_control import NeckControlConfig, NeckControlState, NeckIntent, NeckPolicy
 
