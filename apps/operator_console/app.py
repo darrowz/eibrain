@@ -68,6 +68,7 @@ class OperatorConsoleApp:
             cognitive_snapshot=cognitive_snapshot,
         )
         memory_diagnostics = self._build_memory_diagnostics(cognitive_snapshot)
+        neck_control_diagnostics = self._build_neck_control_diagnostics(body_snapshot)
         summary = self._build_summary(
             capabilities=capabilities,
             warnings=warnings,
@@ -92,6 +93,7 @@ class OperatorConsoleApp:
             "visual_diagnostics": visual_diagnostics,
             "dialogue_diagnostics": dialogue_diagnostics,
             "memory_diagnostics": memory_diagnostics,
+            "neck_control_diagnostics": neck_control_diagnostics,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
             "event_breakdown": self._build_event_breakdown(traces),
@@ -651,6 +653,57 @@ class OperatorConsoleApp:
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),
             "last_llm_status": cognitive_snapshot.get("last_llm_status", {}),
+        }
+
+    @staticmethod
+    def _build_neck_control_diagnostics(body_snapshot: dict[str, object]) -> dict[str, object]:
+        raw = body_snapshot.get("neck_control", {})
+        if not isinstance(raw, dict):
+            raw = {}
+
+        active_intent_raw = raw.get("active_intent", {})
+        active_intent: object = active_intent_raw
+        active_source = raw.get("active_source") or raw.get("source") or ""
+        if isinstance(active_intent_raw, dict):
+            active_intent = (
+                active_intent_raw.get("target_name")
+                or active_intent_raw.get("intent")
+                or active_intent_raw.get("name")
+                or active_intent_raw.get("id")
+                or active_intent_raw.get("type")
+                or ""
+            )
+            active_source = active_intent_raw.get("source") or active_source
+
+        intents = raw.get("intents", [])
+        intent_count = raw.get("intent_count")
+        if not isinstance(intent_count, int):
+            intent_count = len(intents) if isinstance(intents, list) else 0
+
+        desired_angle = raw.get("desired_angle")
+        if desired_angle is None:
+            desired_angle = raw.get("target_angle")
+        last_angle = raw.get("last_angle")
+        if last_angle is None:
+            last_angle = raw.get("current_angle")
+
+        last_command_status = raw.get("last_command_status")
+        if isinstance(last_command_status, dict):
+            command_status_label = last_command_status.get("status", "")
+        else:
+            command_status_label = last_command_status or ""
+
+        return {
+            "enabled": bool(raw),
+            "state": raw.get("state", "unavailable" if not raw else "unknown"),
+            "active_intent": active_intent or "",
+            "active_source": active_source or "",
+            "desired_angle": desired_angle,
+            "last_angle": last_angle,
+            "suppressed_reason": raw.get("suppressed_reason", ""),
+            "last_command_status": last_command_status or {},
+            "last_command_status_label": command_status_label,
+            "intent_count": intent_count,
         }
 
     @staticmethod

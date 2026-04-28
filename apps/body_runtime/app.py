@@ -496,9 +496,17 @@ class BodyRuntimeApp:
             "recent_event_count": len(self._recent_events),
             "voice_dialogue": dict(self.voice_dialogue_state),
             "visual_tracking": dict(self.visual_tracking_state),
+            "neck_control": self._neck_control_snapshot(),
             "interaction_state": dict(self.interaction_state),
             "identity_registry": dict(self.identity_registry),
         }
+
+    def _neck_control_snapshot(self) -> dict[str, object]:
+        neck = next((organ for organ in self.organs if organ.name == "neck"), None)
+        snapshot = getattr(neck, "neck_control_snapshot", None)
+        if callable(snapshot):
+            return dict(snapshot())
+        return {}
 
     def register_current_identity(
         self,

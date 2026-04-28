@@ -58,4 +58,6 @@ def test_neck_uses_target_x_to_compute_angle() -> None:
         )
     )
 
-    assert outcome.details["payload"]["target_angle"] == 82
+    assert outcome.details["payload"]["target_angle"] == 86
+    assert outcome.details["neck_decision"]["should_command"] is True
+    assert outcome.details["neck_control"]["state"] == "attending_face"

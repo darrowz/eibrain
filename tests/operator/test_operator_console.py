@@ -498,3 +498,55 @@ def test_operator_console_backfills_audio_diagnostics_from_recent_trace() -> Non
     assert report["audio_diagnostics"]["asr_status"] == "below_asr_threshold"
     assert report["summary"]["avg_latency_ms"] is not None
     assert report["latency_metrics"][0]["id"] == "ear.capture.recent"
+
+
+def test_operator_console_exposes_neck_control_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_orient_head": True},
+            "neck_control": {
+                "state": "tracking",
+                "active_intent": {"intent": "face_centering", "source": "vision"},
+                "desired_angle": 12.5,
+                "last_angle": 10.0,
+                "suppressed_reason": "",
+                "last_command_status": {"status": "sent", "driver": "servo"},
+                "intent_count": 3,
+            },
+            "organs": {},
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    neck = report["neck_control_diagnostics"]
+
+    assert neck["enabled"] is True
+    assert neck["state"] == "tracking"
+    assert neck["active_intent"] == "face_centering"
+    assert neck["active_source"] == "vision"
+    assert neck["desired_angle"] == 12.5
+    assert neck["last_angle"] == 10.0
+    assert neck["suppressed_reason"] == ""
+    assert neck["last_command_status"]["status"] == "sent"
+    assert neck["last_command_status_label"] == "sent"
+    assert neck["intent_count"] == 3
+
+
+def test_operator_console_neck_control_diagnostics_are_backward_compatible() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["neck_control_diagnostics"]["enabled"] is False
+    assert report["neck_control_diagnostics"]["state"] == "unavailable"
+    assert report["neck_control_diagnostics"]["intent_count"] == 0

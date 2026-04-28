@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+from eibrain.body.neck_control import NeckControlConfig, NeckControlState, NeckIntent, NeckPolicy
 from eibrain.body.organs.base import BaseOrgan
-from eibrain.body.runtime_linux import compute_tracking_pan_angle
 from eibrain.protocol.actions import MoveHeadAction
 from eibrain.protocol.outcomes import ActionExecuted
 
@@ -18,6 +18,11 @@ class NeckOrgan(BaseOrgan):
     def __init__(self, *, config=None) -> None:
         super().__init__(config=config)
         self._last_tracking: dict[str, object] | None = None
+        self._neck_policy = NeckPolicy(self._neck_control_config())
+        self._neck_state = NeckControlState(
+            last_angle=self._neck_policy.config.home_angle,
+            desired_angle=self._neck_policy.config.home_angle,
+        )
 
     def passive_heartbeat(self) -> OrganHealth:
         motor_details = {"driver": self._driver_kind("motor"), "status": "live_probe_skipped"}
@@ -54,57 +59,101 @@ class NeckOrgan(BaseOrgan):
     def handle_action(self, action):
         if not isinstance(action, MoveHeadAction):
             return None
-        config = self.config.subfunctions.get("motor")
-        extra = config.driver.extra if config is not None else {}
-        pan_min = int(extra.get("pan_min", 40))
-        pan_max = int(extra.get("pan_max", 140))
-        home_angle = int(extra.get("home_angle", 90))
-        target_angle = action.target_angle
-        if target_angle is None and action.target_x is not None:
-            current_angle = self._current_angle(default=home_angle)
-            target_angle = compute_tracking_pan_angle(
-                current_angle=current_angle,
-                target_x=action.target_x,
-                pan_min=pan_min,
-                pan_max=pan_max,
-                deadband=float(extra.get("tracking_deadband", 0.08)),
-                step_gain=float(extra.get("tracking_step_gain", 30.0)),
-                max_step=int(extra.get("tracking_max_step", 12)),
-                invert=self._extra_bool(extra.get("tracking_invert", False)),
-            )
-        elif target_angle is None:
-            target_angle = home_angle
-        result = self.drivers["motor"].invoke(
-            "move_head",
-            {
-                "target_id": action.target_id,
-                "target_name": action.target_name,
-                "target_x": action.target_x,
-                "target_angle": target_angle,
+        now_ts = time.time()
+        intent = self._intent_from_action(action=action, now_ts=now_ts)
+        decision = self._neck_policy.decide(intent=intent, state=self._neck_state, now_ts=now_ts)
+        result = None
+        details = {
+            "target_id": action.target_id,
+            "target_name": action.target_name,
+            "target_x": action.target_x,
+            "target_angle": decision.angle,
+            "neck_control": self.neck_control_snapshot(),
+            "neck_decision": {
+                "status": decision.status,
+                "state": decision.state,
+                "reason": decision.reason,
+                "should_command": decision.should_command,
             },
-        )
+        }
+        status = "ok"
+        if decision.should_command:
+            result = self.drivers["motor"].invoke(
+                "move_head",
+                {
+                    "target_id": action.target_id,
+                    "target_name": action.target_name,
+                    "target_x": action.target_x,
+                    "target_angle": decision.angle,
+                },
+            )
+            status = result.status
+            self._neck_policy.mark_command_status(self._neck_state, status)
+            details.update(result.details)
+            details["neck_control"] = self.neck_control_snapshot()
         self._last_tracking = {
             "target_id": action.target_id,
             "target_name": action.target_name,
             "target_x": action.target_x,
-            "target_angle": target_angle,
-            "tracked_at_ts": action.ts or time.time(),
-            "status": result.status,
+            "target_angle": decision.angle,
+            "tracked_at_ts": action.ts or now_ts,
+            "status": status,
+            "neck_control_state": self._neck_state.state,
+            "suppressed_reason": decision.reason,
         }
         return ActionExecuted(
             ts=action.ts,
             source="neck.motor",
-            status=result.status,
+            status=status,
             session_id=action.session_id,
             actor_id=action.actor_id,
             target_id=action.target_id,
             action_kind=action.kind,
-            details=result.details,
+            details=details,
+        )
+
+    def neck_control_snapshot(self) -> dict[str, object]:
+        return self._neck_state.snapshot()
+
+    def _intent_from_action(self, *, action: MoveHeadAction, now_ts: float) -> NeckIntent:
+        source = action.source or "unknown"
+        if action.target_angle is not None and source not in {"eye.tracking", "safety_home"}:
+            source = "manual_override"
+        if action.target_name == "recenter":
+            source = "safety_home"
+        priority = 100 if source == "manual_override" else (80 if source == "safety_home" else 60)
+        return NeckIntent(
+            source=source,
+            target_name=action.target_name or "target",
+            target_x=action.target_x,
+            target_angle=action.target_angle,
+            priority=priority,
+            confidence=1.0,
+            ttl_s=1.5,
+            created_at_ts=now_ts,
+            reason=action.kind,
+        )
+
+    def _neck_control_config(self) -> NeckControlConfig:
+        config = self.config.subfunctions.get("motor")
+        extra = config.driver.extra if config is not None else {}
+        return NeckControlConfig(
+            pan_min=int(extra.get("pan_min", 40)),
+            pan_max=int(extra.get("pan_max", 140)),
+            home_angle=int(extra.get("home_angle", 90)),
+            deadband=float(extra.get("tracking_deadband", 0.16)),
+            step_gain=float(extra.get("tracking_step_gain", 18.0)),
+            max_step=int(extra.get("tracking_max_step", 6)),
+            min_command_interval_s=float(extra.get("tracking_min_interval_s", 0.75)),
+            smoothing_alpha=float(extra.get("tracking_smoothing_alpha", 0.25)),
+            allowed_tracking_labels=tuple(str(item) for item in extra.get("tracking_labels", ("face", "person"))),
+            invert=self._extra_bool(extra.get("tracking_invert", False)),
         )
 
     def _tracking_health(self, *, motor_state: SubfunctionHealth) -> SubfunctionHealth:
         probe = self.drivers["tracking"].heartbeat()
         details = self._merge_probe_details(dict(probe.details))
+        details["neck_control"] = self.neck_control_snapshot()
         if self._last_tracking is not None:
             details.update(self._last_tracking)
         if motor_state.health == "unavailable":

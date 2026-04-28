@@ -457,6 +457,12 @@ class MonitoringWebServer:
     </section>
 
     <section class="card" style="margin-top: 16px;">
+      <h2>Neck fusion control</h2>
+      <div class="mini-grid" id="neck-control-summary"></div>
+      <div class="subfunction-list" id="neck-control-events" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
       <h2>Visual diagnostics</h2>
       <div class="vision-layout">
         <div class="vision-stage" id="vision-stage"></div>
@@ -823,6 +829,30 @@ class MonitoringWebServer:
       document.getElementById('memory-events').innerHTML = items.join('');
     }}
 
+    function renderNeckControl(report) {{
+      const neck = report.neck_control_diagnostics || {{}};
+      const commandStatus = neck.last_command_status || {{}};
+      const commandLabel = neck.last_command_status_label || commandStatus.status || (typeof commandStatus === 'string' ? commandStatus : 'waiting');
+      const desiredAngle = typeof neck.desired_angle === 'number' ? `${{neck.desired_angle.toFixed(2)}} deg` : (neck.desired_angle ?? 'n/a');
+      const lastAngle = typeof neck.last_angle === 'number' ? `${{neck.last_angle.toFixed(2)}} deg` : (neck.last_angle ?? 'n/a');
+      const source = neck.active_source || '-';
+      document.getElementById('neck-control-summary').innerHTML = [
+        ['State', neck.state || 'unavailable'],
+        ['Intent', neck.active_intent || '-'],
+        ['Source', source],
+        ['Intent count', String(neck.intent_count ?? 0)],
+        ['Desired angle', desiredAngle],
+        ['Last angle', lastAngle],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      const items = [
+        `<div class="subfunction-item"><div class="sub-top"><strong>Fusion state</strong><span class="health-tag ${{healthClass(neck.enabled ? (neck.state || 'healthy') : 'waiting_for_data')}}">${{neck.state || 'unavailable'}}</span></div><div class="metric-label">active_intent=${{neck.active_intent || '-'}} | source=${{source}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>Angles</strong><span class="health-tag ${{neck.last_angle !== undefined && neck.last_angle !== null ? 'healthy' : 'waiting'}}">${{lastAngle}}</span></div><div class="metric-label">desired_angle=${{desiredAngle}} | last_angle=${{lastAngle}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>Command</strong><span class="health-tag ${{healthClass(commandLabel || 'waiting_for_data')}}">${{commandLabel}}</span></div><div class="metric-label">suppressed_reason=${{neck.suppressed_reason || '-'}}</div></div>`,
+      ];
+      document.getElementById('neck-control-events').innerHTML = items.join('');
+    }}
+
     function renderProbes(report) {{
       const probes = report.probe_metrics || [];
       document.getElementById('probe-table').innerHTML = probes.length
@@ -874,6 +904,7 @@ class MonitoringWebServer:
       renderAudio(report);
       renderDialogue(report);
       renderMemory(report);
+      renderNeckControl(report);
       renderVision(report);
       renderProbes(report);
       renderTimeline(report);
