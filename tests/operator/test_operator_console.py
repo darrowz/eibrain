@@ -142,8 +142,10 @@ def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> N
                 "details": {
                     "text": "你好鸿途",
                     "capture_device": "plughw:CARD=U4K,DEV=0",
+                    "capture_elapsed_ms": 21.5,
                     "vad_elapsed_ms": 4012.5,
                     "asr_elapsed_ms": 5333.3,
+                    "asr_decode_elapsed_ms": 320.4,
                     "asr_status": "transcribed",
                     "vad_triggered": True,
                     "streaming_vad": True,
@@ -154,9 +156,9 @@ def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> N
 
     ear = next(card for card in report["organ_cards"] if card["name"] == "ear")
     by_name = {entry["name"]: entry for entry in ear["subfunctions"]}
-    assert by_name["capture"]["elapsed_ms"] == 4012.5
+    assert by_name["capture"]["elapsed_ms"] == 21.5
     assert by_name["vad"]["elapsed_ms"] == 4012.5
-    assert by_name["asr"]["elapsed_ms"] == 5333.3
+    assert by_name["asr"]["elapsed_ms"] == 320.4
     assert by_name["asr"]["status"] == "transcribed"
 
 

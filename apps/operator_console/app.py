@@ -151,7 +151,7 @@ class OperatorConsoleApp:
         if not audio_details:
             return
         if sub_name == "capture":
-            elapsed_ms = audio_details.get("capture_elapsed_ms") or audio_details.get("vad_elapsed_ms")
+            elapsed_ms = audio_details.get("capture_elapsed_ms")
             OperatorConsoleApp._set_live_ear_status(details, "recent_trace")
             details.setdefault("capture_device", audio_details.get("capture_device"))
             details.setdefault("sample_rate", audio_details.get("sample_rate"))
@@ -167,11 +167,16 @@ class OperatorConsoleApp:
             details.setdefault("streaming_vad", audio_details.get("streaming_vad"))
             details.setdefault("vad_triggered", audio_details.get("vad_triggered"))
         elif sub_name == "asr":
-            elapsed_ms = audio_details.get("asr_elapsed_ms")
+            elapsed_ms = (
+                audio_details.get("asr_decode_elapsed_ms")
+                or audio_details.get("recognizer_elapsed_ms")
+                or audio_details.get("decode_elapsed_ms")
+            )
             OperatorConsoleApp._set_live_ear_status(details, audio_details.get("asr_status") or "recent_trace")
             details.setdefault("transcript", audio_details.get("text") or audio_details.get("transcript"))
             details.setdefault("speech_window_summary", audio_details.get("speech_window_summary"))
             details.setdefault("recognizer_prewarmed", audio_details.get("recognizer_prewarmed"))
+            details.setdefault("transcribe_window_elapsed_ms", audio_details.get("asr_elapsed_ms"))
         else:
             return
         if isinstance(elapsed_ms, (int, float)):
