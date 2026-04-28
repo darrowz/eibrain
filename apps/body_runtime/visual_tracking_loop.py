@@ -16,7 +16,7 @@ class VisualTrackingLoop:
         *,
         body_runtime: BodyRuntimeApp,
         interval_s: float = 0.5,
-        recenter_after_misses: int = 3,
+        recenter_after_misses: int = 8,
         source: str = "active",
         engagement_reader: EngagementStateReader | None = None,
         sleeping_interval_s: float = 2.0,
