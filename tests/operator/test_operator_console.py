@@ -115,6 +115,51 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert any(metric["id"] == "voice_dialogue.listen_asr" for metric in report["latency_metrics"])
 
 
+def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {
+                "ear": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "capture": {"health": "healthy", "details": {"status": "live_probe_skipped"}},
+                        "vad": {"health": "healthy", "details": {"status": "live_probe_skipped"}},
+                        "asr": {"health": "healthy", "details": {"status": "live_probe_skipped"}},
+                    },
+                }
+            },
+            "voice_dialogue": {"enabled": True, "running": True, "phase": "listening", "last_status": "listening"},
+        },
+        cognitive_snapshot={},
+        traces=[
+            {
+                "kind": "audio_transcript_final",
+                "details": {
+                    "text": "你好鸿途",
+                    "capture_device": "plughw:CARD=U4K,DEV=0",
+                    "vad_elapsed_ms": 4012.5,
+                    "asr_elapsed_ms": 5333.3,
+                    "asr_status": "transcribed",
+                    "vad_triggered": True,
+                    "streaming_vad": True,
+                },
+            }
+        ],
+    )
+
+    ear = next(card for card in report["organ_cards"] if card["name"] == "ear")
+    by_name = {entry["name"]: entry for entry in ear["subfunctions"]}
+    assert by_name["capture"]["elapsed_ms"] == 4012.5
+    assert by_name["vad"]["elapsed_ms"] == 4012.5
+    assert by_name["asr"]["elapsed_ms"] == 5333.3
+    assert by_name["asr"]["status"] == "transcribed"
+
+
 def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

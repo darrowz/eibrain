@@ -349,11 +349,11 @@ body:
           home_angle: 90
           pan_min: 40
           pan_max: 140
-          tracking_deadband: 0.30
-          tracking_step_gain: 6.0
-          tracking_max_step: 2
-          tracking_min_interval_s: 2.5
-          tracking_smoothing_alpha: 0.12
+          tracking_deadband: 0.22
+          tracking_step_gain: 10.0
+          tracking_max_step: 4
+          tracking_min_interval_s: 0.9
+          tracking_smoothing_alpha: 0.20
           tracking_labels:
             - face
             - person

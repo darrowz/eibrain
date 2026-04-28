@@ -45,7 +45,7 @@ class OperatorConsoleApp:
             for organ_name, snapshot in organs.items()
             if isinstance(snapshot, dict) and snapshot.get("health") != "healthy"
         )
-        self._annotate_live_voice_loop(organs, body_snapshot=body_snapshot)
+        self._annotate_live_voice_loop(organs, body_snapshot=body_snapshot, traces=traces)
         organ_cards = self._build_organ_cards(organs)
         latency_metrics = self._build_latency_metrics(organs)
         if not latency_metrics:
@@ -105,7 +105,12 @@ class OperatorConsoleApp:
         }
 
     @staticmethod
-    def _annotate_live_voice_loop(organs: dict[str, object], *, body_snapshot: dict[str, object]) -> None:
+    def _annotate_live_voice_loop(
+        organs: dict[str, object],
+        *,
+        body_snapshot: dict[str, object],
+        traces: list[dict[str, object]] | None = None,
+    ) -> None:
         loop = body_snapshot.get("voice_dialogue", {})
         if not isinstance(loop, dict) or not loop.get("running"):
             return
@@ -115,6 +120,7 @@ class OperatorConsoleApp:
         subfunctions = ear.get("subfunctions", {})
         if not isinstance(subfunctions, dict):
             return
+        audio_details = OperatorConsoleApp._latest_audio_trace_details(traces or [])
         for sub_name, sub_snapshot in subfunctions.items():
             if not isinstance(sub_snapshot, dict):
                 continue
@@ -129,6 +135,54 @@ class OperatorConsoleApp:
             details.setdefault("voice_loop_phase", loop.get("phase"))
             details.setdefault("voice_loop_status", loop.get("last_status"))
             details.setdefault("updated_at_ts", loop.get("updated_at_ts"))
+            OperatorConsoleApp._annotate_live_ear_subfunction(
+                str(sub_name),
+                details=details,
+                audio_details=audio_details,
+            )
+
+    @staticmethod
+    def _annotate_live_ear_subfunction(
+        sub_name: str,
+        *,
+        details: dict[str, object],
+        audio_details: dict[str, object],
+    ) -> None:
+        if not audio_details:
+            return
+        if sub_name == "capture":
+            elapsed_ms = audio_details.get("capture_elapsed_ms") or audio_details.get("vad_elapsed_ms")
+            OperatorConsoleApp._set_live_ear_status(details, "recent_trace")
+            details.setdefault("capture_device", audio_details.get("capture_device"))
+            details.setdefault("sample_rate", audio_details.get("sample_rate"))
+            details.setdefault("channels", audio_details.get("channels"))
+            details.setdefault("payload_bytes", audio_details.get("payload_bytes"))
+            details.setdefault("dbfs", audio_details.get("dbfs"))
+        elif sub_name == "vad":
+            elapsed_ms = audio_details.get("vad_elapsed_ms")
+            OperatorConsoleApp._set_live_ear_status(
+                details,
+                "vad_triggered" if audio_details.get("vad_triggered") else "vad_waiting",
+            )
+            details.setdefault("streaming_vad", audio_details.get("streaming_vad"))
+            details.setdefault("vad_triggered", audio_details.get("vad_triggered"))
+        elif sub_name == "asr":
+            elapsed_ms = audio_details.get("asr_elapsed_ms")
+            OperatorConsoleApp._set_live_ear_status(details, audio_details.get("asr_status") or "recent_trace")
+            details.setdefault("transcript", audio_details.get("text") or audio_details.get("transcript"))
+            details.setdefault("speech_window_summary", audio_details.get("speech_window_summary"))
+            details.setdefault("recognizer_prewarmed", audio_details.get("recognizer_prewarmed"))
+        else:
+            return
+        if isinstance(elapsed_ms, (int, float)):
+            details.setdefault("elapsed_ms", round(float(elapsed_ms), 2))
+        details.setdefault("captured_at_ts", audio_details.get("captured_at_ts"))
+
+    @staticmethod
+    def _set_live_ear_status(details: dict[str, object], status: object) -> None:
+        current = str(details.get("status", "") or "")
+        if current in {"", "live_probe_skipped", "listening_loop"}:
+            details["status"] = status
 
     def _build_organ_cards(self, organs: dict[str, object]) -> list[dict[str, object]]:
         cards: list[dict[str, object]] = []
