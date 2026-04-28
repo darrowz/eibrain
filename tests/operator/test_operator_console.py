@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 
+def test_operator_console_cli_decodes_unicode_escaped_voice_words() -> None:
+    from apps.operator_console.__main__ import _decode_cli_text
+
+    assert _decode_cli_text(r"\u9e3f\u9014") == "\u9e3f\u9014"
+    assert _decode_cli_text(r"\u7ed3\u675f\u5bf9\u8bdd") == "\u7ed3\u675f\u5bf9\u8bdd"
+
+
 def test_operator_console_builds_runtime_status_report() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

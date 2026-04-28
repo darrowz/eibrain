@@ -10,6 +10,7 @@ def test_eibrain_monitor_systemd_template_uses_local_deploy_config() -> None:
     assert 'ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console' in unit_text
     assert '--config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml' in unit_text
     assert '--visual-tracking-source state' in unit_text
+    assert r'--wake-word \u9e3f\u9014 --sleep-word \u7ed3\u675f\u5bf9\u8bdd' in unit_text
     assert 'Wants=network-online.target eibrain-vision-hailo.service' in unit_text
     assert 'After=network-online.target eibrain-vision-hailo.service' in unit_text
 

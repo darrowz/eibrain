@@ -51,6 +51,9 @@ def main() -> int:
         for rel in OPTIONAL_PATHS:
             source = repo_root / rel
             _run(["scp", "-r", str(source), f"{args.target_host}:{args.target_dir}/"])
+    revision = _current_revision(repo_root)
+    revision_path = args.target_dir.rstrip("/") + "/REVISION"
+    _run(["ssh", args.target_host, f"printf '%s\\n' {shlex.quote(revision)} > {shlex.quote(revision_path)}"])
     config_target = f"{args.target_dir}/{args.config_source}"
     config_target_dir = str(Path(config_target).parent).replace("\\", "/")
     _run(["ssh", args.target_host, f"mkdir -p {config_target_dir}"])
@@ -60,24 +63,26 @@ def main() -> int:
     if args.restart_services or args.restart_vision:
         _run(["ssh", args.target_host, "systemctl", "--user", "restart", "eibrain-vision-hailo.service"])
     if args.restart_services:
+        freshness_check = (
+            "import json,time,pathlib; p=pathlib.Path('/tmp/eibrain-vision/state.json'); deadline=time.time()+10\n"
+            "while time.time()<deadline:\n"
+            "    if p.exists():\n"
+            "        data=json.loads(p.read_text()); ts=float(data.get('updated_at_ts',0) or 0)\n"
+            "        if time.time()-ts<5: raise SystemExit(0)\n"
+            "    time.sleep(0.5)\n"
+            "raise SystemExit('vision state did not become fresh')"
+        )
         _run(
             [
                 "ssh",
                 args.target_host,
-                "python3",
-                "-c",
-                "import json,time,pathlib; p=pathlib.Path('/tmp/eibrain-vision/state.json'); deadline=time.time()+10\n"
-                "while time.time()<deadline:\n"
-                "    if p.exists():\n"
-                "        data=json.loads(p.read_text()); ts=float(data.get('updated_at_ts',0) or 0)\n"
-                "        if time.time()-ts<5: raise SystemExit(0)\n"
-                "    time.sleep(0.5)\n"
-                "raise SystemExit('vision state did not become fresh')",
+                shlex.join(["python3", "-c", freshness_check]),
             ]
         )
     if args.restart_services or args.restart_monitor:
         _run(["ssh", args.target_host, "systemctl", "--user", "restart", "eibrain-monitor.service"])
     print(f"synced={args.target_host}:{args.target_dir}")
+    print(f"revision={revision}")
     print(f"config_source={config_source}")
     print(f"include_tests={args.include_tests}")
     return 0
@@ -96,6 +101,22 @@ def _remote_path(target_dir: str, rel: str) -> str:
 
 def _run(command: list[str]) -> None:
     subprocess.run(command, check=True)
+
+
+def _current_revision(repo_root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    revision = result.stdout.strip()
+    return revision or "unknown"
 
 
 if __name__ == "__main__":

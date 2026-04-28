@@ -26,6 +26,8 @@ def main() -> None:
     parser.add_argument("--visual-tracking-source", choices=("active", "state"), default="active")
     parser.add_argument("--engagement-state-path", default=str(DEFAULT_ENGAGEMENT_STATE_PATH))
     parser.add_argument("--security-vision-always-on", action="store_true")
+    parser.add_argument("--wake-word", default=r"\u9e3f\u9014")
+    parser.add_argument("--sleep-word", default=r"\u7ed3\u675f\u5bf9\u8bdd")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -42,6 +44,8 @@ def main() -> None:
             body_runtime=runtime,
             cognitive_runtime=cognitive_runtime,
             chunk_count=args.voice_chunk_count,
+            wake_word=_decode_cli_text(args.wake_word),
+            sleep_word=_decode_cli_text(args.sleep_word),
             engagement_writer=engagement_writer,
         )
         voice_loop.start()
@@ -72,6 +76,15 @@ def main() -> None:
         if voice_loop is not None:
             voice_loop.stop()
         server.stop()
+
+
+def _decode_cli_text(value: str) -> str:
+    if "\\u" not in value and "\\U" not in value:
+        return value
+    try:
+        return value.encode("ascii").decode("unicode_escape")
+    except UnicodeError:
+        return value
 
 
 if __name__ == "__main__":
