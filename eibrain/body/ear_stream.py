@@ -275,6 +275,9 @@ class ArecordStreamCapture:
 class EarStreamProcessor:
     capture: object
     recognizer: object
+    last_capture_elapsed_ms: float = 0.0
+    last_decode_elapsed_ms: float = 0.0
+    last_transcribe_elapsed_ms: float = 0.0
 
     def transcribe_window(
         self,
@@ -283,10 +286,13 @@ class EarStreamProcessor:
         session_id: str,
         actor_id: str,
     ) -> AudioTranscriptFinal:
+        started = time.perf_counter()
+        capture_started = time.perf_counter()
         if hasattr(self.capture, "read_window"):
             chunks = list(self.capture.read_window(chunk_count))
         else:
             chunks = list(self.capture.read_chunks(chunk_count))
+        self.last_capture_elapsed_ms = round((time.perf_counter() - capture_started) * 1000, 2)
         vad_missed = bool(getattr(self.capture, "streaming_vad", False)) and not bool(
             getattr(self.capture, "last_vad_triggered", True)
         )
@@ -297,13 +303,17 @@ class EarStreamProcessor:
             fallback_threshold = float(getattr(self.capture, "vad_miss_rms_threshold", 0.0) or 0.0)
             should_transcribe = fallback_enabled and float(stats.get("rms_level", 0.0) or 0.0) >= fallback_threshold
         if should_transcribe:
+            decode_started = time.perf_counter()
             text = self.recognizer.transcribe(
                 chunks,
                 sample_rate=self.capture.sample_rate,
                 channels=self.capture.channels,
             )
+            self.last_decode_elapsed_ms = round((time.perf_counter() - decode_started) * 1000, 2)
         else:
             text = ""
+            self.last_decode_elapsed_ms = 0.0
+        self.last_transcribe_elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
         return AudioTranscriptFinal(
             ts=1.0,
             source="ear.asr",

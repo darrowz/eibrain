@@ -758,6 +758,10 @@ class MonitoringWebServer:
       const audio = report.audio_diagnostics || {{}};
       const dbfs = typeof audio.dbfs === 'number' ? `${{audio.dbfs.toFixed(2)}} dBFS` : '—';
       const rms = typeof audio.rms_level === 'number' ? audio.rms_level.toFixed(3) : '—';
+      const captureMs = typeof audio.capture_elapsed_ms === 'number' ? `${{audio.capture_elapsed_ms.toFixed(0)}} ms` : '—';
+      const vadMs = typeof audio.vad_elapsed_ms === 'number' ? `${{audio.vad_elapsed_ms.toFixed(0)}} ms` : '—';
+      const decodeMs = typeof audio.asr_decode_elapsed_ms === 'number' ? `${{audio.asr_decode_elapsed_ms.toFixed(0)}} ms` : '—';
+      const totalAsrMs = typeof audio.asr_elapsed_ms === 'number' ? `${{audio.asr_elapsed_ms.toFixed(0)}} ms` : '—';
       document.getElementById('audio-summary').innerHTML = [
         ['Capture', audio.capture_health || 'unknown'],
         ['ASR', audio.asr_health || 'unknown'],
@@ -767,8 +771,8 @@ class MonitoringWebServer:
 
       const items = [];
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Input device</strong><span class="health-tag ${{healthClass(audio.capture_health || 'unknown')}}">${{audio.capture_status || audio.capture_health || 'unknown'}}</span></div><div class="metric-label">${{audio.capture_device || 'unknown device'}} · ${{audio.sample_rate || '—'}} Hz · ${{audio.channels || '—'}} ch · chunks=${{audio.chunk_count ?? '—'}} · bytes=${{audio.payload_bytes ?? '—'}}</div></div>`);
-      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Speech window</strong><span class="health-tag ${{healthClass(audio.vad_health || 'unknown')}}">${{audio.vad_status || audio.vad_health || 'unknown'}}</span></div><div class="metric-label">${{audio.speech_window_summary || 'waiting for audio sample'}} · rms=${{rms}}</div></div>`);
-      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{healthClass(audio.asr_health || 'unknown')}}">${{audio.asr_status || audio.asr_health || 'unknown'}}</span></div><div class="metric-label">${{audio.transcript ? audio.transcript : 'No transcript yet'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Speech window</strong><span class="health-tag ${{healthClass(audio.vad_health || 'unknown')}}">${{audio.vad_status || audio.vad_health || 'unknown'}}</span></div><div class="metric-label">${{audio.speech_window_summary || 'waiting for audio sample'}} · rms=${{rms}} · capture=${{captureMs}} · vad=${{vadMs}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{healthClass(audio.asr_health || 'unknown')}}">${{audio.asr_status || audio.asr_health || 'unknown'}}</span></div><div class="metric-label">${{audio.transcript ? audio.transcript : 'No transcript yet'}} · decode=${{decodeMs}} · total=${{totalAsrMs}}</div></div>`);
       document.getElementById('audio-events').innerHTML = items.join('');
     }}
 

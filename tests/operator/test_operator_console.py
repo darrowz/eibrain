@@ -160,6 +160,9 @@ def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> N
     assert by_name["vad"]["elapsed_ms"] == 4012.5
     assert by_name["asr"]["elapsed_ms"] == 320.4
     assert by_name["asr"]["status"] == "transcribed"
+    assert report["audio_diagnostics"]["capture_elapsed_ms"] == 21.5
+    assert report["audio_diagnostics"]["asr_elapsed_ms"] == 5333.3
+    assert report["audio_diagnostics"]["asr_decode_elapsed_ms"] == 320.4
 
 
 def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:

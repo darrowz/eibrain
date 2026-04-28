@@ -358,6 +358,8 @@ class BodyRuntimeApp:
                     "vad_reason": getattr(capture, "last_vad_reason", ""),
                     "captured_at_ts": time.time(),
                     "asr_elapsed_ms": elapsed_ms,
+                    "capture_elapsed_ms": getattr(self.ear_processor, "last_capture_elapsed_ms", None),
+                    "asr_decode_elapsed_ms": getattr(self.ear_processor, "last_decode_elapsed_ms", None),
                 },
             }
         )

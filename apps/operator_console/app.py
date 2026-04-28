@@ -572,7 +572,7 @@ class OperatorConsoleApp:
         vad_details = dict(vad.get("details", {})) if isinstance(vad.get("details", {}), dict) else {}
         asr_details = dict(asr.get("details", {})) if isinstance(asr.get("details", {}), dict) else {}
         trace_details = self._latest_audio_trace_details(traces or [])
-        if trace_details and not capture_details.get("dbfs"):
+        if trace_details:
             capture_details.update(
                 {
                     "driver": capture_details.get("driver", "recent_trace"),
@@ -593,7 +593,7 @@ class OperatorConsoleApp:
                     "elapsed_ms": trace_details.get("capture_elapsed_ms"),
                 }
             )
-        if trace_details and not asr_details.get("transcript"):
+        if trace_details:
             transcript_from_trace = str(trace_details.get("text", "") or "")
             asr_details.update(
                 {
@@ -607,7 +607,9 @@ class OperatorConsoleApp:
                     "recognizer_prewarm_error": trace_details.get("recognizer_prewarm_error"),
                     "speech_window_summary": trace_details.get("speech_window_summary"),
                     "captured_at_ts": trace_details.get("captured_at_ts") or trace_details.get("recorded_at_ts"),
-                    "elapsed_ms": trace_details.get("asr_elapsed_ms"),
+                    "elapsed_ms": trace_details.get("asr_decode_elapsed_ms") or trace_details.get("asr_elapsed_ms"),
+                    "transcribe_window_elapsed_ms": trace_details.get("asr_elapsed_ms"),
+                    "asr_decode_elapsed_ms": trace_details.get("asr_decode_elapsed_ms"),
                 }
             )
         transcript = str(asr_details.get("transcript", "") or "")
@@ -634,6 +636,9 @@ class OperatorConsoleApp:
             "recognizer_prewarmed": asr_details.get("recognizer_prewarmed"),
             "recognizer_prewarm_error": asr_details.get("recognizer_prewarm_error"),
             "captured_at_ts": asr_details.get("captured_at_ts") or capture_details.get("captured_at_ts"),
+            "capture_elapsed_ms": capture_details.get("elapsed_ms") or capture_details.get("capture_elapsed_ms"),
+            "asr_elapsed_ms": asr_details.get("transcribe_window_elapsed_ms") or asr_details.get("asr_elapsed_ms"),
+            "asr_decode_elapsed_ms": asr_details.get("asr_decode_elapsed_ms") or asr_details.get("elapsed_ms"),
             "transcript": transcript,
             "transcript_char_count": len(transcript),
             "speech_window_summary": asr_details.get("speech_window_summary")

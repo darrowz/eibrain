@@ -347,6 +347,9 @@ def test_ear_stream_processor_emits_audio_transcript_observation() -> None:
 
     assert observation.text == "ni hao eibrain"
     assert observation.session_id == "session-1"
+    assert processor.last_capture_elapsed_ms >= 0.0
+    assert processor.last_decode_elapsed_ms >= 0.0
+    assert processor.last_transcribe_elapsed_ms >= processor.last_capture_elapsed_ms
 
 
 def test_ear_stream_processor_prefers_vad_window_capture() -> None:
@@ -379,6 +382,8 @@ def test_ear_stream_processor_prefers_vad_window_capture() -> None:
     )
 
     assert observation.text == "你好鸿途"
+    assert processor.last_capture_elapsed_ms >= 0.0
+    assert processor.last_decode_elapsed_ms >= 0.0
 
 
 def test_ear_stream_processor_skips_asr_when_vad_does_not_trigger() -> None:
