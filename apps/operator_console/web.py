@@ -780,6 +780,10 @@ class MonitoringWebServer:
       const dialogue = report.dialogue_diagnostics || {{}};
       const latency = dialogue.last_latency_s || {{}};
       const llm = dialogue.last_llm_status || {{}};
+      const cognitive = llm.cognitive_latency_ms || {{}};
+      const llmElapsed = typeof llm.elapsed_ms === 'number' ? `${{llm.elapsed_ms.toFixed(0)}} ms` : '—';
+      const memoryElapsed = typeof cognitive.memory_retrieve === 'number' ? `${{cognitive.memory_retrieve.toFixed(0)}} ms` : '—';
+      const writebackElapsed = typeof cognitive.compile_writeback === 'number' ? `${{cognitive.compile_writeback.toFixed(0)}} ms` : '—';
       const sessionState = !dialogue.enabled ? 'off' : (!dialogue.running ? 'stopped' : (dialogue.conversation_active ? 'awake' : 'sleeping'));
       document.getElementById('dialogue-summary').innerHTML = [
         ['Loop', dialogue.running ? 'running' : (dialogue.enabled ? 'stopped' : 'off')],
@@ -798,7 +802,7 @@ class MonitoringWebServer:
       const items = [
         `<div class="subfunction-item"><div class="sub-top"><strong>Latency breakdown</strong><span class="health-tag ${{latency.total ? 'healthy' : 'degraded'}}">${{fmtSeconds(latency.total)}}</span></div><div class="metric-label">listen+ASR ${{fmtSeconds(latency.listen_asr)}} · think ${{fmtSeconds(latency.think)}} · speak ${{fmtSeconds(latency.speak)}} · total ${{fmtSeconds(latency.total)}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{dialogue.last_transcript ? 'healthy' : 'degraded'}}">${{dialogue.phase || 'idle'}}</span></div><div class="metric-label">${{transcript}}</div></div>`,
-        `<div class="subfunction-item"><div class="sub-top"><strong>LLM</strong><span class="health-tag ${{healthClass(llm.status === 'ok' ? 'healthy' : (llm.status === 'error' ? 'unavailable' : 'degraded'))}}">${{llm.status || 'idle'}}</span></div><div class="metric-label">${{llm.provider || 'unknown'}} · ${{llm.error || llm.text_preview || 'waiting for first reply'}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>LLM</strong><span class="health-tag ${{healthClass(llm.status === 'ok' ? 'healthy' : (llm.status === 'error' ? 'unavailable' : 'degraded'))}}">${{llm.status || 'idle'}}</span></div><div class="metric-label">${{llm.provider || 'unknown'}} · llm=${{llmElapsed}} · memory=${{memoryElapsed}} · writeback=${{writebackElapsed}} · ${{llm.error || llm.text_preview || 'waiting for first reply'}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Last reply</strong><span class="health-tag ${{dialogue.last_reply ? 'healthy' : 'degraded'}}">${{dialogue.learning_decision || 'pending'}}</span></div><div class="metric-label">${{reply}}</div></div>`,
       ];
       if (error) {{

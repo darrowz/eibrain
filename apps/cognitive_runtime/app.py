@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Any
 
 from eibrain.cognition.attention.manager import AttentionManager
@@ -51,7 +52,9 @@ class CognitiveRuntimeApp:
             "provider": self.planner.llm_router.config.provider,
             "status": "idle",
             "error": "",
+            "elapsed_ms": None,
         }
+        self.last_cognitive_latency_ms: dict[str, float] = {}
         self.last_memory_diagnostics: dict[str, object] = {
             "provider": self.config.memory.openclaw.provider,
             "endpoint": self.config.memory.openclaw.endpoint,
@@ -90,6 +93,9 @@ class CognitiveRuntimeApp:
         return None
 
     def handle_observation(self, observation: AudioTranscriptFinal) -> list:
+        total_started = time.perf_counter()
+        stage_latency_ms: dict[str, float] = {}
+        stage_started = time.perf_counter()
         state = EmbodiedState.create_default().with_observation(observation)
         moment = self.binder.bind(state)
         salience = self.attention.evaluate(moment)
@@ -98,6 +104,8 @@ class CognitiveRuntimeApp:
             session_id=state.session.active_session_id,
             actor_id=state.world.current_speaker_id,
         )
+        stage_latency_ms["bind_attention_policy"] = self._elapsed_ms(stage_started)
+        stage_started = time.perf_counter()
         decision = self.policy.decide(
             state=state,
             moment=moment,
@@ -124,15 +132,20 @@ class CognitiveRuntimeApp:
                 task_context=task_context,
             )
         )
+        stage_latency_ms["memory_retrieve"] = self._elapsed_ms(stage_started)
         self._record_memory_diagnostics(query=query_text, task_context=task_context, memory_result=memory_result)
+        stage_started = time.perf_counter()
         intents = self.planner.plan(state=state, memory=memory_result, decision=decision)
+        stage_latency_ms["plan_llm"] = self._elapsed_ms(stage_started)
         router = self.planner.llm_router
         self.last_llm_status = {
             "provider": router.last_provider,
             "status": router.last_status,
             "error": router.last_error,
             "text_preview": router.last_text[:80],
+            "elapsed_ms": router.last_elapsed_ms,
         }
+        stage_started = time.perf_counter()
         actions = self.compiler.compile(intents)
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
         if decision.should_writeback:
@@ -162,6 +175,8 @@ class CognitiveRuntimeApp:
                 },
             )
             self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
+        stage_latency_ms["compile_writeback"] = self._elapsed_ms(stage_started)
+        stage_started = time.perf_counter()
         self._record_learning(
             event_type=observation.kind,
             transcript=state.world.last_transcript,
@@ -190,6 +205,10 @@ class CognitiveRuntimeApp:
                 "reply_present": bool(self.last_reply),
             },
         )
+        stage_latency_ms["learning_observe"] = self._elapsed_ms(stage_started)
+        stage_latency_ms["total"] = self._elapsed_ms(total_started)
+        self.last_cognitive_latency_ms = stage_latency_ms
+        self.last_llm_status["cognitive_latency_ms"] = dict(stage_latency_ms)
         return actions
 
     def describe_visual_frame(self, *, image_url: str):
@@ -392,10 +411,15 @@ class CognitiveRuntimeApp:
             "learning_decision": self.last_learning_decision,
             "last_review": self.last_review,
             "last_llm_status": dict(self.last_llm_status),
+            "cognitive_latency_ms": dict(self.last_cognitive_latency_ms),
             "last_attention": dict(self.last_attention),
             "last_policy_decision": dict(self.last_policy_decision),
             "memory_diagnostics": dict(self.last_memory_diagnostics),
         }
+
+    @staticmethod
+    def _elapsed_ms(started: float) -> float:
+        return round((time.perf_counter() - started) * 1000, 2)
 
     def _retrieve_memory_for_visual(
         self,

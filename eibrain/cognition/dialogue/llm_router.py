@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from urllib.error import URLError
 from urllib import request
 
@@ -16,37 +17,42 @@ class LLMRouter:
         self.last_error = ""
         self.last_provider = self.config.provider
         self.last_text = ""
+        self.last_elapsed_ms: float | None = None
 
     def generate(self, prompt: str) -> str:
+        started = time.perf_counter()
         self.last_provider = self.config.provider
         self.last_error = ""
         self.last_text = ""
-        if not prompt.strip():
-            self.last_status = "empty_prompt"
+        try:
+            if not prompt.strip():
+                self.last_status = "empty_prompt"
+                return ""
+            if self.config.provider == "echo":
+                self.last_status = "ok"
+                self.last_text = f"reply: {prompt.splitlines()[-1]}"
+                return self.last_text
+            if self._uses_anthropic_api():
+                try:
+                    self.last_text = self._generate_anthropic_compatible(prompt)
+                    self.last_status = "ok" if self.last_text else "empty_response"
+                    return self.last_text
+                except (URLError, OSError, ValueError, KeyError) as exc:
+                    self.last_status = "error"
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+            if self._uses_chat_api():
+                try:
+                    self.last_text = self._generate_openai_compatible(prompt)
+                    self.last_status = "ok" if self.last_text else "empty_response"
+                    return self.last_text
+                except (URLError, OSError, ValueError, KeyError) as exc:
+                    self.last_status = "error"
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+            if self.last_status not in {"error", "empty_response"}:
+                self.last_status = "unavailable"
             return ""
-        if self.config.provider == "echo":
-            self.last_status = "ok"
-            self.last_text = f"reply: {prompt.splitlines()[-1]}"
-            return self.last_text
-        if self._uses_anthropic_api():
-            try:
-                self.last_text = self._generate_anthropic_compatible(prompt)
-                self.last_status = "ok" if self.last_text else "empty_response"
-                return self.last_text
-            except (URLError, OSError, ValueError, KeyError) as exc:
-                self.last_status = "error"
-                self.last_error = f"{type(exc).__name__}: {exc}"
-        if self._uses_chat_api():
-            try:
-                self.last_text = self._generate_openai_compatible(prompt)
-                self.last_status = "ok" if self.last_text else "empty_response"
-                return self.last_text
-            except (URLError, OSError, ValueError, KeyError) as exc:
-                self.last_status = "error"
-                self.last_error = f"{type(exc).__name__}: {exc}"
-        if self.last_status not in {"error", "empty_response"}:
-            self.last_status = "unavailable"
-        return ""
+        finally:
+            self.last_elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
 
     def generate_vision(self, prompt: str, image_urls: list[str]) -> str:
         if not prompt.strip():

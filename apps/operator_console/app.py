@@ -638,7 +638,11 @@ class OperatorConsoleApp:
             "captured_at_ts": asr_details.get("captured_at_ts") or capture_details.get("captured_at_ts"),
             "capture_elapsed_ms": capture_details.get("elapsed_ms") or capture_details.get("capture_elapsed_ms"),
             "asr_elapsed_ms": asr_details.get("transcribe_window_elapsed_ms") or asr_details.get("asr_elapsed_ms"),
-            "asr_decode_elapsed_ms": asr_details.get("asr_decode_elapsed_ms") or asr_details.get("elapsed_ms"),
+            "asr_decode_elapsed_ms": (
+                asr_details.get("asr_decode_elapsed_ms")
+                if asr_details.get("asr_decode_elapsed_ms") is not None
+                else asr_details.get("elapsed_ms")
+            ),
             "transcript": transcript,
             "transcript_char_count": len(transcript),
             "speech_window_summary": asr_details.get("speech_window_summary")
