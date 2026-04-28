@@ -115,6 +115,22 @@ class NeckOrgan(BaseOrgan):
     def neck_control_snapshot(self) -> dict[str, object]:
         return self._neck_state.snapshot()
 
+    def clear_neck_control(self, *, reason: str = "engagement_inactive") -> None:
+        self._neck_state.state = "idle"
+        self._neck_state.desired_angle = self._neck_state.last_angle
+        self._neck_state.last_target_x = None
+        self._neck_state.active_intent = {}
+        self._neck_state.suppressed_reason = reason
+        self._neck_state.last_command_status = "idle"
+        if self._last_tracking is not None:
+            self._last_tracking.update(
+                {
+                    "status": "idle",
+                    "neck_control_state": "idle",
+                    "suppressed_reason": reason,
+                }
+            )
+
     def _intent_from_action(self, *, action: MoveHeadAction, now_ts: float) -> NeckIntent:
         source = action.source or "unknown"
         if action.target_angle is not None and source not in {"eye.tracking", "safety_home"}:

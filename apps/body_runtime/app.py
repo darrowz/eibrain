@@ -508,6 +508,37 @@ class BodyRuntimeApp:
             return dict(snapshot())
         return {}
 
+    def pause_visual_tracking(self, *, reason: str = "engagement_inactive") -> None:
+        """Clear stale visual/neck intent when engagement gates tracking off."""
+        with self._visual_lock:
+            self._visual_tracking_misses = 0
+            now_ts = time.time()
+            self._update_visual_tracking_state(
+                running=False,
+                status="idle",
+                source="engagement_gate",
+                target=None,
+                miss_count=0,
+                last_outcome_status=None,
+                frame_captured_at_ts=None,
+                detection_count=0,
+                top_detection=None,
+            )
+            self.interaction_state.update(
+                {
+                    "tracking_locked": False,
+                    "tracking_target_label": "",
+                    "tracking_target_score": 0.0,
+                    "tracking_target_x": None,
+                    "tracking_raw_target_x": None,
+                    "tracking_stable_count": 0,
+                    "tracking_miss_count": 0,
+                    "updated_at_ts": now_ts,
+                }
+            )
+            self._clear_neck_control(reason=reason)
+            self._refresh_interaction_mode(force_reason=reason)
+
     def register_current_identity(
         self,
         *,
@@ -614,6 +645,12 @@ class BodyRuntimeApp:
                 status="error",
                 last_error=str((details or {}).get("error", "") or ""),
             )
+
+    def _clear_neck_control(self, *, reason: str) -> None:
+        neck = next((organ for organ in self.organs if organ.name == "neck"), None)
+        clear = getattr(neck, "clear_neck_control", None)
+        if callable(clear):
+            clear(reason=reason)
 
     def _snapshot_organ(self, organ):
         if organ.name == "ear" and self.voice_dialogue_state.get("running"):

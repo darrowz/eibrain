@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--config", default="config/eibrain.yaml")
     parser.add_argument("--disable-voice-dialogue-loop", action="store_true")
     parser.add_argument("--disable-visual-tracking-loop", action="store_true")
-    parser.add_argument("--voice-chunk-count", type=int, default=3)
+    parser.add_argument("--voice-chunk-count", type=int, default=5)
     parser.add_argument("--visual-tracking-interval", type=float, default=0.5)
     parser.add_argument("--visual-tracking-source", choices=("active", "state"), default="active")
     parser.add_argument("--engagement-state-path", default=str(DEFAULT_ENGAGEMENT_STATE_PATH))

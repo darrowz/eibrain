@@ -442,6 +442,60 @@ def test_body_runtime_ignores_non_preferred_visual_tracking_labels() -> None:
     assert runtime.visual_tracking_state["target"] is None
 
 
+def test_body_runtime_pause_visual_tracking_clears_stale_target_and_neck() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.visual_tracking_state.update(
+        {
+            "running": True,
+            "status": "holding_target",
+            "source": "state",
+            "target": {"label": "face", "target_x": 0.8},
+            "miss_count": 2,
+            "detection_count": 1,
+            "top_detection": {"label": "face"},
+        }
+    )
+    runtime.interaction_state.update(
+        {
+            "current_mode": "attention",
+            "tracking_locked": True,
+            "tracking_target_label": "face",
+            "tracking_target_score": 0.8,
+            "tracking_target_x": 0.8,
+            "tracking_raw_target_x": 0.82,
+            "tracking_stable_count": 4,
+            "tracking_miss_count": 1,
+        }
+    )
+
+    class _Neck:
+        name = "neck"
+
+        def __init__(self) -> None:
+            self.clear_reasons: list[str] = []
+
+        def clear_neck_control(self, *, reason: str):
+            self.clear_reasons.append(reason)
+
+        def neck_control_snapshot(self):
+            return {"state": "idle", "active_intent": {}, "suppressed_reason": self.clear_reasons[-1]}
+
+    neck = _Neck()
+    runtime.organs = [neck]
+
+    runtime.pause_visual_tracking(reason="engagement_inactive")
+
+    assert runtime.visual_tracking_state["running"] is False
+    assert runtime.visual_tracking_state["status"] == "idle"
+    assert runtime.visual_tracking_state["target"] is None
+    assert runtime.visual_tracking_state["source"] == "engagement_gate"
+    assert runtime.interaction_state["tracking_locked"] is False
+    assert runtime.interaction_state["tracking_target_x"] is None
+    assert neck.clear_reasons == ["engagement_inactive"]
+
+
 def test_body_runtime_marks_visual_tracking_waiting_when_no_target() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth

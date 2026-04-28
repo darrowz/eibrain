@@ -31,6 +31,7 @@ class VisualTrackingLoop:
         self.actor_id = "vision-runtime"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._tracking_paused = False
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -47,8 +48,12 @@ class VisualTrackingLoop:
         while not self._stop.is_set():
             started = time.monotonic()
             try:
-                if self._should_track():
+                should_track = self._should_track()
+                if should_track:
+                    self._tracking_paused = False
                     self._track_once()
+                else:
+                    self._pause_tracking_once(reason="engagement_inactive")
             except Exception as exc:  # pragma: no cover - hardware boundary
                 record = getattr(self.body_runtime, "record_runtime_event", None)
                 if callable(record):
@@ -59,7 +64,7 @@ class VisualTrackingLoop:
                         details={"error": str(exc)},
                     )
             elapsed = time.monotonic() - started
-            interval_s = self.interval_s if self._should_track() else self.sleeping_interval_s
+            interval_s = self.interval_s if should_track else self.sleeping_interval_s
             self._stop.wait(max(0.0, interval_s - elapsed))
 
     def _should_track(self) -> bool:
@@ -77,3 +82,11 @@ class VisualTrackingLoop:
         if accepts_kwargs or "source" in signature.parameters:
             kwargs["source"] = self.source
         track(**kwargs)
+
+    def _pause_tracking_once(self, *, reason: str) -> None:
+        if self._tracking_paused:
+            return
+        pause = getattr(self.body_runtime, "pause_visual_tracking", None)
+        if callable(pause):
+            pause(reason=reason)
+        self._tracking_paused = True
