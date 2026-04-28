@@ -7,6 +7,7 @@ Wants=network-online.target eibrain-vision-hailo.service
 Type=simple
 WorkingDirectory=/home/darrow/dev-project/eibrain
 Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/home/darrow/dev-project/eibrain/.env
 ExecStartPre=-/usr/bin/amixer -c U4K sset Mic 24
 ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --visual-tracking-source state --wake-word \u9e3f\u9014 --sleep-word \u7ed3\u675f\u5bf9\u8bdd
 Restart=always
