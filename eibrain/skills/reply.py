@@ -1,22 +1,23 @@
-"""Reply skill."""
+"""eibrain compatibility reply skill."""
 
 from __future__ import annotations
 
 from eibrain.protocol.actions import PlaySpeechAction
 from eibrain.protocol.intents import SpeakIntent
 
-from .base import Skill
+from eiskills.reply import ReplySkill as EIReplySkill
 
 
-class ReplySkill(Skill):
+class ReplySkill:
     def compile(self, intent: SpeakIntent) -> list[PlaySpeechAction]:
         return [
             PlaySpeechAction(
-                ts=intent.ts,
-                source="reply_skill",
-                session_id=intent.session_id,
-                actor_id=intent.actor_id,
-                target_id=intent.target_id,
-                text=intent.text,
+                ts=action.ts,
+                source=action.source,
+                session_id=action.session_id,
+                actor_id=action.actor_id,
+                target_id=action.target_id,
+                text=action.text,
             )
+            for action in EIReplySkill().compile(intent)
         ]

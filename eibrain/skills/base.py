@@ -1,5 +1,5 @@
-"""Base skill contract."""
+"""Compatibility exports for the standalone eiskills package."""
 
+from eiskills.base import Skill
 
-class Skill:
-    """Phase 1 skill marker class."""
+__all__ = ["Skill"]

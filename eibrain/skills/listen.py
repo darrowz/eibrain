@@ -1,7 +1,6 @@
-"""Listen skill placeholder."""
+"""Compatibility export for the standalone listen skill."""
 
-from .base import Skill
+from eiskills.listen import ListenSkill
 
 
-class ListenSkill(Skill):
-    pass
+__all__ = ["ListenSkill"]

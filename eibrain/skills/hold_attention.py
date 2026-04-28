@@ -1,7 +1,6 @@
-"""Hold-attention skill placeholder."""
+"""Compatibility export for the standalone hold-attention skill."""
 
-from .base import Skill
+from eiskills.hold_attention import HoldAttentionSkill
 
 
-class HoldAttentionSkill(Skill):
-    pass
+__all__ = ["HoldAttentionSkill"]
