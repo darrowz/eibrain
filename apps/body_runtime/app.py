@@ -127,6 +127,7 @@ class BodyRuntimeApp:
             vad_min_capture_ms=int(capture_cfg.driver.extra.get("vad_min_capture_ms", 0)),
             transcribe_vad_miss=bool(capture_cfg.driver.extra.get("transcribe_vad_miss", False)),
             vad_miss_rms_threshold=float(capture_cfg.driver.extra.get("vad_miss_rms_threshold", 0.0)),
+            vad_endpoint_policy=bool(capture_cfg.driver.extra.get("vad_endpoint_policy", False)),
         )
 
     def _make_recognizer(self, asr_cfg):
@@ -354,6 +355,7 @@ class BodyRuntimeApp:
                     "streaming_vad": getattr(capture, "streaming_vad", False),
                     "vad_triggered": getattr(capture, "last_vad_triggered", None),
                     "vad_elapsed_ms": getattr(capture, "last_vad_elapsed_ms", None),
+                    "vad_reason": getattr(capture, "last_vad_reason", ""),
                     "captured_at_ts": time.time(),
                     "asr_elapsed_ms": elapsed_ms,
                 },

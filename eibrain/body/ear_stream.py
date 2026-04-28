@@ -10,6 +10,7 @@ import subprocess
 import time
 
 from eibrain.protocol.observations import AudioTranscriptFinal
+from eibrain.body.vad_policy import VadEndpointPolicy, VadFrame
 
 
 @dataclass(slots=True)
@@ -30,6 +31,7 @@ class ArecordStreamCapture:
     vad_min_capture_ms: int = 0
     transcribe_vad_miss: bool = False
     vad_miss_rms_threshold: float = 0.0
+    vad_endpoint_policy: bool = False
     last_returncode: int | None = None
     last_stderr: str = ""
     last_stdout_bytes: int = 0
@@ -38,6 +40,7 @@ class ArecordStreamCapture:
     last_vad_frame_count: int = 0
     last_vad_voice_frame_count: int = 0
     last_vad_elapsed_ms: float = 0.0
+    last_vad_reason: str = ""
     last_chunks: list[bytes] = field(default_factory=list)
 
     def build_command(self) -> list[str]:
@@ -81,6 +84,7 @@ class ArecordStreamCapture:
         min_voice_frames = max(1, math.ceil(self.vad_min_voice_ms / max(1, self.vad_frame_ms)))
         end_silence_frames = max(1, math.ceil(self.vad_end_silence_ms / max(1, self.vad_frame_ms)))
         min_capture_frames = max(0, math.ceil(self.vad_min_capture_ms / max(1, self.vad_frame_ms)))
+        endpoint_policy = self._endpoint_policy(max_duration_s=max_duration_s) if self.vad_endpoint_policy else None
         all_frames: list[bytes] = []
         captured_frames: list[bytes] = []
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_frames)
@@ -106,7 +110,16 @@ class ArecordStreamCapture:
                             break
                         all_frames.append(frame)
                         stats = pcm_signal_stats([frame], channels=self.channels)
-                        is_voice = bool(stats["rms_level"] >= self.vad_rms_threshold)
+                        decision = (
+                            endpoint_policy.observe(VadFrame(rms_level=float(stats["rms_level"])))
+                            if endpoint_policy is not None
+                            else None
+                        )
+                        is_voice = bool(decision.is_voice) if decision is not None else bool(stats["rms_level"] >= self.vad_rms_threshold)
+                        if decision is not None:
+                            self.last_vad_reason = decision.reason
+                            if not triggered and decision.should_force_decode:
+                                break
                         if not triggered:
                             if not is_voice:
                                 pre_roll.append(frame)
@@ -115,7 +128,11 @@ class ArecordStreamCapture:
                                 continue
                             pending_voice.append(frame)
                             consecutive_voice_frames += 1
-                            if consecutive_voice_frames < min_voice_frames:
+                            if decision is not None:
+                                should_start = decision.should_start
+                            else:
+                                should_start = consecutive_voice_frames >= min_voice_frames
+                            if not should_start:
                                 continue
                             triggered = True
                             captured_frames.extend(pre_roll)
@@ -131,9 +148,13 @@ class ArecordStreamCapture:
                         else:
                             silence_after_voice += 1
                         if (
-                            len(captured_frames) >= min_capture_frames
-                            and voice_frames >= min_voice_frames
-                            and silence_after_voice >= end_silence_frames
+                            decision.should_stop or decision.should_force_decode
+                            if decision is not None
+                            else (
+                                len(captured_frames) >= min_capture_frames
+                                and voice_frames >= min_voice_frames
+                                and silence_after_voice >= end_silence_frames
+                            )
                         ):
                             break
                 finally:
@@ -163,6 +184,17 @@ class ArecordStreamCapture:
             return []
         self.last_chunks = [payload[i : i + chunk_bytes] for i in range(0, len(payload), chunk_bytes)]
         return list(self.last_chunks)
+
+    def _endpoint_policy(self, *, max_duration_s: int) -> VadEndpointPolicy:
+        return VadEndpointPolicy(
+            rms_threshold=self.vad_rms_threshold,
+            frame_ms=self.vad_frame_ms,
+            min_voice_ms=self.vad_min_voice_ms,
+            end_silence_ms=self.vad_end_silence_ms,
+            min_capture_ms=self.vad_min_capture_ms,
+            max_capture_ms=max(1, int(max_duration_s * 1000)),
+            fallback_rms_threshold=self.vad_miss_rms_threshold,
+        )
 
     def _run_arecord(self, command: list[str]) -> bytes:
         self.last_command = list(command)

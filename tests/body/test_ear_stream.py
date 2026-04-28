@@ -256,6 +256,69 @@ def test_arecord_stream_capture_respects_min_capture_after_vad_trigger(monkeypat
     assert capture.last_chunks == chunks
 
 
+def test_arecord_stream_capture_can_use_endpoint_policy(monkeypatch) -> None:
+    from eibrain.body.ear_stream import ArecordStreamCapture
+
+    frame_bytes = 1600 * 2
+    silence = (0).to_bytes(2, "little", signed=True) * 1600
+    voice = (3000).to_bytes(2, "little", signed=True) * 1600
+    frames = [silence, voice, voice, silence, silence, silence]
+
+    class _Stdout:
+        def __init__(self) -> None:
+            self.frames = list(frames)
+
+        def read(self, size: int) -> bytes:
+            assert size == frame_bytes
+            if not self.frames:
+                return b""
+            return self.frames.pop(0)
+
+    class _Stderr:
+        def read(self) -> bytes:
+            return b""
+
+    class _Process:
+        def __init__(self, command, **kwargs) -> None:
+            self.stdout = _Stdout()
+            self.stderr = _Stderr()
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self) -> None:
+            self.returncode = -15
+
+        def wait(self, timeout: float | None = None):
+            self.returncode = self.returncode if self.returncode is not None else 0
+            return self.returncode
+
+        def kill(self) -> None:
+            self.returncode = -9
+
+    monkeypatch.setattr("eibrain.body.ear_stream.subprocess.Popen", _Process)
+
+    capture = ArecordStreamCapture(
+        device="hw:3,0",
+        sample_rate=16000,
+        channels=1,
+        streaming_vad=True,
+        vad_endpoint_policy=True,
+        vad_frame_ms=100,
+        vad_rms_threshold=0.03,
+        vad_min_voice_ms=200,
+        vad_end_silence_ms=300,
+        vad_min_capture_ms=500,
+    )
+
+    chunks = capture.read_window(2, chunk_bytes=frame_bytes)
+
+    assert len(chunks) == 6
+    assert capture.last_vad_triggered is True
+    assert capture.last_vad_reason == "endpoint_silence"
+
+
 def test_ear_stream_processor_emits_audio_transcript_observation() -> None:
     from eibrain.body.ear_stream import EarStreamProcessor
 

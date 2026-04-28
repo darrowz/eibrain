@@ -57,6 +57,7 @@ body:
           vad_min_capture_ms: 1600
           transcribe_vad_miss: true
           vad_miss_rms_threshold: 0.075
+          vad_endpoint_policy: true
       vad:
         driver:
           kind: command
