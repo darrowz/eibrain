@@ -19,6 +19,11 @@ def test_audio_response_recall_prefers_hongtu_subject_memory() -> None:
     assert "eibrain.audio_dialogue" in context["allowed_sources"]
     assert "audio_text" in context["preferred_modalities"]
     assert "ear" in context["organs"]
+    assert context["source_system"] == "eibrain"
+    assert context["channel_id"] == "voice.honjia"
+    assert context["agent_id"] == "eibrain.voice"
+    assert context["memory_contract_version"] == "multimodal-memory.v1"
+    assert context["recall_filters"]["channel_ids"] == ["voice.honjia", "global.profile", "global.summary"]
 
 
 def test_visual_orient_recall_prefers_visual_identity_memory() -> None:
@@ -42,6 +47,7 @@ def test_visual_orient_recall_prefers_visual_identity_memory() -> None:
     assert "world_observation" in context["allowed_memory_types"]
     assert context["preferred_modalities"] == ["vision", "multimodal"]
     assert context["visual_context"] == {"target_x": 0.42}
+    assert context["recall_filters"]["source_systems"] == ["eibrain", "openclaw"]
 
 
 def test_diagnostic_recall_uses_policy_sources() -> None:
@@ -74,6 +80,10 @@ def test_writeback_outcome_tags_subject_modality_and_organ() -> None:
     assert outcome["subject"] == "hongtu"
     assert outcome["modality"] == "audio_text"
     assert outcome["organ"] == "ear"
+    assert outcome["source_system"] == "eibrain"
+    assert outcome["channel_id"] == "voice.honjia"
+    assert outcome["agent_id"] == "eibrain.voice"
+    assert outcome["memory_contract_version"] == "multimodal-memory.v1"
 
 
 def test_cognitive_runtime_builds_world_observation_payload_from_visual_state() -> None:

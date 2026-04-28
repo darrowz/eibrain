@@ -53,6 +53,11 @@ class CognitiveRuntimeApp:
             "error": "",
         }
         self.last_memory_diagnostics: dict[str, object] = {
+            "provider": self.config.memory.openclaw.provider,
+            "endpoint": self.config.memory.openclaw.endpoint,
+            "channel_owner": "eibrain",
+            "agent_owner": "eibrain",
+            "memory_owner": self._memory_owner_label(),
             "last_query": "",
             "task_context": {},
             "last_recall": {},
@@ -428,11 +433,24 @@ class CognitiveRuntimeApp:
 
     def _record_memory_diagnostics(self, *, query: str, task_context: dict[str, Any], memory_result) -> None:
         self.last_memory_diagnostics = {
+            "provider": self.config.memory.openclaw.provider,
+            "endpoint": self.config.memory.openclaw.endpoint,
+            "channel_owner": "eibrain",
+            "agent_owner": "eibrain",
+            "memory_owner": self._memory_owner_label(),
             "last_query": query,
             "task_context": dict(task_context),
             "last_recall": dict(getattr(memory_result, "recall_diagnostics", {}) or {}),
             "last_writeback": dict(getattr(self.memory, "last_writeback_status", {}) or {}),
         }
+
+    def _memory_owner_label(self) -> str:
+        provider = str(self.config.memory.openclaw.provider or "")
+        if provider == "eimemory_rpc":
+            return "eimemory"
+        if provider == "http_json":
+            return "openclaw_or_remote_memory"
+        return "local_in_memory"
 
     def _task_context(
         self,

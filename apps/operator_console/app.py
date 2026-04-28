@@ -67,6 +67,8 @@ class OperatorConsoleApp:
             body_snapshot=body_snapshot,
             cognitive_snapshot=cognitive_snapshot,
         )
+        latency_metrics.extend(self._build_dialogue_latency_metrics(dialogue_diagnostics))
+        latency_metrics.sort(key=lambda item: float(item["elapsed_ms"]), reverse=True)
         memory_diagnostics = self._build_memory_diagnostics(cognitive_snapshot)
         neck_control_diagnostics = self._build_neck_control_diagnostics(body_snapshot)
         summary = self._build_summary(
@@ -244,6 +246,28 @@ class OperatorConsoleApp:
         metrics.sort(key=lambda item: float(item["elapsed_ms"]), reverse=True)
         return metrics
 
+    @staticmethod
+    def _build_dialogue_latency_metrics(dialogue_diagnostics: dict[str, object]) -> list[dict[str, object]]:
+        stage_latency_ms = dialogue_diagnostics.get("last_stage_latency_ms", {})
+        if not isinstance(stage_latency_ms, dict):
+            return []
+        metrics: list[dict[str, object]] = []
+        for stage_name, elapsed_ms in stage_latency_ms.items():
+            if not isinstance(elapsed_ms, (int, float)):
+                continue
+            metrics.append(
+                {
+                    "id": f"voice_dialogue.{stage_name}",
+                    "organ": "brain",
+                    "subfunction": f"voice_dialogue.{stage_name}",
+                    "driver": "voice_dialogue_loop",
+                    "health": "healthy",
+                    "elapsed_ms": round(float(elapsed_ms), 2),
+                }
+            )
+        metrics.sort(key=lambda item: float(item["elapsed_ms"]), reverse=True)
+        return metrics
+
     def _build_summary(
         self,
         *,
@@ -259,18 +283,12 @@ class OperatorConsoleApp:
             sum(float(metric["elapsed_ms"]) for metric in latency_metrics) / len(latency_metrics),
             2,
         ) if latency_metrics else None
-        p95_latency = None
-        if latency_metrics:
-            ordered = sorted(float(metric["elapsed_ms"]) for metric in latency_metrics)
-            index = min(len(ordered) - 1, max(0, int(len(ordered) * 0.95) - 1))
-            p95_latency = round(ordered[index], 2)
         return {
             "enabled_capability_count": enabled_capabilities,
             "capability_count": len(capabilities),
             "warning_count": len(warnings),
             "degraded_organ_count": len(degraded_organs),
             "avg_latency_ms": avg_latency,
-            "p95_latency_ms": p95_latency,
             "healthy_subfunction_count": runtime_overview["healthy_subfunction_count"],
             "subfunction_count": runtime_overview["subfunction_count"],
             "live_data_subfunction_count": runtime_overview["live_data_subfunction_count"],
@@ -604,6 +622,11 @@ class OperatorConsoleApp:
             last_writeback = {}
         return {
             "enabled": bool(raw or task_context or last_recall or last_writeback),
+            "provider": raw.get("provider", ""),
+            "endpoint": raw.get("endpoint", ""),
+            "channel_owner": raw.get("channel_owner") or task_context.get("channel_owner", "eibrain"),
+            "agent_owner": raw.get("agent_owner") or task_context.get("agent_owner", "eibrain"),
+            "memory_owner": raw.get("memory_owner") or task_context.get("memory_owner", "local_in_memory"),
             "last_query": raw.get("last_query", ""),
             "task_type": task_context.get("task_type", ""),
             "recall_profile": task_context.get("recall_profile") or last_recall.get("recall_profile", ""),
@@ -648,12 +671,51 @@ class OperatorConsoleApp:
             "last_reply": loop.get("last_reply") or cognitive_snapshot.get("last_reply", ""),
             "last_error": loop.get("last_error", ""),
             "last_latency_s": loop.get("last_latency_s", {}),
+            "last_stage_latency_ms": OperatorConsoleApp._coerce_stage_latency_ms(loop),
+            "last_bottleneck_stage": loop.get("last_bottleneck_stage") or OperatorConsoleApp._bottleneck_stage(
+                OperatorConsoleApp._coerce_stage_latency_ms(loop)
+            ),
+            "last_bottleneck_ms": loop.get("last_bottleneck_ms") or OperatorConsoleApp._bottleneck_ms(
+                OperatorConsoleApp._coerce_stage_latency_ms(loop)
+            ),
             "last_completed_turn": loop.get("last_completed_turn", {}),
             "updated_at_ts": loop.get("updated_at_ts"),
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),
             "last_llm_status": cognitive_snapshot.get("last_llm_status", {}),
         }
+
+    @staticmethod
+    def _coerce_stage_latency_ms(loop: dict[str, object]) -> dict[str, float]:
+        stage_latency_ms = loop.get("last_stage_latency_ms", {})
+        if isinstance(stage_latency_ms, dict) and stage_latency_ms:
+            return {
+                str(key): round(float(value), 2)
+                for key, value in stage_latency_ms.items()
+                if isinstance(value, (int, float))
+            }
+        last_latency_s = loop.get("last_latency_s", {})
+        if not isinstance(last_latency_s, dict):
+            return {}
+        return {
+            str(key): round(float(value) * 1000, 2)
+            for key, value in last_latency_s.items()
+            if isinstance(value, (int, float))
+        }
+
+    @staticmethod
+    def _bottleneck_stage(stage_latency_ms: dict[str, float]) -> str:
+        candidates = {key: value for key, value in stage_latency_ms.items() if key != "total"}
+        if not candidates:
+            return ""
+        return max(candidates, key=candidates.get)
+
+    @staticmethod
+    def _bottleneck_ms(stage_latency_ms: dict[str, float]) -> float | None:
+        stage = OperatorConsoleApp._bottleneck_stage(stage_latency_ms)
+        if not stage:
+            return None
+        return float(stage_latency_ms.get(stage, 0.0))
 
     @staticmethod
     def _build_neck_control_diagnostics(body_snapshot: dict[str, object]) -> dict[str, object]:

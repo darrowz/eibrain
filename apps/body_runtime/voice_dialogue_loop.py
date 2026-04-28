@@ -112,6 +112,8 @@ class VoiceDialogueLoop:
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
                 if len(transcript) == 1:
+                    total_s = time.perf_counter() - turn_started
+                    stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
                     self.body_runtime.update_voice_dialogue_state(
                         phase="idle",
                         last_status="short_transcript_ignored",
@@ -119,12 +121,17 @@ class VoiceDialogueLoop:
                         last_transcript=transcript,
                         last_latency_s={
                             "listen_asr": round(listen_asr_s, 2),
-                            "total": round(time.perf_counter() - turn_started, 2),
+                            "total": round(total_s, 2),
                         },
+                        last_stage_latency_ms=stage_latency_ms,
+                        last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                        last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                     )
                     self._sleep(self.empty_interval_s)
                     continue
                 if not transcript:
+                    total_s = time.perf_counter() - turn_started
+                    stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
                     self.body_runtime.update_voice_dialogue_state(
                         phase="idle",
                         last_status="no_transcript",
@@ -132,8 +139,11 @@ class VoiceDialogueLoop:
                         last_transcript="",
                         last_latency_s={
                             "listen_asr": round(listen_asr_s, 2),
-                            "total": round(time.perf_counter() - turn_started, 2),
+                            "total": round(total_s, 2),
                         },
+                        last_stage_latency_ms=stage_latency_ms,
+                        last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                        last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                     )
                     self._sleep(self.empty_interval_s)
                     continue
@@ -152,6 +162,8 @@ class VoiceDialogueLoop:
                     continue
                 if not self.conversation_active:
                     if self.wake_word not in transcript:
+                        total_s = time.perf_counter() - turn_started
+                        stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
                         self.body_runtime.update_voice_dialogue_state(
                             phase="idle",
                             last_status="waiting_for_wake_word",
@@ -159,8 +171,11 @@ class VoiceDialogueLoop:
                             last_transcript=transcript,
                             last_latency_s={
                                 "listen_asr": round(listen_asr_s, 2),
-                                "total": round(time.perf_counter() - turn_started, 2),
+                                "total": round(total_s, 2),
                             },
+                            last_stage_latency_ms=stage_latency_ms,
+                            last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                            last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                         )
                         self._sleep(self.empty_interval_s)
                         continue
@@ -206,6 +221,13 @@ class VoiceDialogueLoop:
                 speak_s = time.perf_counter() - speak_started
                 status = "ok" if outcomes and all(getattr(outcome, "status", "") == "ok" for outcome in outcomes) else "degraded"
                 turn_count = int(self.body_runtime.voice_dialogue_state.get("turn_count", 0) or 0) + 1
+                total_s = time.perf_counter() - turn_started
+                stage_latency_ms = self._stage_latency_ms(
+                    listen_asr_s=listen_asr_s,
+                    think_s=think_s,
+                    speak_s=speak_s,
+                    total_s=total_s,
+                )
                 self.body_runtime.update_voice_dialogue_state(
                     phase="idle",
                     last_status=status,
@@ -216,8 +238,11 @@ class VoiceDialogueLoop:
                         "listen_asr": round(listen_asr_s, 2),
                         "think": round(think_s, 2),
                         "speak": round(speak_s, 2),
-                        "total": round(time.perf_counter() - turn_started, 2),
+                        "total": round(total_s, 2),
                     },
+                    last_stage_latency_ms=stage_latency_ms,
+                    last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                    last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                     last_completed_turn={
                         "turn_count": turn_count,
                         "transcript": transcript,
@@ -227,8 +252,11 @@ class VoiceDialogueLoop:
                             "listen_asr": round(listen_asr_s, 2),
                             "think": round(think_s, 2),
                             "speak": round(speak_s, 2),
-                            "total": round(time.perf_counter() - turn_started, 2),
+                            "total": round(total_s, 2),
                         },
+                        "stage_latency_ms": stage_latency_ms,
+                        "bottleneck_stage": self._bottleneck_stage(stage_latency_ms),
+                        "bottleneck_ms": self._bottleneck_ms(stage_latency_ms),
                         "completed_at_ts": time.time(),
                     },
                 )
@@ -277,6 +305,12 @@ class VoiceDialogueLoop:
         outcomes = self.body_runtime.dispatch_actions([action])
         speak_s = time.perf_counter() - speak_started
         dispatch_status = "ok" if outcomes and all(getattr(outcome, "status", "") == "ok" for outcome in outcomes) else "degraded"
+        total_s = time.perf_counter() - turn_started
+        stage_latency_ms = self._stage_latency_ms(
+            listen_asr_s=listen_asr_s,
+            speak_s=speak_s,
+            total_s=total_s,
+        )
         self.body_runtime.update_voice_dialogue_state(
             phase=phase,
             last_status=status if dispatch_status == "ok" else dispatch_status,
@@ -289,8 +323,11 @@ class VoiceDialogueLoop:
             last_latency_s={
                 "listen_asr": round(listen_asr_s, 2),
                 "speak": round(speak_s, 2),
-                "total": round(time.perf_counter() - turn_started, 2),
+                "total": round(total_s, 2),
             },
+            last_stage_latency_ms=stage_latency_ms,
+            last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+            last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
         )
 
     def _write_engagement_state(self, *, phase: str, reason: str) -> None:
@@ -307,3 +344,41 @@ class VoiceDialogueLoop:
 
     def _sleep(self, seconds: float) -> None:
         self._stop_event.wait(max(0.0, seconds))
+
+    @staticmethod
+    def _stage_latency_ms(
+        *,
+        listen_asr_s: float,
+        total_s: float,
+        think_s: float | None = None,
+        speak_s: float | None = None,
+    ) -> dict[str, float]:
+        stage_latency_ms: dict[str, float] = {
+            "listen_asr": round(max(0.0, listen_asr_s) * 1000, 2),
+            "total": round(max(0.0, total_s) * 1000, 2),
+        }
+        accounted_s = listen_asr_s
+        if think_s is not None:
+            stage_latency_ms["think"] = round(max(0.0, think_s) * 1000, 2)
+            accounted_s += think_s
+        if speak_s is not None:
+            stage_latency_ms["speak"] = round(max(0.0, speak_s) * 1000, 2)
+            accounted_s += speak_s
+        overhead_s = total_s - accounted_s
+        if overhead_s > 0.01:
+            stage_latency_ms["overhead"] = round(overhead_s * 1000, 2)
+        return stage_latency_ms
+
+    @classmethod
+    def _bottleneck_stage(cls, stage_latency_ms: dict[str, float]) -> str:
+        candidates = {key: value for key, value in stage_latency_ms.items() if key != "total"}
+        if not candidates:
+            return ""
+        return max(candidates, key=candidates.get)
+
+    @classmethod
+    def _bottleneck_ms(cls, stage_latency_ms: dict[str, float]) -> float | None:
+        stage = cls._bottleneck_stage(stage_latency_ms)
+        if not stage:
+            return None
+        return float(stage_latency_ms.get(stage, 0.0))

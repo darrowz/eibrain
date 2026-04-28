@@ -176,3 +176,21 @@ def test_voice_dialogue_loop_processes_one_turn() -> None:
     assert body.voice_dialogue_state["last_reply"] == "你好，我在。"
     assert body.voice_dialogue_state["last_latency_s"]["total"] >= 0
     assert body.voice_dialogue_state["last_latency_s"]["listen_asr"] >= 0
+    assert body.voice_dialogue_state["last_stage_latency_ms"]["total"] >= 0
+    assert body.voice_dialogue_state["last_stage_latency_ms"]["listen_asr"] >= 0
+    assert body.voice_dialogue_state["last_bottleneck_stage"]
+    assert body.voice_dialogue_state["last_bottleneck_ms"] >= 0
+    assert body.voice_dialogue_state["last_completed_turn"]["stage_latency_ms"]["total"] >= 0
+
+
+def test_voice_dialogue_loop_records_latency_for_empty_transcript() -> None:
+    body = _Body([""])
+    cognition = _Cognition()
+    loop = _start_loop(body, cognition)
+
+    _wait_until(lambda: body.calls >= 1)
+    loop.stop()
+
+    update = _first_update(body, last_status="no_transcript")
+    assert update["last_stage_latency_ms"]["listen_asr"] >= 0
+    assert update["last_bottleneck_stage"] == "listen_asr"

@@ -10,6 +10,10 @@ from typing import Any
 class MultimodalMemoryPolicy:
     """Build recall/writeback metadata without letting modalities pollute each other."""
 
+    source_system: str = "eibrain"
+    channel_id: str = "voice.honjia"
+    agent_id: str = "eibrain.voice"
+    contract_version: str = "multimodal-memory.v1"
     identity_sources: list[str] = field(
         default_factory=lambda: [
             "eibrain.identity",
@@ -37,6 +41,13 @@ class MultimodalMemoryPolicy:
         context: dict[str, Any] = {
             "task_type": task_type,
             "goal": "retrieve memory for embodied response",
+            "source_system": self.source_system,
+            "channel_id": self.channel_id,
+            "agent_id": self.agent_id,
+            "channel_owner": "eibrain",
+            "agent_owner": "eibrain",
+            "memory_owner": "eimemory",
+            "memory_contract_version": self.contract_version,
             "modality": modality,
             "organ": organ,
             "phase": phase,
@@ -68,6 +79,11 @@ class MultimodalMemoryPolicy:
                         "eibrain.visual_frame": 1.4,
                         "eibrain.identity": 1.3,
                     },
+                    "recall_filters": self._recall_filters(
+                        channel_id=self.channel_id,
+                        agent_id=self.agent_id,
+                        memory_types=["world_observation", "identity", "fact", "policy", "semantic"],
+                    ),
                 }
             )
             return context
@@ -81,6 +97,11 @@ class MultimodalMemoryPolicy:
                     "preferred_modalities": ["audio_text", "vision", "multimodal", "system"],
                     "organs": ["ear", "eye", "mouth", "neck", "cognition"],
                     "source_weights": {"eibrain.policy": 1.6, "eibrain.audio_dialogue": 1.25},
+                    "recall_filters": self._recall_filters(
+                        channel_id=self.channel_id,
+                        agent_id=self.agent_id,
+                        memory_types=["conversation", "fact", "policy", "semantic"],
+                    ),
                 }
             )
             return context
@@ -98,6 +119,11 @@ class MultimodalMemoryPolicy:
                     "eibrain.audio_dialogue": 1.25,
                     "openclaw.agent_end": 1.15,
                 },
+                "recall_filters": self._recall_filters(
+                    channel_id=self.channel_id,
+                    agent_id=self.agent_id,
+                    memory_types=["identity", "preference", "conversation", "semantic", "fact"],
+                ),
             }
         )
         return context
@@ -123,7 +149,19 @@ class MultimodalMemoryPolicy:
             "modality": modality,
             "organ": organ,
             "subject": "hongtu",
+            "source_system": self.source_system,
+            "channel_id": self.channel_id,
+            "agent_id": self.agent_id,
+            "memory_contract_version": self.contract_version,
         }
         if visual_context:
             outcome["visual_context"] = dict(visual_context)
         return outcome
+
+    def _recall_filters(self, *, channel_id: str, agent_id: str, memory_types: list[str]) -> dict[str, object]:
+        return {
+            "source_systems": [self.source_system, "openclaw"],
+            "channel_ids": [channel_id, "global.profile", "global.summary"],
+            "agent_ids": [agent_id, "openclaw.feishu"],
+            "memory_types": list(memory_types),
+        }

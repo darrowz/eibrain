@@ -83,6 +83,9 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
                 "last_error": "",
                 "current_phase_elapsed_s": 1.25,
                 "last_latency_s": {"listen_asr": 4.0, "think": 2.0, "speak": 3.0, "total": 9.0},
+                "last_stage_latency_ms": {"listen_asr": 4000.0, "think": 2000.0, "speak": 3000.0, "total": 9000.0},
+                "last_bottleneck_stage": "listen_asr",
+                "last_bottleneck_ms": 4000.0,
             },
         },
         cognitive_snapshot={
@@ -105,7 +108,68 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert dialogue["last_reply"] == "鱼丸和肉燕很有名。"
     assert dialogue["current_phase_elapsed_s"] == 1.25
     assert dialogue["last_latency_s"]["total"] == 9.0
+    assert dialogue["last_stage_latency_ms"]["listen_asr"] == 4000.0
+    assert dialogue["last_bottleneck_stage"] == "listen_asr"
+    assert dialogue["last_bottleneck_ms"] == 4000.0
     assert dialogue["last_llm_status"]["status"] == "ok"
+    assert any(metric["id"] == "voice_dialogue.listen_asr" for metric in report["latency_metrics"])
+
+
+def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "phase": "idle",
+                "last_latency_s": {"listen_asr": 1.5, "total": 1.6},
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    dialogue = report["dialogue_diagnostics"]
+    assert dialogue["last_stage_latency_ms"]["listen_asr"] == 1500.0
+    assert dialogue["last_bottleneck_stage"] == "listen_asr"
+
+
+def test_operator_console_exposes_memory_ownership_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={
+            "memory_diagnostics": {
+                "provider": "eimemory_rpc",
+                "endpoint": "http://honxin:18081",
+                "channel_owner": "eibrain",
+                "agent_owner": "eibrain",
+                "memory_owner": "eimemory",
+                "last_query": "介绍下你自己",
+                "task_context": {
+                    "task_type": "brain.respond",
+                    "recall_profile": "precision",
+                    "allowed_sources": ["eibrain.audio_dialogue"],
+                    "blocked_sources": ["eimemory.knowledge.claims"],
+                },
+                "last_recall": {"selected_count": 1},
+            }
+        },
+        traces=[],
+    )
+
+    memory = report["memory_diagnostics"]
+    assert memory["provider"] == "eimemory_rpc"
+    assert memory["memory_owner"] == "eimemory"
+    assert memory["last_query"] == "介绍下你自己"
 
 
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:
