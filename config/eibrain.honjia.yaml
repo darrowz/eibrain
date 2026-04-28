@@ -349,9 +349,9 @@ body:
           home_angle: 90
           pan_min: 40
           pan_max: 140
-          tracking_deadband: 0.08
-          tracking_step_gain: 30.0
-          tracking_max_step: 12
+          tracking_deadband: 0.16
+          tracking_step_gain: 18.0
+          tracking_max_step: 6
       tracking:
         driver:
           kind: command

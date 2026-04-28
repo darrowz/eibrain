@@ -398,6 +398,50 @@ def test_body_runtime_holds_neck_command_when_target_shift_is_small() -> None:
     assert runtime.snapshot()["visual_tracking"]["target"]["label"] == "face"
 
 
+def test_body_runtime_ignores_non_preferred_visual_tracking_labels() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    runtime = BodyRuntimeApp()
+
+    class _Eye:
+        name = "eye"
+
+        def supports_action(self, action) -> bool:
+            return False
+
+        def heartbeat(self):
+            return OrganHealth(
+                organ="eye",
+                health="healthy",
+                subfunctions={
+                    "detection": SubfunctionHealth(
+                        name="detection",
+                        health="healthy",
+                        details={
+                            "frame_captured_at_ts": 123.0,
+                            "detections": [
+                                {
+                                    "label": "potted plant",
+                                    "score": 0.9,
+                                    "bbox": {"x_min": 0.0, "x_max": 0.2},
+                                }
+                            ],
+                            "top_detection": {"label": "potted plant"},
+                        },
+                    )
+                },
+            )
+
+    runtime.organs = [_Eye()]
+
+    outcome = runtime.track_visual_target_once(recenter_after_misses=5)
+
+    assert outcome is None
+    assert runtime.visual_tracking_state["status"] == "waiting_for_target"
+    assert runtime.visual_tracking_state["target"] is None
+
+
 def test_body_runtime_marks_visual_tracking_waiting_when_no_target() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth

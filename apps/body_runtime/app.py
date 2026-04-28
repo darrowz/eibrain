@@ -724,7 +724,9 @@ class BodyRuntimeApp:
             except (TypeError, ValueError):
                 continue
             label = str(detection.get("label", "target"))
-            priority = preferred_labels.index(label) if label in preferred_labels else len(preferred_labels)
+            if preferred_labels and label not in preferred_labels:
+                continue
+            priority = preferred_labels.index(label) if label in preferred_labels else 0
             ranked.append(
                 (
                     priority,
@@ -768,8 +770,8 @@ class BodyRuntimeApp:
         previous_x = self._coerce_float(self.interaction_state.get("tracking_target_x"), default=raw_target_x)
         previous_raw_x = self._coerce_float(self.interaction_state.get("tracking_raw_target_x"), default=raw_target_x)
         stable_count = int(self.interaction_state.get("tracking_stable_count", 0))
-        stable_count = stable_count + 1 if abs(raw_target_x - previous_raw_x) <= 0.08 else 1
-        alpha = 0.35 if stable_count > 1 else 0.65
+        stable_count = stable_count + 1 if abs(raw_target_x - previous_raw_x) <= 0.12 else 1
+        alpha = 0.25 if stable_count > 1 else 0.45
         smoothed_target_x = raw_target_x
         if self.interaction_state.get("tracking_locked"):
             smoothed_target_x = previous_x + ((raw_target_x - previous_x) * alpha)
@@ -781,7 +783,7 @@ class BodyRuntimeApp:
             else None
         )
         command_delta = abs(smoothed_target_x - previous_x)
-        if since_last_action_s is not None and since_last_action_s < 0.35 and command_delta < 0.06:
+        if since_last_action_s is not None and since_last_action_s < 0.75 and command_delta < 0.1:
             self.interaction_state.update(
                 {
                     "tracking_locked": True,

@@ -43,8 +43,11 @@ class MonitoringWebServer:
                 )
                 if request_path == "/vision/latest.jpg":
                     frame_path = outer.runtime.latest_visual_frame_path()
-                    if frame_path and Path(frame_path).exists():
-                        body = Path(frame_path).read_bytes()
+                    try:
+                        body = Path(frame_path).read_bytes() if frame_path else None
+                    except OSError:
+                        body = None
+                    if body:
                         self.send_response(200)
                         self.send_header("Content-Type", "image/jpeg")
                         self.send_header("Cache-Control", "no-store")
