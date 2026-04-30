@@ -489,3 +489,75 @@ def test_eimemory_rpc_adapter_gracefully_degrades_on_transport_failure(monkeypat
 
     assert "hello" in result.summary
     assert result.session_summary == ""
+
+
+
+def test_eimemory_rpc_adapter_records_skill_trace(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "trace_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    result = adapter.record_skill_trace(
+        {
+            "trace_id": "voice-session",
+            "task_type": "brain.respond",
+            "input_summary": "hello",
+            "selected_skills": ["reply.default"],
+            "actions": ["play_speech_action"],
+            "outcome": "planned",
+            "feedback": "unknown",
+            "latency_ms": 12,
+        },
+        session_id="voice-session",
+        actor_id="user-1",
+    )
+
+    assert result["ok"] is True
+    assert captured["body"] == {
+        "method": "experience.record_skill_trace",
+        "params": {
+            "payload": {
+                "trace_id": "voice-session",
+                "task_type": "brain.respond",
+                "input_summary": "hello",
+                "selected_skills": ["reply.default"],
+                "actions": ["play_speech_action"],
+                "outcome": "planned",
+                "feedback": "unknown",
+                "latency_ms": 12,
+            },
+            "scope": {
+                "agent_id": "honxin",
+                "workspace_id": "honjia",
+                "session_id": "voice-session",
+                "actor_id": "user-1",
+            },
+        },
+    }

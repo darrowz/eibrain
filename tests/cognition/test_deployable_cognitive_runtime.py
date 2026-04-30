@@ -309,3 +309,86 @@ def test_cognitive_runtime_disables_minimax_mcp_without_credentials(tmp_path) ->
     runtime = CognitiveRuntimeApp.from_config_path(config_path)
 
     assert runtime.vision is None
+
+
+
+def test_cognitive_runtime_records_skill_trace_after_audio_turn() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        def __init__(self):
+            self.skill_traces = []
+            self.last_writeback_status = {}
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="")
+
+        def remember_episode(self, **kwargs):
+            return None
+
+        def observe_outcome(self, **kwargs):
+            return None
+
+        def record_skill_trace(self, payload, **kwargs):
+            self.skill_traces.append((payload, kwargs))
+
+    runtime = CognitiveRuntimeApp()
+    memory = _MemoryAdapter()
+    runtime.memory = memory
+
+    runtime.handle_observation(AudioTranscriptFinal(ts=1.0, source="test", session_id="s1", actor_id="user-1", text="hello eibrain"))
+
+    assert memory.skill_traces
+    payload, kwargs = memory.skill_traces[0]
+    assert payload["trace_id"] == "s1"
+    assert payload["task_type"] == "brain.respond"
+    assert payload["input_summary"] == "hello eibrain"
+    assert "reply.default" in payload["selected_skills"]
+    assert payload["outcome"] == "planned"
+    assert kwargs == {"session_id": "s1", "actor_id": "user-1"}
+
+
+def test_cognitive_runtime_records_skill_trace_after_visual_turn() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+
+    class _VisionUnderstanding:
+        primary_subject = "person"
+        summary = "person standing near desk"
+
+    class _VisionAdapter:
+        def understand_image(self, **kwargs):
+            return _VisionUnderstanding()
+
+    class _MemoryAdapter:
+        def __init__(self):
+            self.skill_traces = []
+            self.last_writeback_status = {}
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="")
+
+        def remember_episode(self, **kwargs):
+            return None
+
+        def observe_outcome(self, **kwargs):
+            return None
+
+        def record_skill_trace(self, payload, **kwargs):
+            self.skill_traces.append((payload, kwargs))
+
+    runtime = CognitiveRuntimeApp(vision_adapter=_VisionAdapter())
+    memory = _MemoryAdapter()
+    runtime.memory = memory
+
+    runtime.handle_visual_frame(image_url="https://example.com/frame.jpg", actor_id="user-1", target_x=0.7)
+
+    assert memory.skill_traces
+    payload, kwargs = memory.skill_traces[0]
+    assert payload["trace_id"] == "vision:user-1"
+    assert payload["task_type"] == "brain.orient"
+    assert payload["input_summary"] == "person standing near desk"
+    assert "orient.default" in payload["selected_skills"]
+    assert kwargs == {"session_id": "vision:user-1", "actor_id": "user-1"}

@@ -148,6 +148,26 @@ class CognitiveRuntimeApp:
         stage_started = time.perf_counter()
         actions = self.compiler.compile(intents)
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
+        self._record_skill_trace(
+            trace_id=state.session.active_session_id or "unknown-session",
+            task_type="brain.respond",
+            input_summary=state.world.last_transcript or query_text,
+            intents=intents,
+            actions=actions,
+            outcome="planned",
+            feedback="unknown",
+            latency_ms=self._elapsed_ms(total_started),
+            session_id=state.session.active_session_id,
+            actor_id=state.world.current_speaker_id,
+            meta={
+                "modality": "audio_text",
+                "organ": "ear",
+                "decision": decision.decision_type,
+                "action_count": len(actions),
+                "reply_present": bool(self.last_reply),
+                "salience_score": salience.score,
+            },
+        )
         if decision.should_writeback:
             self.memory.remember_episode(
                 session_id=state.session.active_session_id or "unknown-session",
@@ -260,6 +280,27 @@ class CognitiveRuntimeApp:
             decision=decision,
         )
         actions = self.compiler.compile(intents)
+        self._record_skill_trace(
+            trace_id=visual_session_id,
+            task_type="brain.orient",
+            input_summary=understanding.summary,
+            intents=intents,
+            actions=actions,
+            outcome="planned",
+            feedback="unknown",
+            latency_ms=0.0,
+            session_id=visual_session_id,
+            actor_id=actor_id or "visual-target",
+            meta={
+                "modality": "vision",
+                "organ": "eye",
+                "decision": decision.decision_type,
+                "action_count": len(actions),
+                "reply_present": False,
+                "salience_score": salience.score,
+                "target_x": target_x,
+            },
+        )
         if decision.should_writeback:
             self.memory.remember_episode(
                 session_id=visual_session_id,
@@ -515,6 +556,57 @@ class CognitiveRuntimeApp:
             return dict(getter(task_type=task_type, session_id=session_id, actor_id=actor_id) or {})
         except (OSError, ValueError, TypeError):
             return {}
+
+    def _record_skill_trace(
+        self,
+        *,
+        trace_id: str,
+        task_type: str,
+        input_summary: str,
+        intents: object,
+        actions: list,
+        outcome: str,
+        feedback: str,
+        latency_ms: float,
+        session_id: str | None,
+        actor_id: str | None,
+        meta: dict[str, object],
+    ) -> None:
+        recorder = getattr(self.memory, "record_skill_trace", None)
+        if not callable(recorder):
+            return
+        payload = {
+            "trace_id": trace_id,
+            "task_type": task_type,
+            "input_summary": input_summary,
+            "selected_skills": self._skill_ids_from_intents(intents),
+            "actions": [str(getattr(action, "kind", type(action).__name__)) for action in actions],
+            "outcome": outcome,
+            "feedback": feedback,
+            "latency_ms": latency_ms,
+            "meta": dict(meta),
+        }
+        try:
+            recorder(payload, session_id=session_id, actor_id=actor_id)
+        except (OSError, ValueError, TypeError):
+            return
+
+    @staticmethod
+    def _skill_ids_from_intents(intents: object) -> list[str]:
+        if not isinstance(intents, list):
+            intents = [intents]
+        skill_ids: list[str] = []
+        mapping = {
+            "speak_intent": "reply.default",
+            "pause_intent": "interrupt.default",
+            "orient_intent": "orient.default",
+        }
+        for intent in intents:
+            kind = str(getattr(intent, "kind", ""))
+            skill_id = mapping.get(kind, kind or type(intent).__name__)
+            if skill_id and skill_id not in skill_ids:
+                skill_ids.append(skill_id)
+        return skill_ids
 
     def _observe_outcome(
         self,

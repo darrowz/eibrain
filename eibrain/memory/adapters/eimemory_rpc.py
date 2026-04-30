@@ -232,6 +232,27 @@ class EIMemoryRPCAdapter:
         except (URLError, OSError, ValueError, TypeError, KeyError):
             return {}
 
+    def record_skill_trace(
+        self,
+        payload: dict[str, object],
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        if not self.config.endpoint:
+            return {}
+        body = {
+            "method": "experience.record_skill_trace",
+            "params": {
+                "payload": dict(payload or {}),
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+            },
+        }
+        try:
+            return self._post_json(body)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return {}
+
     def get_active_policy(
         self,
         *,
