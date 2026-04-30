@@ -139,7 +139,7 @@ def test_cognitive_runtime_records_audio_episode_for_memory() -> None:
     runtime = CognitiveRuntimeApp()
     runtime.memory = _MemoryAdapter()
     runtime.handle_observation(
-        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="hello", session_id="s1", actor_id="user-1")
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="记住我喜欢简短回复", session_id="s1", actor_id="user-1")
     )
 
     assert runtime.memory.remembered
@@ -339,14 +339,20 @@ def test_cognitive_runtime_records_skill_trace_after_audio_turn() -> None:
     runtime.memory = memory
 
     runtime.handle_observation(AudioTranscriptFinal(ts=1.0, source="test", session_id="s1", actor_id="user-1", text="hello eibrain"))
+    assert memory.skill_traces == []
+
+    runtime.handle_observation(AudioTranscriptFinal(ts=2.0, source="test", session_id="s1", actor_id="user-1", text="记住我喜欢用 pytest -q"))
 
     assert memory.skill_traces
     payload, kwargs = memory.skill_traces[0]
     assert payload["trace_id"] == "s1"
     assert payload["task_type"] == "brain.respond"
-    assert payload["input_summary"] == "hello eibrain"
+    assert payload["input_summary"] == "记住我喜欢用 pytest -q"
     assert "reply.default" in payload["selected_skills"]
     assert payload["outcome"] == "planned"
+    assert payload["meta"]["write_policy_version"] == "meaningful_event_v1"
+    assert payload["meta"]["trace_reason"] == "explicit_remember"
+    assert payload["meta"]["write_filter"]["allowed"] is True
     assert kwargs == {"session_id": "s1", "actor_id": "user-1"}
 
 
@@ -384,11 +390,19 @@ def test_cognitive_runtime_records_skill_trace_after_visual_turn() -> None:
     runtime.memory = memory
 
     runtime.handle_visual_frame(image_url="https://example.com/frame.jpg", actor_id="user-1", target_x=0.7)
+    runtime.handle_visual_frame(image_url="https://example.com/frame.jpg", actor_id="user-1", target_x=0.7)
 
-    assert memory.skill_traces
+    assert len(memory.skill_traces) == 1
     payload, kwargs = memory.skill_traces[0]
     assert payload["trace_id"] == "vision:user-1"
     assert payload["task_type"] == "brain.orient"
     assert payload["input_summary"] == "person standing near desk"
     assert "orient.default" in payload["selected_skills"]
+    assert payload["meta"]["write_policy_version"] == "meaningful_event_v1"
+    assert payload["meta"]["trace_reason"] == "visual_new_scene"
+    assert payload["meta"]["write_filter"]["dedupe_key"] == "person:right"
     assert kwargs == {"session_id": "vision:user-1", "actor_id": "user-1"}
+
+    runtime.handle_visual_frame(image_url="https://example.com/frame.jpg", actor_id="user-1", target_x=0.2)
+    assert len(memory.skill_traces) == 2
+    assert memory.skill_traces[1][0]["meta"]["trace_reason"] == "visual_state_change"

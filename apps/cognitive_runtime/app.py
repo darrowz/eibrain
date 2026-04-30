@@ -13,7 +13,7 @@ from eibrain.cognition.dialogue.llm_router import LLMRouter
 from eibrain.cognition.policy.engine import PolicyEngine
 from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
 from eibrain.cognition.planner.intent_planner import IntentPlanner
-from eibrain.cognition.world import build_scene_graph
+from eibrain.cognition.world import build_scene_graph, should_write_world_observation
 from eibrain.infra import TraceRecorder
 from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.learning.adaptation import AdaptationEngine
@@ -66,6 +66,8 @@ class CognitiveRuntimeApp:
             "last_recall": {},
             "last_writeback": {},
         }
+        self._last_visual_event_key = ""
+        self._last_world_scene: dict[str, object] | None = None
 
     @classmethod
     def from_config_path(cls, path) -> "CognitiveRuntimeApp":
@@ -148,27 +150,32 @@ class CognitiveRuntimeApp:
         stage_started = time.perf_counter()
         actions = self.compiler.compile(intents)
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
-        self._record_skill_trace(
-            trace_id=state.session.active_session_id or "unknown-session",
-            task_type="brain.respond",
-            input_summary=state.world.last_transcript or query_text,
-            intents=intents,
-            actions=actions,
-            outcome="planned",
-            feedback="unknown",
-            latency_ms=self._elapsed_ms(total_started),
-            session_id=state.session.active_session_id,
-            actor_id=state.world.current_speaker_id,
-            meta={
-                "modality": "audio_text",
-                "organ": "ear",
-                "decision": decision.decision_type,
-                "action_count": len(actions),
-                "reply_present": bool(self.last_reply),
-                "salience_score": salience.score,
-            },
-        )
-        if decision.should_writeback:
+        audio_write_filter = self._classify_audio_memory_event(state.world.last_transcript or query_text)
+        if audio_write_filter["allowed"]:
+            self._record_skill_trace(
+                trace_id=state.session.active_session_id or "unknown-session",
+                task_type="brain.respond",
+                input_summary=state.world.last_transcript or query_text,
+                intents=intents,
+                actions=actions,
+                outcome="planned",
+                feedback="unknown",
+                latency_ms=self._elapsed_ms(total_started),
+                session_id=state.session.active_session_id,
+                actor_id=state.world.current_speaker_id,
+                meta={
+                    "modality": "audio_text",
+                    "organ": "ear",
+                    "decision": decision.decision_type,
+                    "action_count": len(actions),
+                    "reply_present": bool(self.last_reply),
+                    "salience_score": salience.score,
+                    "write_policy_version": "meaningful_event_v1",
+                    "trace_reason": audio_write_filter["reason"],
+                    "write_filter": audio_write_filter,
+                },
+            )
+        if decision.should_writeback and audio_write_filter["allowed"]:
             self.memory.remember_episode(
                 session_id=state.session.active_session_id or "unknown-session",
                 actor_id=state.world.current_speaker_id,
@@ -280,28 +287,33 @@ class CognitiveRuntimeApp:
             decision=decision,
         )
         actions = self.compiler.compile(intents)
-        self._record_skill_trace(
-            trace_id=visual_session_id,
-            task_type="brain.orient",
-            input_summary=understanding.summary,
-            intents=intents,
-            actions=actions,
-            outcome="planned",
-            feedback="unknown",
-            latency_ms=0.0,
-            session_id=visual_session_id,
-            actor_id=actor_id or "visual-target",
-            meta={
-                "modality": "vision",
-                "organ": "eye",
-                "decision": decision.decision_type,
-                "action_count": len(actions),
-                "reply_present": False,
-                "salience_score": salience.score,
-                "target_x": target_x,
-            },
-        )
-        if decision.should_writeback:
+        visual_write_filter = self._classify_visual_memory_event(understanding, target_x=target_x)
+        if visual_write_filter["allowed"]:
+            self._record_skill_trace(
+                trace_id=visual_session_id,
+                task_type="brain.orient",
+                input_summary=understanding.summary,
+                intents=intents,
+                actions=actions,
+                outcome="planned",
+                feedback="unknown",
+                latency_ms=0.0,
+                session_id=visual_session_id,
+                actor_id=actor_id or "visual-target",
+                meta={
+                    "modality": "vision",
+                    "organ": "eye",
+                    "decision": decision.decision_type,
+                    "action_count": len(actions),
+                    "reply_present": False,
+                    "salience_score": salience.score,
+                    "target_x": target_x,
+                    "write_policy_version": "meaningful_event_v1",
+                    "trace_reason": visual_write_filter["reason"],
+                    "write_filter": visual_write_filter,
+                },
+            )
+        if decision.should_writeback and visual_write_filter["allowed"]:
             self.memory.remember_episode(
                 session_id=visual_session_id,
                 actor_id=actor_id or "visual-target",
@@ -421,9 +433,18 @@ class CognitiveRuntimeApp:
             visual_state,
             session_id=session_id,
             actor_id=actor_id,
+            previous_scene=self._last_world_scene,
         )
         writer = getattr(self.memory, "remember_world_observation", None)
         if not callable(writer):
+            return payload
+        scene = payload.get("content", {}).get("scene") if isinstance(payload.get("content"), dict) else None
+        if self._last_world_scene is not None and isinstance(scene, dict) and not should_write_world_observation(scene, self._last_world_scene):
+            self.last_memory_diagnostics["last_writeback"] = {
+                "status": "skipped",
+                "reason": "unchanged_world_observation",
+                "source": "eibrain.visual_world",
+            }
             return payload
         writer(
             session_id=str(payload["session_id"]),
@@ -433,6 +454,8 @@ class CognitiveRuntimeApp:
             meta=dict(payload["meta"]),
             tags=[str(tag) for tag in payload.get("tags", [])],
         )
+        if isinstance(scene, dict):
+            self._last_world_scene = scene
         self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         return payload
 
@@ -575,11 +598,15 @@ class CognitiveRuntimeApp:
         recorder = getattr(self.memory, "record_skill_trace", None)
         if not callable(recorder):
             return
+        input_summary = str(input_summary or "").strip()
+        skill_ids = self._skill_ids_from_intents(intents)
+        if not input_summary or not skill_ids or not meta.get("trace_reason"):
+            return
         payload = {
             "trace_id": trace_id,
             "task_type": task_type,
             "input_summary": input_summary,
-            "selected_skills": self._skill_ids_from_intents(intents),
+            "selected_skills": skill_ids,
             "actions": [str(getattr(action, "kind", type(action).__name__)) for action in actions],
             "outcome": outcome,
             "feedback": feedback,
@@ -590,6 +617,85 @@ class CognitiveRuntimeApp:
             recorder(payload, session_id=session_id, actor_id=actor_id)
         except (OSError, ValueError, TypeError):
             return
+
+
+    def _classify_audio_memory_event(self, transcript: str) -> dict[str, object]:
+        text = " ".join(str(transcript or "").strip().split())
+        lowered = text.lower()
+        if not text:
+            return self._write_filter(False, "empty_audio_text", confidence=0.0)
+        negative_markers = ("不要记", "别记", "不用记", "forget this", "don't remember", "do not remember")
+        if any(marker in lowered for marker in negative_markers):
+            return self._write_filter(False, "memory_request_negated", confidence=0.8)
+        explicit_markers = (
+            "记住",
+            "帮我记",
+            "记一下",
+            "你要记得",
+            "以后记得",
+            "保存一下",
+            "把这个存下来",
+            "remember that",
+            "remember this",
+            "keep in mind",
+            "note that",
+            "save this",
+            "memorize",
+        )
+        if any(marker in lowered for marker in explicit_markers):
+            return self._write_filter(True, "explicit_remember", confidence=0.9, signals=["user_explicit_memory_intent"])
+        return self._write_filter(False, "no_explicit_memory_request", confidence=0.7)
+
+    def _classify_visual_memory_event(self, understanding: object, *, target_x: float | None) -> dict[str, object]:
+        summary = " ".join(str(getattr(understanding, "summary", "") or "").strip().split())
+        subject = str(getattr(understanding, "primary_subject", "") or "target").strip().lower()
+        confidence = float(getattr(understanding, "confidence", 1.0) or 0.0)
+        if not summary:
+            return self._write_filter(False, "empty_visual_summary", confidence=0.0)
+        if confidence < 0.5:
+            return self._write_filter(False, "low_visual_confidence", confidence=confidence)
+        region = self._visual_region(target_x)
+        event_key = f"{subject}:{region}"
+        if event_key == self._last_visual_event_key:
+            return self._write_filter(False, "duplicate_visual_event", confidence=confidence, dedupe_key=event_key)
+        reason = "visual_new_scene" if not self._last_visual_event_key else "visual_state_change"
+        self._last_visual_event_key = event_key
+        return self._write_filter(
+            True,
+            reason,
+            confidence=confidence,
+            signals=["new_visual_event"],
+            dedupe_key=event_key,
+        )
+
+    @staticmethod
+    def _visual_region(target_x: float | None) -> str:
+        if target_x is None:
+            return "unknown"
+        if target_x < 0.4:
+            return "left"
+        if target_x > 0.6:
+            return "right"
+        return "center"
+
+    @staticmethod
+    def _write_filter(
+        allowed: bool,
+        reason: str,
+        *,
+        confidence: float,
+        signals: list[str] | None = None,
+        dedupe_key: str | None = None,
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "allowed": allowed,
+            "reason": reason,
+            "confidence": max(0.0, min(1.0, float(confidence))),
+            "signals": list(signals or []),
+        }
+        if dedupe_key:
+            payload["dedupe_key"] = dedupe_key
+        return payload
 
     @staticmethod
     def _skill_ids_from_intents(intents: object) -> list[str]:

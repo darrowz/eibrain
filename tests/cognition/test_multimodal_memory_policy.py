@@ -154,3 +154,33 @@ def test_cognitive_runtime_writes_world_observation_from_visual_state() -> None:
     assert memory.captured["summary"] == "Observed cup"
     assert memory.captured["content"]["objects"][0]["label"] == "cup"
     assert runtime.last_memory_diagnostics["last_writeback"]["status"] == "ok"
+
+
+def test_cognitive_runtime_skips_duplicate_world_observation() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+    class _Memory:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.captured: list[dict[str, object]] = []
+
+        def remember_world_observation(self, **kwargs) -> None:
+            self.captured.append(kwargs)
+            self.last_writeback_status = {"status": "ok", "source": "eibrain.visual_world"}
+
+    runtime = CognitiveRuntimeApp()
+    memory = _Memory()
+    runtime.memory = memory
+    visual_state = {
+        "backend": "gstreamer_hailo",
+        "objects": [{"label": "cup", "score": 0.8, "bbox": {"x_min": 0.1, "y_min": 0.1, "x_max": 0.2, "y_max": 0.2}}],
+    }
+
+    runtime.remember_world_observation_from_state(visual_state, session_id="vision:desk")
+    runtime.remember_world_observation_from_state(visual_state, session_id="vision:desk")
+
+    assert len(memory.captured) == 1
+    assert runtime.last_memory_diagnostics["last_writeback"]["status"] == "skipped"
+    assert runtime.last_memory_diagnostics["last_writeback"]["reason"] == "unchanged_world_observation"
+
