@@ -20,6 +20,7 @@ eibrain-sync-honjia = "apps.sync_honjia:main"
 eibrain-verify-body = "apps.body_runtime.verify_hardware:main"
 eibrain-vision-hailo = "apps.body_runtime.vision_hailo_service:main"
 eibrain-plan-exploration = "apps.plan_exploration:main"
+eibrain-execute-exploration = "apps.execute_exploration:main"
 
 [tool.setuptools.packages.find]
 include = ["eibrain*", "apps*"]
