@@ -232,10 +232,16 @@ def test_cognitive_runtime_observes_outcome_when_memory_supports_it() -> None:
     runtime.handle_observation(
         AudioTranscriptFinal(ts=1.0, source="ear.asr", text="hello", session_id="s1", actor_id="user-1")
     )
+    assert runtime.memory.observed == []
+
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=2.0, source="ear.asr", text="记住我喜欢简短回复", session_id="s1", actor_id="user-1")
+    )
 
     assert runtime.memory.observed
     assert runtime.memory.observed[0]["signal_type"] == "cognitive_turn"
     assert runtime.memory.observed[0]["payload"]["decision"] == "reply"
+    assert runtime.memory.observed[0]["payload"]["trace_reason"] == "explicit_remember"
 
 
 def test_cognitive_runtime_prefers_minimax_cli_provider(tmp_path) -> None:

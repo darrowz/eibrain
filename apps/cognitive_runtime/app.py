@@ -220,18 +220,21 @@ class CognitiveRuntimeApp:
                 "salience_score": salience.score,
             },
         )
-        self._observe_outcome(
-            signal_type="cognitive_turn",
-            session_id=state.session.active_session_id,
-            actor_id=state.world.current_speaker_id,
-            payload={
-                "modality": "audio_text",
-                "decision": decision.decision_type,
-                "action_count": len(actions),
-                "salience_score": salience.score,
-                "reply_present": bool(self.last_reply),
-            },
-        )
+        if audio_write_filter["allowed"]:
+            self._observe_outcome(
+                signal_type="cognitive_turn",
+                session_id=state.session.active_session_id,
+                actor_id=state.world.current_speaker_id,
+                payload={
+                    "modality": "audio_text",
+                    "decision": decision.decision_type,
+                    "action_count": len(actions),
+                    "salience_score": salience.score,
+                    "reply_present": bool(self.last_reply),
+                    "write_policy_version": "meaningful_event_v1",
+                    "trace_reason": audio_write_filter["reason"],
+                },
+            )
         stage_latency_ms["learning_observe"] = self._elapsed_ms(stage_started)
         stage_latency_ms["total"] = self._elapsed_ms(total_started)
         self.last_cognitive_latency_ms = stage_latency_ms
@@ -351,17 +354,20 @@ class CognitiveRuntimeApp:
                 "salience_score": salience.score,
             },
         )
-        self._observe_outcome(
-            signal_type="visual_turn",
-            session_id=visual_session_id,
-            actor_id=actor_id or "visual-target",
-            payload={
-                "modality": "vision",
-                "decision": decision.decision_type,
-                "action_count": len(actions),
-                "salience_score": salience.score,
-            },
-        )
+        if visual_write_filter["allowed"]:
+            self._observe_outcome(
+                signal_type="visual_turn",
+                session_id=visual_session_id,
+                actor_id=actor_id or "visual-target",
+                payload={
+                    "modality": "vision",
+                    "decision": decision.decision_type,
+                    "action_count": len(actions),
+                    "salience_score": salience.score,
+                    "write_policy_version": "meaningful_event_v1",
+                    "trace_reason": visual_write_filter["reason"],
+                },
+            )
         return [action for action in actions if action.kind == "move_head_action"]
 
     def build_world_observation_payload(
