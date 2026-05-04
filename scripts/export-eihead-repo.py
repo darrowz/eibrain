@@ -175,7 +175,7 @@ def export_eihead_repo(
     for rel_file in OPTIONAL_FILES:
         source_file = source_root / rel_file
         if source_file.exists():
-            copied.append(_copy_file(source_file, target / rel_file))
+            copied.append(_copy_file(source_file, target / rel_file, target_root=target))
     for pattern in COPY_GLOBS:
         copied.extend(_copy_glob(source_root, target, pattern))
 
@@ -277,7 +277,7 @@ def _copy_directory(source_root: Path, target_root: Path, rel_dir: str) -> list[
         if not source_path.is_file():
             continue
         rel_path = source_path.relative_to(source_root)
-        copied.append(_copy_file(source_path, target_root / rel_path))
+        copied.append(_copy_file(source_path, target_root / rel_path, target_root=target_root))
     return copied
 
 
@@ -285,13 +285,16 @@ def _copy_glob(source_root: Path, target_root: Path, pattern: str) -> list[str]:
     matches = sorted(path for path in source_root.glob(pattern) if path.is_file())
     if not matches:
         raise FileNotFoundError(f"required source pattern matched no files: {pattern}")
-    return [_copy_file(path, target_root / path.relative_to(source_root)) for path in matches]
+    return [
+        _copy_file(path, target_root / path.relative_to(source_root), target_root=target_root)
+        for path in matches
+    ]
 
 
-def _copy_file(source_path: Path, target_path: Path) -> str:
+def _copy_file(source_path: Path, target_path: Path, *, target_root: Path) -> str:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, target_path)
-    return _relative_output_path(target_path)
+    return _relative_output_path(target_path, target_root=target_root)
 
 
 def _write_templates(target_root: Path) -> tuple[str, ...]:
@@ -308,13 +311,9 @@ def _write_templates(target_root: Path) -> tuple[str, ...]:
     return tuple(generated)
 
 
-def _relative_output_path(target_path: Path) -> str:
+def _relative_output_path(target_path: Path, *, target_root: Path) -> str:
     # Callers only need stable manifest paths, not absolute local machine paths.
-    parts = target_path.parts
-    for marker in ("eihead", "apps", "config", "deploy", "docs", "eibrain"):
-        if marker in parts:
-            return Path(*parts[parts.index(marker) :]).as_posix()
-    return target_path.name
+    return target_path.relative_to(target_root).as_posix()
 
 
 def _should_skip(path: Path, root: Path) -> bool:

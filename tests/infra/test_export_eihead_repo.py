@@ -61,6 +61,17 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "eibrain/protocol/__init__.py" in result.generated
 
 
+def test_export_manifest_paths_stay_relative_when_target_is_named_eihead(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead"
+
+    result = module.export_eihead_repo(target, repo_root=REPO_ROOT)
+
+    assert "apps/head_runtime/__main__.py" in result.copied
+    assert "eihead/runtime/cli.py" in result.copied
+    assert "eihead/apps/head_runtime/__main__.py" not in result.copied
+
+
 def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead-standalone"
