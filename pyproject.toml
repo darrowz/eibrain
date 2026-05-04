@@ -21,9 +21,11 @@ eibrain-verify-body = "apps.body_runtime.verify_hardware:main"
 eibrain-vision-hailo = "apps.body_runtime.vision_hailo_service:main"
 eibrain-plan-exploration = "apps.plan_exploration:main"
 eibrain-execute-exploration = "apps.execute_exploration:main"
+eihead-runtime = "eihead.runtime.cli:main"
+eihead-verify-hardware = "eihead.runtime.cli:verify_hardware_main"
 
 [tool.setuptools.packages.find]
-include = ["eibrain*", "apps*"]
+include = ["eibrain*", "apps*", "eihead*"]
 exclude = ["config*", "tests*", "docs*", "scripts*"]
 
 [tool.pytest.ini_options]

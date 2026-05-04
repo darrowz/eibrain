@@ -1,0 +1,233 @@
+# eihead Implementation Plan
+
+目标：先把 honjia 的真实硬件头部运行时从 `eibrain` 中剥离为 `eihead`，
+同时建立 `eiprotocol` 的最小统一协议。第一阶段不引入新的安全权限层，
+避免在语音、视觉、云台已经打通的链路上叠加额外变量。
+
+## Scope
+
+本轮实施只做四件事：
+
+- 建立 `eiprotocol` 的事件、观测、动作、能力注册、执行结果协议。
+- 建立 `/dev-project/eihead`，承接 honjia 的摄像头、麦克风、音箱、云台、Hailo、Web 监控。
+- 让 `eibrain` 通过协议调用 `eihead`，不再直接依赖 honjia 硬件实现。
+- 把执行结果写回 `eimemory` / `eitraining`，形成可追踪的反馈闭环。
+
+暂不做：
+
+- 不重构安全与权限层。
+- 不重构 `eimemory` 内部存储模型。
+- 不把大脑策略、人格、LLM 路由迁移到 `eihead`。
+- 不在第一版引入复杂消息总线；先用 HTTP JSON 加状态文件，后续再评估 WebSocket/MQTT。
+
+## Current Extraction Boundary
+
+当前 `eibrain` 中应迁往 `eihead` 的主要边界：
+
+- `apps/body_runtime/*` -> `eihead/apps/head_runtime/*`
+- `eibrain/body/*` -> `eihead/eihead/body/*`
+- `config/eibrain.honjia*.yaml` -> `eihead/config/eihead.honjia*.yaml`
+- `deploy/systemd/eibrain-monitor.service` -> `eihead/deploy/systemd/eihead-monitor.service`
+- `deploy/systemd/eibrain-vision-hailo.service` -> `eihead/deploy/systemd/eihead-vision-hailo.service`
+
+`eibrain` 中保留兼容 wrapper，直到 honjia 的 systemd 和监控全部切换完成。
+
+## Phase 0: Baseline Freeze
+
+目标：冻结当前可用链路，后面迁移时知道坏在迁移还是原本就坏。
+
+实施项：
+
+- 在 honxin `/dev-project/eibrain` 确认最新主仓库状态。
+- 在 honjia 记录当前服务、端口、设备节点、Web 监控状态。
+- 记录语音链路响应指标：唤醒、VAD、ASR、LLM、TTS、播放。
+- 记录视觉链路指标：摄像头取帧、Hailo 检测、检测框、云台动作。
+- 给当前 eibrain 打 baseline tag 或至少记录 commit。
+
+验收标准：
+
+- honjia `18080` 能看到语音、视觉、云台、服务健康指标。
+- 可完成一轮语音对话。
+- 摄像头取帧和 Hailo 检测结果可见。
+- 云台保持当前可控状态，不因准备工作退化。
+
+## Phase 1: eiprotocol MVP
+
+目标：先统一数据形状，不急着改变传输方式。
+
+建议新建 `/dev-project/eiprotocol`，也可以先在 `eibrain/eiprotocol_compat`
+落一个兼容包，再抽成独立仓库。推荐直接独立仓库，因为后续 `eihead`,
+`eibrain`, `eimemory`, `eiskills`, `eidocs` 都会依赖它。
+
+核心协议：
+
+- `Envelope`: `protocol_version`, `kind`, `source`, `target`, `trace_id`, `timestamp_ms`, `payload`
+- `CapabilityManifest`: 设备、模型、后端、健康、限制、版本。
+- `DeviceStatus`: 摄像头、麦克风、音箱、云台、Hailo、I2C、服务状态。
+- `AudioTurn`: 唤醒词、ASR 文本、置信度、音频时长、分段时间。
+- `VisionObservation`: 帧摘要、检测框、类别、分数、延迟、帧时间。
+- `HeadAction`: `speak`, `stop_speech`, `move_head`, `set_attention`, `capture_frame`
+- `ExecutionOutcome`: 动作、执行者、成功/失败、延迟、错误、观测结果。
+- `UserFeedback`: 用户显式纠正、满意/不满意、偏好信号。
+
+验收标准：
+
+- 协议包有单元测试和 JSON round-trip 测试。
+- 每个消息都有 `trace_id`，能串起一次语音或视觉交互。
+- 现有 eibrain 可通过兼容 adapter 使用这些模型，不要求一次性替换所有字典。
+
+## Phase 2: eihead Repository Scaffold
+
+目标：建立新仓库和运行框架，但先不拆断旧链路。
+
+目录建议：
+
+```text
+eihead
+├── apps/head_runtime
+├── eihead/body
+├── eihead/protocol
+├── eihead/monitoring
+├── eihead/services
+├── config
+├── deploy/systemd
+├── scripts
+└── tests
+```
+
+实施项：
+
+- 在 honxin `/dev-project/eihead` 初始化仓库。
+- 迁入 `apps/body_runtime`，重命名为 `apps/head_runtime`。
+- 迁入 `eibrain/body` 的硬件驱动、器官状态、语音、视觉、云台代码。
+- 保留原 eibrain 路径 wrapper，转发到 `eihead` 或通过 HTTP client 调用。
+- 建立 `eihead status`、`eihead verify-hardware`、`eihead serve` 三个入口。
+
+验收标准：
+
+- 在开发机和 honxin 上能跑单元测试。
+- 在 honjia 上能独立启动 `eihead` 的 monitor/runtime，不依赖 eibrain 内部 import。
+- 旧 `eibrain-monitor.service` 仍可用，避免一次迁移把现场链路打断。
+
+## Phase 3: Capability Registration
+
+目标：`eihead` 启动后主动告诉 `eibrain` 自己有哪些能力。
+
+传输方式：
+
+- 第一版：`POST /api/head/capabilities` 到 eibrain。
+- 同时在 honjia 写本地状态文件，供 Web 监控和故障排查读取。
+
+能力内容：
+
+- 设备：`/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, 麦克风输入、音箱输出。
+- 模型：ASR、TTS、Hailo HEF、视觉后处理、embedding。
+- 健康：online/offline/degraded、错误、最近成功时间、延迟。
+- 限制：云台水平角度范围、速率限制、可用动作。
+
+验收标准：
+
+- eibrain Web/API 能看到 honjia 的 `CapabilityManifest`。
+- honjia Web `18080` 能显示同一份能力和健康数据。
+- 替换设备或模型配置时，不需要改 eibrain 认知代码。
+
+## Phase 4: Runtime Protocol Bridge
+
+目标：让 eibrain 与 eihead 通过协议交互。
+
+eihead -> eibrain：
+
+- `AudioTurn`: 语音识别结果进入对话链。
+- `VisionObservation`: 检测框、分数、画面摘要进入视觉链。
+- `DeviceStatus`: 设备状态进入监控和健康评估。
+- `ExecutionOutcome`: 语音播放、云台动作、视觉处理结果写回。
+
+eibrain -> eihead：
+
+- `SpeakAction`: TTS/播放。
+- `MoveHeadAction`: 水平云台动作。
+- `StopSpeechAction`: 打断播放。
+- `AttentionIntent`: 注视、跟随、休眠、唤醒等状态。
+- `CaptureFrameAction`: 诊断取帧。
+
+验收标准：
+
+- 语音对话仍能完成，且 trace 能看到 ASR -> LLM -> TTS -> 播放。
+- 视觉检测框和分数仍能显示在 honjia Web 监控。
+- 云台动作可以从 eibrain 通过 action 下发到 eihead。
+
+## Phase 5: Web Monitoring Split
+
+目标：Web 监控从“看似正常但没数据”变成真实数据面板。
+
+面板分层：
+
+- `Runtime`: 服务心跳、刷新频率、平均延迟、错误。
+- `Ear`: 输入设备、VAD、ASR、最近文本、分段耗时。
+- `Mouth`: TTS provider、合成耗时、播放状态、错误。
+- `Eye`: 摄像头、Hailo、FPS、检测框、分数、最近帧。
+- `Neck`: 当前水平角、目标角、动作频率、抖动抑制状态。
+- `Protocol`: 最近 `trace_id`、capability、observation、action、outcome。
+
+验收标准：
+
+- 每个面板字段都有真实来源；没有来源的字段显示 `unknown` 或 `not wired`，不能假正常。
+- 最近一轮对话和最近一轮视觉追踪可通过 `trace_id` 串起来。
+- 刷新后布局和数据都保持稳定。
+
+## Phase 6: Memory And Training Feedback
+
+目标：把“做了什么、结果如何、下次怎么改”沉淀下来。
+
+写入 eimemory：
+
+- 重要对话回合。
+- 用户身份/偏好/纠正。
+- 视觉识别到的稳定人物或场景事件。
+- 执行动作结果和失败原因。
+
+写入 eitraining：
+
+- 可复盘的完整 trace。
+- ASR 误识别样本。
+- LLM 低质量回复样本。
+- 云台追踪抖动/丢失目标样本。
+- 用户明确反馈的好/坏案例。
+
+验收标准：
+
+- 最近一轮对话可在 eimemory 查到写入记录。
+- 最近一次动作 outcome 可在 eimemory 或 eitraining 查到。
+- 反馈不直接污染长期人格记忆，需经过 `MultimodalMemoryPolicy` 分类。
+
+## Phase 7: Deployment Cutover
+
+目标：把 honjia 的 systemd 从 `eibrain-*` 平滑切到 `eihead-*`。
+
+步骤：
+
+1. honxin `/dev-project/eihead` 确认为主仓库。
+2. 同步 `eihead` 到 honjia 标准路径，例如 `/opt/eihead/current`。
+3. 新增并启动 `eihead-monitor.service`、`eihead-runtime.service`、`eihead-vision-hailo.service`。
+4. 保留旧 `eibrain-monitor.service` wrapper 一段时间，指向新服务或反向代理。
+5. Web 端确认 `18080` 指向 `eihead` monitor。
+6. eibrain 配置改为远程调用 `eihead`，不再加载 honjia 本地硬件 driver。
+7. 连续测试语音、视觉、云台、Web、记忆写回。
+8. 再移除旧服务或标记 deprecated。
+
+验收标准：
+
+- honjia 重启后 `eihead` 自动常驻。
+- honxin eibrain 重启后能重新发现 honjia capability。
+- GitHub、honxin `/dev-project`、honjia 部署路径三方版本可追踪。
+
+## Recommended Work Order
+
+推荐先做这三件，因为风险最低且后续全部依赖它们：
+
+1. `eiprotocol` MVP：消息模型、JSON schema、trace_id。
+2. `eihead` scaffold：复制而不是大改，先让独立仓库能跑。
+3. capability + monitor：先让 honjia 的真实设备能力和状态稳定显示。
+
+完成这三步后，再迁移语音、视觉、云台 action bridge。这样每一步都有回滚点，
+不会把已经打通的现场链路重新搅乱。
