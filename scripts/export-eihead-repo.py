@@ -104,6 +104,21 @@ FUTURE_CAPABILITIES = (
     },
 )
 
+NATIVE_REALTIME_EYE_FILES = (
+    {
+        "path": "eihead/eye/adapters.py",
+        "role": "Realtime GStreamer/Hailo adapter scaffold for /dev/video0 camera frames and /dev/hailo0 detections.",
+    },
+    {
+        "path": "eihead/eye/realtime.py",
+        "role": "Realtime eye pipeline contracts shared by native adapters and monitor status.",
+    },
+    {
+        "path": "eihead/monitoring/realtime_vision.py",
+        "role": "Monitor payload normalizer for live realtime eye data and not-wired truthfulness.",
+    },
+)
+
 MIGRATION_NOTES = (
     {
         "area": "eye",
@@ -166,8 +181,19 @@ docs.
 ## Eye direction
 
 The production eye target for `/dev-project/eihead` is realtime stream detection:
-continuous camera/Hailo detections feeding live RealtimeVisionObservation payloads,
-runtime status, and the operator monitor.
+continuous `/dev/video0` camera frames and `/dev/hailo0` detections feeding live
+RealtimeVisionObservation payloads, runtime status, and the operator monitor.
+
+The standalone export intentionally includes the native realtime eye adapter and
+monitor payload files:
+
+- `eihead/eye/adapters.py`
+- `eihead/eye/realtime.py`
+- `eihead/monitoring/realtime_vision.py`
+
+The monitor truthfulness rule is strict: missing live wiring must be shown as
+`not wired`, `not_wired`, `unknown`, or explicit offline/degraded data. Do not
+show blank or fake-normal realtime vision status.
 
 Static image detection is compatibility/test-only. Keep it only for old callers,
 fixtures, and non-hardware tests; do not treat it as the deployment direction.
@@ -429,6 +455,7 @@ def _write_export_manifest(
         },
         "transitional_packages": list(TRANSITIONAL_PACKAGES),
         "runtime_entrypoints": list(RUNTIME_ENTRYPOINTS),
+        "native_realtime_eye_files": list(NATIVE_REALTIME_EYE_FILES),
         "future_capabilities": list(FUTURE_CAPABILITIES),
         "migration_notes": list(MIGRATION_NOTES),
         "exported_paths": {

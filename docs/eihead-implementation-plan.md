@@ -13,7 +13,7 @@
 - 让 `eibrain` 通过协议调用 `eihead`，不再直接依赖 honjia 硬件实现。
 - 把执行结果写回 `eimemory` / `eitraining`，形成可追踪的反馈闭环。
 
-Eye 方向单独明确：正式目标是 realtime stream detection，也就是从
+Eye 方向单独明确：正式目标是 `/dev/video0` + `/dev/hailo0` 的 realtime stream detection，也就是从
 摄像头/Hailo 连续流产生 `RealtimeVisionObservation`、运行状态和监控检测框。
 静态图片检测只作为兼容/测试占位，不作为部署目标或验收主线。
 
@@ -169,7 +169,7 @@ eibrain -> eihead：
 - `Runtime`: 服务心跳、刷新频率、平均延迟、错误。
 - `Ear`: 输入设备、VAD、ASR、最近文本、分段耗时。
 - `Mouth`: TTS provider、合成耗时、播放状态、错误。
-- `Eye`: realtime stream detection 状态、摄像头、Hailo、FPS、检测框、分数、最近帧。
+- `Eye`: realtime stream detection 状态、`/dev/video0` 摄像头、`/dev/hailo0` Hailo、FPS、检测框、分数、最近帧。
 - `Neck`: 当前水平角、目标角、动作频率、抖动抑制状态。
 - `Protocol`: 最近 `trace_id`、capability、observation、action、outcome。
 

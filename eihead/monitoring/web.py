@@ -400,6 +400,12 @@ def _render_index(app: Any, timestamp: float) -> str:
     )
     realtime_state = _display_value(realtime.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
+    realtime_diagnostic = realtime.get("diagnostic") if isinstance(realtime.get("diagnostic"), Mapping) else {}
+    vision_status = _display_value(realtime_diagnostic.get("status") or realtime.get("status", "unknown"))
+    vision_fps = _display_value(_metric_value(realtime_diagnostic.get("fps")))
+    vision_top_detection = _display_value(_top_detection_summary(realtime_diagnostic.get("top_detection")))
+    vision_frame_age = _display_value(_metric_value(realtime_diagnostic.get("last_frame_age"), suffix="s"))
+    vision_backend = _display_value(realtime_diagnostic.get("backend") or "unknown")
 
     status_json = _json_for_html(status)
     capabilities_json = _json_for_html(capabilities)
@@ -420,7 +426,9 @@ def _render_index(app: Any, timestamp: float) -> str:
     .grid {{ display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
     .card {{ background: #fffaf0; border: 1px solid #d7cbb3; border-radius: 14px; padding: 16px; }}
     .label {{ color: #5c6b61; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }}
+    .metric {{ display: block; margin-top: 4px; font-size: 22px; font-weight: 700; }}
     code, pre {{ background: #10231a; color: #d9f3df; border-radius: 10px; }}
+    code {{ padding: 1px 5px; }}
     pre {{ overflow: auto; padding: 14px; }}
     a {{ color: #315f4c; }}
   </style>
@@ -438,6 +446,15 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
       <div class="card"><div class="label">Health API</div><a href="/health">/health</a></div>
     </section>
+    <h2>Realtime Vision Diagnostic</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Status</div><span class="metric">{vision_status}</span></div>
+      <div class="card"><div class="label">FPS</div><span class="metric">{vision_fps}</span></div>
+      <div class="card"><div class="label">Top detection</div><span class="metric">{vision_top_detection}</span></div>
+      <div class="card"><div class="label">Frame age</div><span class="metric">{vision_frame_age}</span></div>
+      <div class="card"><div class="label">Backend</div><span class="metric">{vision_backend}</span></div>
+    </section>
+    <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
     <h2>Status</h2>
     <pre>{status_json}</pre>
     <h2>Capabilities</h2>
@@ -473,6 +490,22 @@ def _json_for_html(payload: Mapping[str, Any]) -> str:
 
 def _display_value(value: Any) -> str:
     return html.escape(str(value))
+
+
+def _metric_value(value: Any, *, suffix: str = "") -> str:
+    if value in (None, ""):
+        return "unknown"
+    return f"{value}{suffix}"
+
+
+def _top_detection_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    label = value.get("label", "unknown")
+    score = value.get("score", value.get("confidence"))
+    if score in (None, ""):
+        return str(label)
+    return f"{label} ({score})"
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:

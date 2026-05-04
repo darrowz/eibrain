@@ -107,7 +107,6 @@ class HeadRuntimeApp:
             payload = source() if callable(source) else source
             if _is_realtime_vision_payload(payload):
                 return payload
-            return None
         return None
 
     def handle_action(self, action: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
@@ -492,8 +491,36 @@ def _is_realtime_vision_payload(payload: Any) -> bool:
             data = serialize_message(payload)
         except TypeError:
             return False
-    if data.get("kind") == "vision_observation" or data.get("primary_mode") is False:
+
+    kind = _normalized_payload_text(data.get("kind"))
+    mode = _normalized_payload_text(data.get("mode"))
+    status = _normalized_payload_text(data.get("status"))
+    schema = _normalized_payload_text(data.get("schema"))
+    source = _normalized_payload_text(data.get("source"))
+
+    if (
+        _truthy_payload_flag(data.get("not_wired"))
+        or _truthy_payload_flag(data.get("placeholder"))
+        or status in {"not_wired", "offline", "missing", "placeholder", "unavailable"}
+    ):
         return False
-    mode = str(data.get("mode", "") or "")
-    kind = str(data.get("kind", "") or "")
+    if (
+        kind == "vision_observation"
+        or data.get("primary_mode") is False
+        or _truthy_payload_flag(data.get("compatibility_mode"))
+        or mode in {"compat", "compat/static", "static", "snapshot", "vision_state"}
+        or "vision_state" in schema
+        or source == "vision_state"
+    ):
+        return False
     return kind == "realtime_vision_observation" or mode in {"realtime", "realtime_stream"}
+
+
+def _normalized_payload_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _truthy_payload_flag(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)

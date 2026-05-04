@@ -187,6 +187,42 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
 
 
+def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    result = module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+    readme = (target / "README.md").read_text(encoding="utf-8")
+
+    assert (target / "eihead/eye/realtime.py").is_file()
+    assert (target / "eihead/monitoring/realtime_vision.py").is_file()
+    assert "eihead/eye/realtime.py" in result.copied
+    assert "eihead/monitoring/realtime_vision.py" in result.copied
+    assert manifest["native_realtime_eye_files"] == [
+        {
+            "path": "eihead/eye/adapters.py",
+            "role": "Realtime GStreamer/Hailo adapter scaffold for /dev/video0 camera frames and /dev/hailo0 detections.",
+        },
+        {
+            "path": "eihead/eye/realtime.py",
+            "role": "Realtime eye pipeline contracts shared by native adapters and monitor status.",
+        },
+        {
+            "path": "eihead/monitoring/realtime_vision.py",
+            "role": "Monitor payload normalizer for live realtime eye data and not-wired truthfulness.",
+        },
+    ]
+    assert "eihead/eye/adapters.py" in result.copied
+    assert "eihead/eye/adapters.py" in readme
+    assert "eihead/eye/realtime.py" in readme
+    assert "eihead/monitoring/realtime_vision.py" in readme
+    assert "/dev/video0" in readme
+    assert "/dev/hailo0" in readme
+    assert "not wired" in readme
+    assert "Static image detection is compatibility/test-only" in readme
+
+
 def test_export_refuses_existing_target_without_force(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead-standalone"

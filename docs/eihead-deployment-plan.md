@@ -22,8 +22,12 @@ and template set only; it does not perform deployment.
 ## Eye Runtime Direction
 
 - The formal Eye runtime target is realtime stream detection from the live
-  camera/Hailo feed into `RealtimeVisionObservation` payloads, runtime status, and the
-  `18080` monitor.
+  `/dev/video0` camera plus `/dev/hailo0` Hailo feed into
+  `RealtimeVisionObservation` payloads, runtime status, and the `18080`
+  monitor.
+- The exported realtime Eye files are `eihead/eye/realtime.py` for the adapter
+  boundary and `eihead/monitoring/realtime_vision.py` for monitor payload
+  truthfulness.
 - Static-image detection is compatibility/test-only. It can support fixtures,
   old callers, and no-hardware checks, but it is not the deployment direction
   and must not be used as the primary acceptance signal.
@@ -87,8 +91,8 @@ sudo systemctl enable eihead-runtime.service eihead-monitor.service
   manifest when the runtime API supports it.
 - `curl http://127.0.0.1:18080` opens the Web monitor.
 - `/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, microphone, and speaker state
-  appear in the Web monitor as real data, degraded data, or explicit offline
-  data; blank "normal" placeholders are not acceptable.
+  appear in the Web monitor as real data, degraded data, explicit offline data,
+  `unknown`, or `not wired`; blank "normal" placeholders are not acceptable.
 - Realtime eye stream detection from `/dev/video0` and `/dev/hailo0` publishes
   frame age, FPS, detection boxes, scores, backend, and stale/error state to
   the monitor.
