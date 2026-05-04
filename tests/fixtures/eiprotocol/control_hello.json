@@ -1,0 +1,51 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_control_hello_001",
+  "type": "control",
+  "name": "ei.control.hello",
+  "time": "2026-05-04T10:32:59.900+08:00",
+  "sequence": 99,
+  "requestId": "req_control_hello_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "",
+  "correlationId": "",
+  "causationId": "",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "honjia",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": 5000,
+  "mode": {
+    "conversationState": "idle",
+    "interactionMode": "system"
+  },
+  "content": {
+    "protocolVersion": "eiprotocol/0.1",
+    "sessionId": "ses_honjia_golden_001",
+    "nodeId": "honjia",
+    "metadata": {
+      "transport": "http-json"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

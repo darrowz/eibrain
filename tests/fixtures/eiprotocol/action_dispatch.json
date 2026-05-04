@@ -1,0 +1,69 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_action_dispatch_001",
+  "type": "action",
+  "name": "ei.action.dispatch",
+  "time": "2026-05-04T10:33:01.300+08:00",
+  "sequence": 108,
+  "requestId": "req_action_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "evt_agent_final_001",
+  "causationId": "evt_policy_decision_001",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "high",
+  "ttlMs": 3000,
+  "mode": {
+    "conversationState": "responding",
+    "interactionMode": "free"
+  },
+  "content": {
+    "actionId": "act_head_turn_golden_001",
+    "actionType": "move_head",
+    "target": "neck.pan",
+    "params": {
+      "targetAngle": 15,
+      "durationMs": 240,
+      "reason": "face user while speaking"
+    },
+    "riskLevel": "L1",
+    "idempotencyKey": "idem_act_head_turn_golden_001",
+    "requiresPolicy": true,
+    "timeline": [
+      {
+        "atMs": 0,
+        "operation": "move"
+      },
+      {
+        "atMs": 240,
+        "operation": "hold"
+      }
+    ],
+    "metadata": {
+      "planner": "gesture_sync"
+    }
+  },
+  "policy": {
+    "decision": "allow",
+    "riskLevel": "L1",
+    "decisionId": "pol_golden_001",
+    "requiredAck": false,
+    "reason": "low-risk head motion",
+    "expiresAt": "2026-05-04T10:33:04.300+08:00",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "metadata": {}
+  }
+}

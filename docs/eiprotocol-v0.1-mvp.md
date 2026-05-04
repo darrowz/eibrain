@@ -1,6 +1,6 @@
 # eiprotocol v0.1 MVP
 
-Status date: 2026-05-04
+Status date: 2026-05-05
 
 This MVP is the first shared protocol slice for `eihead`, `eibrain`,
 `eimemory`, `eiskills`, `eidocs`, and future `eibody` work. It is based on the
@@ -65,20 +65,27 @@ These are useful but intentionally not implementation blockers for v0.1:
 
 ## Current Code Shape
 
-The first implementation lives in top-level package `eiprotocol`:
+The implementation lives in top-level package `eiprotocol`:
 
 - `EventEnvelope`, `SourceRef`, `TargetRef`, `PolicyState`
 - `CapabilityManifest`, `Capability`, `DeviceStatus`
 - `AudioTurn`, `RealtimeVisionObservation`, `Detection`
 - `HeadAction`, `ExecutionOutcome`, `UserFeedback`
 - `validate_event`
+- `EventDefinition`, `list_event_names`, `get_event_definition`
+- `validate_event_strict`, `assert_event_valid`, `ValidationIssue`
+- `build_event`, specialized builders, and `EventIdFactory`
+- `dumps_event`, `loads_event`, and canonical JSON helpers
+- `classify_event` routing metadata for all cataloged v0.1 events
 
 The package is included in `pyproject.toml`, exported into standalone
 `eiprotocol` builds by `scripts/export-eiprotocol-repo.py`, and carried into
-standalone `eihead` builds by `scripts/export-eihead-repo.py`. This keeps the
-current monorepo working while establishing `/dev-project/eiprotocol` as the
-shared protocol repository. When the eihead export is given
-`--eiprotocol-repo-root`, its manifest pins the independent protocol revision.
+standalone `eihead` builds by `scripts/export-eihead-repo.py`. The standalone
+export includes protocol modules, JSON fixtures, standalone-safe tests, and
+these protocol docs. This keeps the current monorepo working while establishing
+`/dev-project/eiprotocol` as the shared protocol repository. When the eihead
+export is given `--eiprotocol-repo-root`, its manifest pins the independent
+protocol revision.
 
 ## Required Next Supplements
 
@@ -90,8 +97,9 @@ three follow-up supplements before real cutover:
 2. Compatibility adapters: keep expanding conversion between existing
    `eibrain.protocol` / `eihead.protocol` classes and `eiprotocol` envelope
    events as more realtime surfaces move out of compatibility mode.
-3. Golden fixtures: stored JSON examples for voice barge-in, realtime vision,
-   pan-only neck action, execution outcome, and user feedback.
+3. Golden fixtures: keep expanding examples as new realtime transports and
+   device modules are added. The current fixture set covers every cataloged
+   v0.1 event name.
 
 Transport acceptance for the next batch:
 
@@ -102,6 +110,7 @@ Transport acceptance for the next batch:
 - Missing handlers include a reason and never return blank payloads or
   fake-normal success.
 
-Acceptance for this MVP is intentionally code-level: JSON round-trip tests,
-basic validation tests, standalone `eihead` export import smoke, and the
-`/events` transport truthfulness checks must pass.
+Acceptance for this MVP is intentionally code-level: catalog/fixture parity,
+strict validation tests, JSON codec round-trips, standalone export tests,
+standalone `eihead` export import smoke, and the `/events` transport
+truthfulness checks must pass.

@@ -1,0 +1,57 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_training_signal_001",
+  "type": "training",
+  "name": "ei.training.signal",
+  "time": "2026-05-04T10:33:02.000+08:00",
+  "sequence": 117,
+  "requestId": "req_training_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "evt_memory_write_committed_001",
+  "causationId": "evt_action_complete_001",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": null,
+  "mode": {
+    "conversationState": "reflecting",
+    "interactionMode": "free"
+  },
+  "content": {
+    "signalId": "train_signal_golden_001",
+    "sourceEventId": "evt_action_complete_001",
+    "reward": 0.7,
+    "label": "successful_multimodal_turn",
+    "features": {
+      "bargeIn": false,
+      "memoryUsed": true,
+      "actionCompleted": true
+    },
+    "metadata": {
+      "consumer": "offline-eval"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

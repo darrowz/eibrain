@@ -1,0 +1,378 @@
+"""Queryable eiprotocol v0.1 event catalog."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+
+@dataclass(frozen=True, slots=True)
+class EventDefinition:
+    name: str
+    event_type: str
+    plane: str
+    direction: str
+    realtime: bool
+    round_scoped: bool
+    side_effecting: bool
+    required_content_fields: tuple[str, ...]
+    description: str
+
+    def __post_init__(self) -> None:
+        fields = tuple(str(field_name) for field_name in self.required_content_fields)
+        object.__setattr__(self, "required_content_fields", fields)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "event_type": self.event_type,
+            "plane": self.plane,
+            "direction": self.direction,
+            "realtime": self.realtime,
+            "round_scoped": self.round_scoped,
+            "side_effecting": self.side_effecting,
+            "required_content_fields": list(self.required_content_fields),
+            "description": self.description,
+        }
+
+
+def _definition(
+    name: str,
+    event_type: str,
+    plane: str,
+    direction: str,
+    *,
+    realtime: bool = False,
+    round_scoped: bool = False,
+    side_effecting: bool = False,
+    required_content_fields: Iterable[str] = (),
+    description: str,
+) -> EventDefinition:
+    return EventDefinition(
+        name=name,
+        event_type=event_type,
+        plane=plane,
+        direction=direction,
+        realtime=realtime,
+        round_scoped=round_scoped,
+        side_effecting=side_effecting,
+        required_content_fields=tuple(required_content_fields),
+        description=description,
+    )
+
+
+_EVENT_DEFINITIONS: dict[str, EventDefinition] = {
+    item.name: item
+    for item in (
+        _definition(
+            "ei.control.hello",
+            "control",
+            "control",
+            "bidirectional",
+            required_content_fields=("protocolVersion",),
+            description="Opens a transport session and announces protocol compatibility.",
+        ),
+        _definition(
+            "ei.control.ping",
+            "control",
+            "control",
+            "bidirectional",
+            realtime=True,
+            required_content_fields=("pingId", "sentAt"),
+            description="Checks peer liveness with a caller-provided nonce.",
+        ),
+        _definition(
+            "ei.control.pong",
+            "control",
+            "control",
+            "bidirectional",
+            realtime=True,
+            required_content_fields=("nonce",),
+            description="Responds to a ping using the same nonce.",
+        ),
+        _definition(
+            "ei.control.resume",
+            "control",
+            "control",
+            "bidirectional",
+            required_content_fields=("sessionId",),
+            description="Requests continuation of a previously established session.",
+        ),
+        _definition(
+            "ei.control.ack",
+            "control",
+            "control",
+            "bidirectional",
+            realtime=True,
+            required_content_fields=("ackId",),
+            description="Acknowledges receipt or durable handling of another event.",
+        ),
+        _definition(
+            "ei.control.error",
+            "control",
+            "control",
+            "bidirectional",
+            realtime=True,
+            required_content_fields=("code", "message"),
+            description="Reports a protocol-level error without implying route support.",
+        ),
+        _definition(
+            "ei.error.event",
+            "error",
+            "error",
+            "bidirectional",
+            required_content_fields=("errorCode", "message"),
+            description="Reports a structured runtime or protocol error event.",
+        ),
+        _definition(
+            "ei.capability.manifest.report",
+            "capability",
+            "capability",
+            "head_to_brain",
+            required_content_fields=("manifestId", "manifestVersion", "capabilities"),
+            description="Reports runtime, modality, transport, and capability inventory.",
+        ),
+        _definition(
+            "ei.observation.audio.chunk",
+            "observation",
+            "observation",
+            "head_to_brain",
+            realtime=True,
+            required_content_fields=("streamId", "chunkIndex", "audioBase64"),
+            description="Streams an encoded audio chunk for low-latency perception.",
+        ),
+        _definition(
+            "ei.observation.vision.frame",
+            "observation",
+            "observation",
+            "head_to_brain",
+            realtime=True,
+            required_content_fields=("frameId",),
+            description="Reports a realtime vision frame or frame-derived detections.",
+        ),
+        _definition(
+            "ei.dialogue.asr.partial",
+            "dialogue",
+            "dialogue",
+            "head_to_brain",
+            realtime=True,
+            round_scoped=True,
+            required_content_fields=("text", "final"),
+            description="Streams an interim speech recognition transcript for a round.",
+        ),
+        _definition(
+            "ei.dialogue.asr.final",
+            "dialogue",
+            "dialogue",
+            "head_to_brain",
+            round_scoped=True,
+            required_content_fields=("text", "final"),
+            description="Reports the final speech recognition transcript for a round.",
+        ),
+        _definition(
+            "ei.dialogue.agent.delta",
+            "dialogue",
+            "dialogue",
+            "brain_to_head",
+            realtime=True,
+            round_scoped=True,
+            required_content_fields=("delta",),
+            description="Streams an incremental assistant response token or text span.",
+        ),
+        _definition(
+            "ei.dialogue.agent.final",
+            "dialogue",
+            "dialogue",
+            "brain_to_head",
+            round_scoped=True,
+            required_content_fields=("text",),
+            description="Reports the completed assistant response for the round.",
+        ),
+        _definition(
+            "ei.dialogue.tts.delta",
+            "dialogue",
+            "dialogue",
+            "brain_to_head",
+            realtime=True,
+            round_scoped=True,
+            required_content_fields=("streamId", "chunkIndex", "audioBase64"),
+            description="Streams incremental speech synthesis content for playback.",
+        ),
+        _definition(
+            "ei.dialogue.tts.final",
+            "dialogue",
+            "dialogue",
+            "brain_to_head",
+            round_scoped=True,
+            required_content_fields=("streamId", "final"),
+            description="Marks speech synthesis content complete for the round.",
+        ),
+        _definition(
+            "ei.dialogue.interrupt.requested",
+            "dialogue",
+            "dialogue",
+            "head_to_brain",
+            realtime=True,
+            round_scoped=True,
+            required_content_fields=("reason",),
+            description="Requests interruption of in-flight dialogue or playback.",
+        ),
+        _definition(
+            "ei.action.request",
+            "action",
+            "action",
+            "brain_to_head",
+            round_scoped=True,
+            side_effecting=True,
+            required_content_fields=("actionId", "actionType", "target", "idempotencyKey"),
+            description="Requests a physical or external action with idempotency metadata.",
+        ),
+        _definition(
+            "ei.action.dispatch",
+            "action",
+            "action",
+            "brain_to_head",
+            realtime=True,
+            round_scoped=True,
+            side_effecting=True,
+            required_content_fields=("actionId", "actionType", "target", "idempotencyKey"),
+            description="Dispatches an approved action to an executor.",
+        ),
+        _definition(
+            "ei.action.progress",
+            "action",
+            "action",
+            "head_to_brain",
+            realtime=True,
+            round_scoped=True,
+            required_content_fields=("actionId", "status"),
+            description="Reports in-flight action status without requesting new effects.",
+        ),
+        _definition(
+            "ei.action.complete",
+            "action",
+            "action",
+            "head_to_brain",
+            round_scoped=True,
+            required_content_fields=("actionId", "status"),
+            description="Reports terminal action completion status.",
+        ),
+        _definition(
+            "ei.action.emergency.stop",
+            "action",
+            "action",
+            "bidirectional",
+            realtime=True,
+            round_scoped=True,
+            side_effecting=True,
+            required_content_fields=("idempotencyKey", "reason"),
+            description="Requests immediate halt of unsafe or unwanted action.",
+        ),
+        _definition(
+            "ei.policy.decision",
+            "policy",
+            "policy",
+            "brain_to_head",
+            round_scoped=True,
+            required_content_fields=("decision", "riskLevel"),
+            description="Communicates a policy gate decision for a proposed operation.",
+        ),
+        _definition(
+            "ei.memory.recall.request",
+            "memory",
+            "memory",
+            "brain_internal",
+            round_scoped=True,
+            required_content_fields=("query",),
+            description="Requests relevant memory retrieval for the active round.",
+        ),
+        _definition(
+            "ei.memory.recall.result",
+            "memory",
+            "memory",
+            "brain_internal",
+            round_scoped=True,
+            required_content_fields=("results",),
+            description="Returns memory recall candidates and scores.",
+        ),
+        _definition(
+            "ei.memory.write.proposed",
+            "memory",
+            "memory",
+            "brain_internal",
+            round_scoped=True,
+            required_content_fields=("writeId", "proposal"),
+            description="Proposes a memory write before commitment.",
+        ),
+        _definition(
+            "ei.memory.write.committed",
+            "memory",
+            "memory",
+            "brain_internal",
+            round_scoped=True,
+            side_effecting=True,
+            required_content_fields=("memoryId",),
+            description="Confirms that a memory write was committed.",
+        ),
+        _definition(
+            "ei.outcome.execution",
+            "outcome",
+            "outcome",
+            "head_to_brain",
+            round_scoped=True,
+            required_content_fields=("outcomeId", "success", "status"),
+            description="Reports execution outcome details for an action or task.",
+        ),
+        _definition(
+            "ei.outcome.user.feedback",
+            "outcome",
+            "outcome",
+            "head_to_brain",
+            round_scoped=True,
+            required_content_fields=("feedbackId",),
+            description="Captures explicit user feedback about an interaction outcome.",
+        ),
+        _definition(
+            "ei.training.signal",
+            "training",
+            "training",
+            "brain_internal",
+            round_scoped=True,
+            required_content_fields=("signalId", "label"),
+            description="Records a training or evaluation signal derived from a round.",
+        ),
+    )
+}
+
+
+def get_event_definition(name: str) -> EventDefinition | None:
+    return _EVENT_DEFINITIONS.get(name)
+
+
+def require_event_definition(name: str) -> EventDefinition:
+    definition = get_event_definition(name)
+    if definition is None:
+        raise KeyError(f"Unknown eiprotocol event: {name}")
+    return definition
+
+
+def list_event_names(event_type: str | None = None, plane: str | None = None) -> list[str]:
+    return [
+        name
+        for name, definition in _EVENT_DEFINITIONS.items()
+        if (event_type is None or definition.event_type == event_type)
+        and (plane is None or definition.plane == plane)
+    ]
+
+
+def is_known_event(name: str) -> bool:
+    return name in _EVENT_DEFINITIONS
+
+
+__all__ = [
+    "EventDefinition",
+    "get_event_definition",
+    "is_known_event",
+    "list_event_names",
+    "require_event_definition",
+]

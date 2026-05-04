@@ -1,0 +1,61 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_memory_recall_result_001",
+  "type": "memory",
+  "name": "ei.memory.recall.result",
+  "time": "2026-05-04T10:33:00.260+08:00",
+  "sequence": 114,
+  "requestId": "req_memory_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "evt_memory_recall_request_001",
+  "causationId": "evt_memory_recall_request_001",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eimemory",
+    "instanceId": "memoria",
+    "deviceId": "",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": 2000,
+  "mode": {
+    "conversationState": "thinking",
+    "interactionMode": "free"
+  },
+  "content": {
+    "query": "user reminder preference for morning greeting",
+    "resultCount": 1,
+    "results": [
+      {
+        "memoryId": "mem_pref_greeting_001",
+        "score": 0.91,
+        "text": "User prefers a brief morning greeting before reminders.",
+        "sourceEventId": "evt_training_signal_001",
+        "metadata": {
+          "memoryType": "preference"
+        }
+      }
+    ],
+    "metadata": {
+      "store": "eimemory-local"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

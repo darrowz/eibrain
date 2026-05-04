@@ -1,0 +1,56 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_emergency_stop_001",
+  "type": "action",
+  "name": "ei.action.emergency.stop",
+  "time": "2026-05-04T10:33:01.650+08:00",
+  "sequence": 111,
+  "requestId": "req_action_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "evt_action_dispatch_001",
+  "causationId": "evt_interrupt_requested_001",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "honjia",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "emergency",
+  "ttlMs": 500,
+  "mode": {
+    "conversationState": "interrupted",
+    "interactionMode": "free"
+  },
+  "content": {
+    "actionId": "act_emergency_stop_golden_001",
+    "idempotencyKey": "idem_emergency_stop_golden_001",
+    "reason": "user_interrupt",
+    "stopTargets": [
+      "neck.pan",
+      "mouth.tts"
+    ],
+    "safeState": "motors_idle_audio_muted",
+    "metadata": {
+      "operator": "local_runtime"
+    }
+  },
+  "policy": {
+    "decision": "allow",
+    "riskLevel": "L2",
+    "decisionId": "pol_emergency_stop_golden_001",
+    "requiredAck": true,
+    "reason": "emergency stop is always permitted",
+    "expiresAt": "2026-05-04T10:33:02.650+08:00",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "metadata": {}
+  }
+}

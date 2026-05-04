@@ -4,17 +4,41 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .models import validate_event
+from .catalog import get_event_definition
+from .validation import ValidationIssue, validate_event_strict
 
 
-_SUPPORTED_EVENT_ROUTES = {
+_ROUTE_NAMES = {
+    "ei.control.hello": "control_hello",
+    "ei.control.ping": "control_ping",
+    "ei.control.pong": "control_pong",
+    "ei.control.resume": "control_resume",
+    "ei.control.ack": "control_ack",
+    "ei.control.error": "control_error",
+    "ei.error.event": "error_event",
     "ei.capability.manifest.report": "capability_manifest",
+    "ei.observation.audio.chunk": "audio_chunk",
+    "ei.observation.vision.frame": "realtime_vision_frame",
     "ei.dialogue.asr.partial": "asr_partial",
     "ei.dialogue.asr.final": "asr_final",
-    "ei.observation.vision.frame": "realtime_vision_frame",
+    "ei.dialogue.agent.delta": "agent_delta",
+    "ei.dialogue.agent.final": "agent_final",
+    "ei.dialogue.tts.delta": "tts_delta",
+    "ei.dialogue.tts.final": "tts_final",
+    "ei.dialogue.interrupt.requested": "interrupt_requested",
     "ei.action.request": "action_request",
+    "ei.action.dispatch": "action_dispatch",
+    "ei.action.progress": "action_progress",
+    "ei.action.complete": "action_complete",
+    "ei.action.emergency.stop": "action_emergency_stop",
+    "ei.policy.decision": "policy_decision",
+    "ei.memory.recall.request": "memory_recall_request",
+    "ei.memory.recall.result": "memory_recall_result",
+    "ei.memory.write.proposed": "memory_write_proposed",
+    "ei.memory.write.committed": "memory_write_committed",
     "ei.outcome.execution": "execution_outcome",
     "ei.outcome.user.feedback": "user_feedback",
+    "ei.training.signal": "training_signal",
 }
 
 _ACTION_CONTENT_FIELDS = (
@@ -33,14 +57,15 @@ def classify_event(event: Any) -> dict[str, Any]:
     if coercion_errors:
         return _invalid_route(payload, coercion_errors)
 
-    validation_errors = validate_event(payload)
+    validation_errors = [_issue_to_error(issue) for issue in validate_event_strict(payload)]
     if validation_errors:
         return _invalid_route(payload, validation_errors)
 
     event_name = _text(payload.get("name"))
     event_type = _text(payload.get("type"))
-    route = _SUPPORTED_EVENT_ROUTES.get(event_name)
-    if route is None:
+    definition = get_event_definition(event_name)
+    route_name = _ROUTE_NAMES.get(event_name)
+    if definition is None or route_name is None:
         return {
             "status": "not_processed",
             "reason": "unsupported_event_name",
@@ -50,11 +75,16 @@ def classify_event(event: Any) -> dict[str, Any]:
 
     route_description: dict[str, Any] = {
         "status": "routed",
-        "route": route,
         "eventName": event_name,
         "eventType": event_type,
+        "route": route_name,
+        "plane": definition.plane,
+        "sideEffecting": definition.side_effecting,
+        "roundScoped": definition.round_scoped,
+        "realtime": definition.realtime,
+        "knownEvent": True,
     }
-    if route == "action_request":
+    if definition.event_type == "action":
         route_description.update(_action_fields(payload))
     return route_description
 
@@ -110,6 +140,12 @@ def _action_fields(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _text(value: Any) -> str:
     return str(value or "")
+
+
+def _issue_to_error(issue: ValidationIssue) -> str:
+    if issue.code in {"required", "invalid_spec_version", "invalid_content", "missing_idempotency_key"}:
+        return issue.message
+    return f"{issue.code} at {issue.path}: {issue.message}"
 
 
 __all__ = ["classify_event"]

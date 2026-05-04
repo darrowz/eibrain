@@ -214,14 +214,7 @@ class HeadRuntimeApp:
             self.event_journal.append(event, outcome, trace_id=effective_trace_id)
             return outcome
 
-        if route_name in {
-            "capability_manifest",
-            "asr_partial",
-            "asr_final",
-            "realtime_vision_frame",
-            "execution_outcome",
-            "user_feedback",
-        }:
+        if route.get("status") == "routed":
             outcome = {
                 **common,
                 "ok": True,

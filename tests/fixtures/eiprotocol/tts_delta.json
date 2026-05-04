@@ -1,0 +1,58 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_tts_delta_001",
+  "type": "dialogue",
+  "name": "ei.dialogue.tts.delta",
+  "time": "2026-05-04T10:33:00.720+08:00",
+  "sequence": 105,
+  "requestId": "req_voice_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "evt_agent_final_001",
+  "causationId": "evt_agent_final_001",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 1000,
+  "mode": {
+    "conversationState": "speaking",
+    "interactionMode": "free"
+  },
+  "content": {
+    "streamId": "tts_stream_golden_001",
+    "chunkIndex": 0,
+    "audioBase64": "T0dnUwACAAAAAAAAAAB0dHNfZGVsdGFfZ29sZGVu",
+    "mimeType": "audio/ogg; codecs=opus",
+    "textRange": {
+      "start": 0,
+      "end": 21
+    },
+    "durationMs": 360,
+    "final": false,
+    "metadata": {
+      "voice": "hongtu-default"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "metadata": {}
+  }
+}

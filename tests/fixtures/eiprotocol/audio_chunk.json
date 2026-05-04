@@ -1,0 +1,56 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_audio_chunk_001",
+  "type": "observation",
+  "name": "ei.observation.audio.chunk",
+  "time": "2026-05-04T10:33:00.100+08:00",
+  "sequence": 102,
+  "requestId": "req_voice_golden_001",
+  "sessionId": "ses_honjia_golden_001",
+  "roundId": "rnd_voice_golden_001",
+  "correlationId": "",
+  "causationId": "",
+  "traceId": "trc_golden_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "mic.u4k",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 500,
+  "mode": {
+    "conversationState": "listening",
+    "interactionMode": "free"
+  },
+  "content": {
+    "streamId": "aud_stream_golden_001",
+    "chunkIndex": 0,
+    "audioBase64": "UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=",
+    "sampleRateHz": 16000,
+    "channels": 1,
+    "encoding": "pcm_s16le",
+    "durationMs": 120,
+    "final": false,
+    "metadata": {
+      "vad": "speech"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

@@ -60,7 +60,7 @@ def test_handle_event_unknown_valid_route_is_not_processed_and_journaled() -> No
     body_runtime = _RecordingBodyRuntime()
     runtime = HeadRuntimeApp(body_runtime=body_runtime)
     event = _fixture("asr_final.json")
-    event["name"] = "ei.dialogue.agent.delta"
+    event["name"] = "ei.dialogue.agent.hidden"
     event["content"] = {"delta": "hello"}
 
     outcome = runtime.handle_event(event)
@@ -70,7 +70,7 @@ def test_handle_event_unknown_valid_route_is_not_processed_and_journaled() -> No
     assert outcome["processed"] is False
     assert outcome["status"] == "not_processed"
     assert outcome["reason"] == "unsupported_event_name"
-    assert outcome["event_name"] == "ei.dialogue.agent.delta"
+    assert outcome["event_name"] == "ei.dialogue.agent.hidden"
     assert body_runtime.dispatched == []
     assert runtime.recent_events()[-1]["reason"] == "unsupported_event_name"
 
@@ -118,6 +118,45 @@ def test_handle_event_records_diagnostics_routes_without_downstream_processing()
         assert outcome["status"] == "recorded"
         assert outcome["reason"] == "recorded_for_diagnostics"
     assert [record["status"] for record in runtime.recent_events()] == ["recorded"] * len(fixture_names)
+
+
+def test_handle_event_records_new_known_protocol_routes_as_diagnostics() -> None:
+    body_runtime = _RecordingBodyRuntime()
+    runtime = HeadRuntimeApp(body_runtime=body_runtime)
+    event = _fixture("asr_final.json")
+    event["name"] = "ei.dialogue.agent.delta"
+    event["content"] = {"delta": "继续", "index": 1}
+
+    outcome = runtime.handle_event(event)
+
+    assert outcome["ok"] is True
+    assert outcome["accepted"] is True
+    assert outcome["processed"] is False
+    assert outcome["status"] == "recorded"
+    assert outcome["reason"] == "recorded_for_diagnostics"
+    assert outcome["route"] == "agent_delta"
+    assert body_runtime.dispatched == []
+
+
+def test_handle_event_records_side_effecting_non_request_routes_without_dispatch() -> None:
+    body_runtime = _RecordingBodyRuntime()
+    runtime = HeadRuntimeApp(body_runtime=body_runtime)
+
+    for fixture_name, route_name in [
+        ("action_dispatch.json", "action_dispatch"),
+        ("emergency_stop.json", "action_emergency_stop"),
+        ("memory_write_committed.json", "memory_write_committed"),
+    ]:
+        outcome = runtime.handle_event(_fixture(fixture_name))
+
+        assert outcome["ok"] is True
+        assert outcome["accepted"] is True
+        assert outcome["processed"] is False
+        assert outcome["status"] == "recorded"
+        assert outcome["reason"] == "recorded_for_diagnostics"
+        assert outcome["route"] == route_name
+
+    assert body_runtime.dispatched == []
 
 
 def test_event_journal_accessors_are_json_friendly_and_limitable() -> None:

@@ -1,5 +1,29 @@
 """Shared eiprotocol v0.1 MVP contracts for EI projects."""
 
+from .builders import (
+    EventIdFactory,
+    EventIds,
+    build_action_request_event,
+    build_asr_event,
+    build_event,
+    build_execution_outcome_event,
+    build_vision_frame_event,
+)
+from .catalog import (
+    EventDefinition,
+    get_event_definition,
+    is_known_event,
+    list_event_names,
+    require_event_definition,
+)
+from .codec import (
+    EventDecodeError,
+    canonical_event_json,
+    dumps_event,
+    event_to_dict,
+    loads_event,
+)
+from .event_routing import classify_event
 from .models import (
     SPEC_VERSION,
     AudioTurn,
@@ -17,7 +41,7 @@ from .models import (
     UserFeedback,
     validate_event,
 )
-from .event_routing import classify_event
+from .validation import ValidationIssue, assert_event_valid, validate_event_strict
 
 __all__ = [
     "SPEC_VERSION",
@@ -34,6 +58,26 @@ __all__ = [
     "SourceRef",
     "TargetRef",
     "UserFeedback",
+    "EventDefinition",
+    "EventDecodeError",
+    "EventIdFactory",
+    "EventIds",
+    "ValidationIssue",
+    "assert_event_valid",
+    "build_action_request_event",
+    "build_asr_event",
+    "build_event",
+    "build_execution_outcome_event",
+    "build_vision_frame_event",
+    "canonical_event_json",
     "classify_event",
+    "dumps_event",
+    "event_to_dict",
+    "get_event_definition",
+    "is_known_event",
+    "list_event_names",
+    "loads_event",
+    "require_event_definition",
     "validate_event",
+    "validate_event_strict",
 ]

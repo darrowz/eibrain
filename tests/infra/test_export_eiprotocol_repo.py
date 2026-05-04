@@ -33,6 +33,14 @@ def _source_commit() -> str:
     ).stdout.strip()
 
 
+def _source_eiprotocol_test_files() -> list[str]:
+    return sorted(
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in (REPO_ROOT / "tests" / "protocol").glob("test_eiprotocol*.py")
+        if path.is_file() and path.name != "test_eiprotocol_bridge.py"
+    )
+
+
 def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eiprotocol-standalone"
@@ -46,6 +54,8 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
         "pyproject.toml",
         "eiprotocol/__init__.py",
         "eiprotocol/models.py",
+        "docs/eiprotocol-hardening-checklist.md",
+        "docs/eiprotocol-v0.1-mvp.md",
         "tests/protocol/test_eiprotocol_event_routing.py",
         "tests/protocol/test_eiprotocol_fixtures.py",
         "tests/protocol/test_eiprotocol_mvp.py",
@@ -55,9 +65,14 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
 
     assert "eiprotocol/__init__.py" in result.copied
     assert "eiprotocol/models.py" in result.copied
+    assert "docs/eiprotocol-hardening-checklist.md" in result.copied
+    assert "docs/eiprotocol-v0.1-mvp.md" in result.copied
     assert "tests/protocol/test_eiprotocol_event_routing.py" in result.copied
     assert "tests/protocol/test_eiprotocol_fixtures.py" in result.copied
     assert "tests/protocol/test_eiprotocol_mvp.py" in result.copied
+    for rel_path in _source_eiprotocol_test_files():
+        assert (target / rel_path).is_file(), rel_path
+        assert rel_path in result.copied
     assert result.generated == ("pyproject.toml", "README.md", ".gitignore")
     assert not (target / "eibrain").exists()
     assert not (target / "eiprotocol/__pycache__").exists()
@@ -75,10 +90,13 @@ def test_export_generates_package_metadata_and_readme_source_commit(tmp_path: Pa
 
     assert 'name = "eiprotocol"' in pyproject
     assert 'include = ["eiprotocol*"]' in pyproject
+    assert "[project.optional-dependencies]" in pyproject
+    assert 'test = ["pytest>=8"]' in pyproject
     assert 'testpaths = ["tests"]' in pyproject
     assert 'name = "eibrain"' not in pyproject
     assert _source_commit() in readme
     assert "scripts/export-eiprotocol-repo.py" in readme
+    assert 'python -m pip install -e ".[test]"' in readme
     assert "__pycache__/" in gitignore
     assert "*.py[cod]" in gitignore
 
@@ -143,22 +161,17 @@ def test_exported_repo_imports_eiprotocol_from_target_and_round_trips_json(
     assert result.returncode == 0, result.stderr
 
 
-def test_exported_repo_runs_mvp_fixture_and_event_routing_tests(tmp_path: Path) -> None:
+def test_exported_repo_runs_all_exported_eiprotocol_tests(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eiprotocol-standalone"
     module.export_eiprotocol_repo(target, repo_root=REPO_ROOT)
 
     env = {**os.environ, "PYTHONPATH": str(target)}
+    exported_tests = sorted(str(path.relative_to(target)) for path in (target / "tests" / "protocol").glob("test_eiprotocol*.py"))
+    assert exported_tests
+
     result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pytest",
-            "-q",
-            "tests/protocol/test_eiprotocol_mvp.py",
-            "tests/protocol/test_eiprotocol_fixtures.py",
-            "tests/protocol/test_eiprotocol_event_routing.py",
-        ],
+        [sys.executable, "-m", "pytest", "-q", *exported_tests],
         check=False,
         capture_output=True,
         text=True,

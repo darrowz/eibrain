@@ -16,10 +16,14 @@ from typing import Sequence
 
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
 COPY_DIRS = ("eiprotocol", "tests/fixtures/eiprotocol")
-COPY_FILES = (
-    "tests/protocol/test_eiprotocol_event_routing.py",
-    "tests/protocol/test_eiprotocol_mvp.py",
-    "tests/protocol/test_eiprotocol_fixtures.py",
+COPY_FILE_GLOBS = (
+    "docs/eiprotocol*.md",
+    "tests/protocol/test_eiprotocol*.py",
+)
+STANDALONE_TEST_EXCLUDES = frozenset(
+    {
+        "tests/protocol/test_eiprotocol_bridge.py",
+    }
 )
 SKIP_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
@@ -35,6 +39,9 @@ description = "Shared eiprotocol v0.1 MVP contracts for EI projects"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
 
 [tool.setuptools.packages.find]
 include = ["eiprotocol*"]
@@ -60,12 +67,13 @@ This repository is generated from the eibrain monorepo by
 ## Local commands
 
 ```bash
-python -m pip install -e .
+python -m pip install -e ".[test]"
 python -m pytest -q
 ```
 
-The package currently contains the v0.1 MVP event envelope and JSON-friendly
-models used by `eihead`, `eibrain`, and future EI service repositories.
+The package currently contains the v0.1 MVP event envelope, catalog, strict
+validation, builders, JSON codec, fixtures, and protocol documentation used by
+`eihead`, `eibrain`, and future EI service repositories.
 """
 
 GITIGNORE_TEMPLATE = """__pycache__/
@@ -122,7 +130,7 @@ def export_eiprotocol_repo(
     copied: list[str] = []
     for rel_dir in COPY_DIRS:
         copied.extend(_copy_directory(source_root, target, rel_dir))
-    for rel_file in COPY_FILES:
+    for rel_file in _discover_copy_files(source_root):
         copied.append(_copy_required_file(source_root, target, rel_file))
 
     source_state = _read_source_git_state(source_root)
@@ -223,6 +231,17 @@ def _copy_required_file(source_root: Path, target_root: Path, rel_file: str) -> 
     if not source_file.is_file():
         raise FileNotFoundError(f"required source file is missing: {source_file}")
     return _copy_file(source_file, target_root / rel_file, target_root=target_root)
+
+
+def _discover_copy_files(source_root: Path) -> tuple[str, ...]:
+    discovered: set[str] = set()
+    for pattern in COPY_FILE_GLOBS:
+        for source_path in source_root.glob(pattern):
+            if source_path.is_file() and not _should_skip(source_path, source_root):
+                rel_path = source_path.relative_to(source_root).as_posix()
+                if rel_path not in STANDALONE_TEST_EXCLUDES:
+                    discovered.add(rel_path)
+    return tuple(sorted(discovered))
 
 
 def _copy_file(source_path: Path, target_path: Path, *, target_root: Path) -> str:
