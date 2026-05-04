@@ -397,6 +397,91 @@ class NativeVoiceRealtimeApp(FakeMonitorApp):
         }
 
 
+class RoundSchedulerInterruptVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {
+                "status": "ok",
+                "provider": "faster_whisper",
+            },
+            "mouth": {
+                "status": "ok",
+                "backend": "minimax",
+                "model": "speech-2.8-hd",
+            },
+            "dialogue": {
+                "phase": "listening",
+                "last_status": "interrupted",
+                "current_round_id": "round-42",
+                "scheduler_state": {
+                    "state": "stale",
+                    "active_round_id": "round-41",
+                    "stale": True,
+                    "last_tick_age_ms": 2500.0,
+                },
+                "last_stage_latency_ms": {"capture": 30.0, "scheduler": 11.0, "interrupt": 4.0},
+            },
+            "current_cancellation_token": {
+                "token_id": "cancel-42",
+                "cancelled": True,
+            },
+            "interrupt_count": 2,
+            "interrupted_round_count": 1,
+            "last_interrupt": {
+                "round_id": "round-42",
+                "reason": "barge_in",
+                "stale": True,
+            },
+            "microfeedback": {
+                "last": "too_slow",
+                "score": -1,
+            },
+        }
+
+
+class HistoricInterruptVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {
+                "phase": "speaking",
+                "last_status": "completed",
+                "current_round_id": "round-43",
+                "current_cancellation_token": "cancel-43",
+                "scheduler_state": {"state": "active", "round_id": "round-43"},
+                "interrupt_active": False,
+                "interrupted_round_count": 2,
+                "last_interrupt": {"round_id": "round-41", "reason": "barge_in"},
+                "last_completed_turn": {"transcript": "你好", "reply": "你好"},
+                "last_stage_latency_ms": {"listen_asr": 100.0, "think": 200.0, "speak": 300.0, "total": 600.0},
+            },
+        }
+
+
+class CleanRoundVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {
+                "phase": "listening",
+                "last_status": "listening",
+                "current_round_id": "round-44",
+                "current_cancellation_token": "cancel-44",
+                "scheduler_state": {"state": "active", "round_id": "round-44"},
+                "interrupt_active": False,
+                "interrupted_round_count": 0,
+            },
+        }
+
+
 class FallbackMouthVoiceApp(FakeMonitorApp):
     def voice_status(self) -> dict[str, object]:
         return {
@@ -492,6 +577,16 @@ def test_voice_helper_marks_waiting_ear_and_noop_mouth_as_truthful_not_fake_ok()
     assert payload["mouth"]["backend"] == "noop"
     assert payload["mouth"]["state"] == "not_wired"
     assert "waiting" in payload["readiness_message"]
+
+
+def test_voice_helper_reports_not_wired_without_runtime_hook() -> None:
+    payload = build_voice_diagnostics_from_app(FakeMonitorApp(), timestamp=434.0)
+
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["not_wired"] is True
+    assert payload["source"] is None
+    assert "not wired" in payload["readiness_message"] or "not_wired" in payload["readiness_message"]
 
 
 def test_realtime_vision_helper_standardizes_observation_payload() -> None:
@@ -615,6 +710,75 @@ def test_voice_api_aliases_and_html_render_voice_diagnostics() -> None:
     assert "Voice Diagnostics" in body
     assert "/api/voice/realtime" in body
     assert "MiniMax" in body or "minimax" in body
+
+
+def test_voice_helper_exposes_round_scheduler_interrupt_and_microfeedback_state() -> None:
+    payload = build_voice_diagnostics_from_app(RoundSchedulerInterruptVoiceApp(), timestamp=656.0)
+
+    assert payload["status"] == "degraded"
+    assert payload["wired"] is False
+    assert payload["round"]["current_round_id"] == "round-42"
+    assert payload["round"]["current_cancellation_token"] == {"token_id": "cancel-42", "cancelled": True}
+    assert payload["scheduler"]["state"] == "stale"
+    assert payload["scheduler"]["active_round_id"] == "round-41"
+    assert payload["scheduler"]["stale"] is True
+    assert payload["interruption"]["interrupted"] is True
+    assert payload["interruption"]["interrupt_count"] == 2
+    assert payload["interruption"]["interrupted_round_count"] == 1
+    assert payload["interruption"]["last_interrupt"]["reason"] == "barge_in"
+    assert payload["interruption"]["stale"] is True
+    assert payload["microfeedback"] == {"last": "too_slow", "score": -1}
+    assert payload["latency"]["stage_latency_ms"]["scheduler"] == 11.0
+    assert "interrupted" in payload["readiness_message"]
+    assert "stale" in payload["readiness_message"]
+
+
+def test_voice_api_and_html_render_round_scheduler_interrupt_cards() -> None:
+    app = RoundSchedulerInterruptVoiceApp()
+
+    with running_server(app, clock=lambda: 656.5) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        alias_code, _, alias_payload = read_json(f"{base_url}/api/audio/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert alias_code == 200
+    assert payload == alias_payload
+    assert payload["round"]["current_round_id"] == "round-42"
+    assert payload["scheduler"]["state"] == "stale"
+    assert payload["interruption"]["interrupted"] is True
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Round" in body
+    assert "round-42" in body
+    assert "Scheduler" in body
+    assert "stale" in body
+    assert "Interrupts" in body
+    assert "barge_in" in body
+    assert "Microfeedback" in body
+    assert "too_slow" in body
+
+
+def test_voice_helper_keeps_historic_interrupt_visible_without_degrading_current_round() -> None:
+    payload = build_voice_diagnostics_from_app(HistoricInterruptVoiceApp(), timestamp=656.8)
+
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["interruption"]["state"] == "history"
+    assert payload["interruption"]["active"] is False
+    assert payload["interruption"]["interrupted_round_count"] == 2
+    assert payload["interruption"]["last_interrupt"]["reason"] == "barge_in"
+    assert payload["latency"]["total_ms"] == 600.0
+
+
+def test_voice_helper_shows_clean_interrupt_state_when_no_interrupts_seen() -> None:
+    payload = build_voice_diagnostics_from_app(CleanRoundVoiceApp(), timestamp=656.9)
+
+    assert payload["status"] == "wired"
+    assert payload["interruption"]["state"] == "clear"
+    assert payload["interruption"]["component_state"] == "wired"
+    assert payload["interruption"]["interrupted"] is False
+    assert payload["interruption"]["interrupted_round_count"] == 0
 
 
 def test_voice_helper_does_not_promote_fallback_mouth_to_wired() -> None:

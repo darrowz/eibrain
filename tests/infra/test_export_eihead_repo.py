@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -43,7 +44,12 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "deploy/systemd/eihead-runtime.service",
         "deploy/systemd/eihead-monitor.service",
         "eibrain/body/runtime_linux.py",
+        "eibrain/cognition/__init__.py",
+        "eibrain/cognition/realtime/__init__.py",
+        "eibrain/cognition/realtime/turn.py",
         "eibrain/infra/config.py",
+        "eibrain/verification/__init__.py",
+        "eibrain/verification/body_checks.py",
         "eihead/ear/__init__.py",
         "eihead/ear/realtime.py",
         "eihead/mouth/__init__.py",
@@ -66,7 +72,12 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "config/eibrain.honjia.yaml" in result.copied
     assert "config/eihead.honjia.yaml" in result.copied
     assert "eibrain/body/runtime_linux.py" in result.copied
+    assert "eibrain/cognition/__init__.py" in result.copied
+    assert "eibrain/cognition/realtime/__init__.py" in result.copied
+    assert "eibrain/cognition/realtime/turn.py" in result.copied
     assert "eibrain/infra/config.py" in result.copied
+    assert "eibrain/verification/__init__.py" in result.copied
+    assert "eibrain/verification/body_checks.py" in result.copied
     assert "eihead/runtime/app.py" in result.copied
     assert "eihead/ear/__init__.py" in result.copied
     assert "eihead/ear/realtime.py" in result.copied
@@ -166,6 +177,11 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
             "reason": "Temporary honjia hardware/runtime implementation before native eihead modules replace it.",
         },
         {
+            "package": "eibrain.cognition.realtime",
+            "paths": ["eibrain/cognition/realtime"],
+            "reason": "temporary realtime scheduler compatibility until eibrain/eihead protocol split is complete",
+        },
+        {
             "package": "eibrain.infra",
             "paths": ["eibrain/infra"],
             "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
@@ -174,6 +190,11 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
             "package": "eibrain.protocol",
             "paths": ["eibrain/protocol"],
             "reason": "Temporary protocol compatibility until eiprotocol is split into its own repo.",
+        },
+        {
+            "package": "eibrain.verification",
+            "paths": ["eibrain/verification"],
+            "reason": "Head-side hardware verification helpers retained while verify_hardware CLI is transitional.",
         },
     ]
     assert manifest["runtime_entrypoints"] == [
@@ -232,6 +253,8 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert 'eihead-runtime = "eihead.runtime.cli:main"' in pyproject
     assert '"apps.body_runtime*"' in pyproject
     assert '"eibrain.body*"' in pyproject
+    assert '"eibrain.cognition*"' in pyproject
+    assert '"eibrain.verification*"' in pyproject
     assert "eibrain-cognitive" not in pyproject
     assert "faster-whisper" not in pyproject
     assert "/dev-project/eihead" in readme
@@ -242,6 +265,10 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "functional-not-complete" in readme
     assert "Realtime Cognitive" in readme
     assert "Scheduler" in readme
+    assert "scheduler-backed functional stage" in readme
+    assert "real streaming LLM/TTS" in readme
+    assert "round/scheduler/interrupt" in readme
+    assert "hardware verification" in readme
     assert "Static image detection is compatibility/test-only" in readme
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
     assert "__pycache__/" in gitignore
@@ -347,6 +374,33 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
     assert "Realtime Cognitive" in readme
     assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
+
+
+def test_exported_transitional_runtime_imports_without_brain_runtime(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+
+    env = {**os.environ, "PYTHONPATH": str(target)}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import apps.body_runtime.voice_dialogue_loop; "
+                "import apps.body_runtime.verify_hardware; "
+                "import eibrain.verification; "
+                "import eibrain.cognition.realtime"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_export_refuses_existing_target_without_force(tmp_path: Path) -> None:

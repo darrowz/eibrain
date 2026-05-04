@@ -41,9 +41,14 @@ and template set only; it does not perform deployment.
 - Web runtime endpoints for native voice status are:
   - `GET /api/voice/realtime`
   - `GET /api/audio/realtime`
-- The voice chain is currently functional-not-complete and should be represented as
-  `not_wired/unknown/degraded` where scheduling or status dependencies are
-  missing.
+- The voice chain has entered a scheduler-backed functional stage for
+  round lifecycle, scheduler status, and interrupt visibility. It is still not
+  wired to real streaming LLM/TTS, so missing flow stages must remain explicit
+  as `not_wired/unknown/degraded`.
+- While `apps.body_runtime` is still exported, `/dev-project/eihead` also
+  carries the minimal `eibrain/cognition/realtime` transitional package for
+  temporary realtime scheduler compatibility until the eibrain/eihead protocol
+  split is complete.
 - If the camera, Hailo device, GStreamer runtime, or Hailo metadata parser is
   missing, the monitor must show `not_wired`, `unknown`, or explicit degraded
   state. A blank or fake-normal Eye panel is a deployment failure.
@@ -109,9 +114,9 @@ sudo systemctl enable eihead-runtime.service eihead-monitor.service
 - `/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, microphone, and speaker state
   appear in the Web monitor as real data, degraded data, explicit offline data,
   `unknown`, or `not wired`; blank "normal" placeholders are not acceptable.
-- Voice status appears via `/api/voice/realtime` and `/api/audio/realtime`; until
-  Realtime Cognitive Scheduler is connected, monitor values must remain explicit
-  about incomplete flow stages.
+- Voice status appears via `/api/voice/realtime` and `/api/audio/realtime`, and
+  Web can show round/scheduler/interrupt state; until real streaming LLM/TTS is
+  connected, monitor values must remain explicit about incomplete flow stages.
 - Realtime eye stream detection from `/dev/video0` and `/dev/hailo0` publishes
   frame age, FPS, detection boxes, scores, backend, and stale/error state to
   the monitor.

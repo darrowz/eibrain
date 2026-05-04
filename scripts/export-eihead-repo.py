@@ -21,13 +21,16 @@ COPY_DIRS = (
     # Transitional body runtime until honjia hardware code is fully renamed.
     "apps/body_runtime",
     "eibrain/body",
+    "eibrain/cognition/realtime",
     "eibrain/infra",
     # Temporary compatibility until eiprotocol is split into its own repo.
     "eibrain/protocol",
+    "eibrain/verification",
 )
 OPTIONAL_FILES = (
     "apps/__init__.py",
     "eibrain/__init__.py",
+    "eibrain/cognition/__init__.py",
 )
 COPY_GLOBS = (
     "config/eibrain.honjia.yaml",
@@ -53,6 +56,11 @@ TRANSITIONAL_PACKAGES = (
         "reason": "Temporary honjia hardware/runtime implementation before native eihead modules replace it.",
     },
     {
+        "package": "eibrain.cognition.realtime",
+        "paths": ["eibrain/cognition/realtime"],
+        "reason": "temporary realtime scheduler compatibility until eibrain/eihead protocol split is complete",
+    },
+    {
         "package": "eibrain.infra",
         "paths": ["eibrain/infra"],
         "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
@@ -61,6 +69,11 @@ TRANSITIONAL_PACKAGES = (
         "package": "eibrain.protocol",
         "paths": ["eibrain/protocol"],
         "reason": "Temporary protocol compatibility until eiprotocol is split into its own repo.",
+    },
+    {
+        "package": "eibrain.verification",
+        "paths": ["eibrain/verification"],
+        "reason": "Head-side hardware verification helpers retained while verify_hardware CLI is transitional.",
     },
 )
 
@@ -197,8 +210,10 @@ include = [
     "apps.body_runtime*",
     "eibrain",
     "eibrain.body*",
+    "eibrain.cognition*",
     "eibrain.infra*",
     "eibrain.protocol*",
+    "eibrain.verification*",
 ]
 exclude = ["config*", "tests*", "docs*", "scripts*", "deploy*"]
 
@@ -241,8 +256,13 @@ Native runtime and monitor surface includes:
 - `GET /api/voice/realtime`
 - `GET /api/audio/realtime`
 
-Voice chain remains functional-not-complete and awaits the Realtime Cognitive
-Scheduler handoff.
+Voice chain is now in a scheduler-backed functional stage using Realtime
+Cognitive Scheduler for round lifecycle, scheduler status, and interrupt
+visibility. Realtime Cognitive Scheduler compatibility is transitional. It is
+still functional-not-complete: the loop has not been wired to real streaming LLM/TTS,
+and the Web monitor should make
+round/scheduler/interrupt state visible without presenting missing streaming
+stages as complete.
 
 The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:
@@ -280,9 +300,11 @@ eihead-runtime monitor --host 0.0.0.0 --port 18080
 ```
 
 The current runtime still carries a small `eibrain.protocol` compatibility
-subset plus the transitional `eibrain.body` hardware code. Split that subset
-into `eiprotocol` and rename the body runtime into native `eihead` modules once
-the shared protocol repo is ready.
+subset, transitional `eibrain.body` hardware code, and the minimal
+`eibrain.cognition.realtime` scheduler primitives needed by the exported
+`apps.body_runtime` voice chain, plus transitional hardware verification
+helpers. Split those subsets into `eiprotocol` and the native eihead/eibrain
+protocol boundary once the shared protocol repo is ready.
 """
 
 

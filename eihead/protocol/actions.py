@@ -24,6 +24,8 @@ class PlaySpeechAction(Action):
 
 @dataclass(slots=True)
 class StopSpeechAction(Action):
+    reason: str = ""
+    details: dict[str, object] = field(default_factory=dict)
     kind: str = field(init=False, default="stop_speech_action")
 
 

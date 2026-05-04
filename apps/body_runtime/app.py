@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import deque
+from dataclasses import asdict, is_dataclass
 import json
 from pathlib import Path
 import time
 
-from eibrain.protocol.actions import PlaySpeechAction
+from eibrain.protocol.actions import PlaySpeechAction, StopSpeechAction
 from eibrain.body.health import DegradationManager
 from eibrain.body.ear_stream import EarStreamProcessor
 from eibrain.body.ear_stream import ArecordStreamCapture
@@ -370,6 +371,111 @@ class BodyRuntimeApp:
         if updates.get("last_transcript") or updates.get("last_reply") or updates.get("running"):
             self._note_voice_activity()
         self._refresh_interaction_mode()
+
+    def voice_status(self) -> dict[str, object]:
+        return self.voice_realtime()
+
+    def voice_realtime(self) -> dict[str, object]:
+        dialogue = self._voice_dialogue_payload()
+        recent_events = self._recent_voice_events()
+        ear = self._voice_organ_payload("ear", recent_events=recent_events)
+        mouth = self._voice_organ_payload("mouth", recent_events=recent_events)
+        latency = self._voice_latency_payload(dialogue)
+        bottleneck = self._voice_bottleneck_payload(dialogue, latency=latency)
+        last_turn = self._voice_last_turn(dialogue)
+        status, wired, not_wired = self._voice_overall_status(
+            ear=ear,
+            mouth=mouth,
+            dialogue=dialogue,
+            latency=latency,
+            last_turn=last_turn,
+        )
+        readiness_message = self._voice_readiness_message(
+            status=status,
+            ear=ear,
+            mouth=mouth,
+            dialogue=dialogue,
+        )
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": status,
+            "wired": wired,
+            "source": "body_runtime.voice_realtime",
+            "channel": "voice.realtime",
+            "aliases": ["audio.realtime"],
+            "captured_at_ts": time.time(),
+            "ear": ear,
+            "mouth": mouth,
+            "dialogue": dialogue,
+            "voice_dialogue": dialogue,
+            "latency": latency,
+            "last_stage_latency_ms": dict(latency.get("stage_latency_ms", {}) or {}),
+            "last_latency_s": dict(latency.get("stage_latency_s", {}) or {}),
+            "bottleneck": bottleneck,
+            "last_bottleneck_stage": (bottleneck or {}).get("stage"),
+            "last_bottleneck_ms": (bottleneck or {}).get("latency_ms"),
+            "last_turn": last_turn,
+            "not_wired": not_wired,
+            "readiness_message": readiness_message,
+            "recent_events": recent_events,
+        }
+
+    def request_voice_interrupt(self, reason: str = "user_barge_in") -> dict[str, object]:
+        requested_at_ts = time.time()
+        was_busy = self.is_speaking()
+        action = StopSpeechAction(
+            ts=requested_at_ts,
+            source="body_runtime.voice_interrupt",
+            session_id="voice-runtime",
+            actor_id="user",
+            reason=reason,
+            details={"reason": reason},
+        )
+        mouth = next((organ for organ in self.organs if getattr(organ, "name", None) == "mouth"), None)
+        outcomes = []
+        error = ""
+        if mouth is not None:
+            try:
+                outcomes = self.dispatch_actions([action])
+            except Exception as exc:  # pragma: no cover - defensive runtime boundary
+                error = str(exc)
+        outcome_payloads = [self._json_ready(outcome) for outcome in outcomes]
+        outcome_statuses = [str(getattr(outcome, "status", "") or "") for outcome in outcomes]
+        ok_statuses = {"ok", "healthy", "completed", "stopped"}
+        status = "ok" if mouth is not None and outcomes and all(s in ok_statuses for s in outcome_statuses) else "degraded"
+        if error:
+            status = "degraded"
+        busy_cleared = status == "ok"
+        if busy_cleared:
+            self._speech_busy_until = 0.0
+        summary: dict[str, object] = {
+            "status": status,
+            "reason": reason,
+            "requested_at_ts": requested_at_ts,
+            "busy_cleared": busy_cleared,
+            "busy_retained": was_busy and not busy_cleared,
+            "was_busy": was_busy,
+            "mouth_available": mouth is not None,
+            "outcome_count": len(outcomes),
+            "outcomes": outcome_payloads,
+        }
+        if error:
+            summary["error"] = error
+        self.update_voice_dialogue_state(
+            phase="interrupted",
+            last_status="interrupted" if status == "ok" else "interrupt_degraded",
+            interrupt_active=True,
+            interrupt=dict(summary),
+            last_interrupt=dict(summary),
+        )
+        self.record_runtime_event(
+            kind="voice_interrupt_requested",
+            source="body_runtime.voice_interrupt",
+            status=status,
+            session_id="voice-runtime",
+            details=summary,
+        )
+        return summary
 
     def plan_visual_tracking_action(
         self,
@@ -871,6 +977,345 @@ class BodyRuntimeApp:
             self.interaction_state["tracking_locked"] = False
         self._refresh_interaction_mode(force_reason=reason)
 
+    def _voice_organ_payload(self, organ_name: str, *, recent_events: list[dict[str, object]]) -> dict[str, object]:
+        organ = next((item for item in self.organs if getattr(item, "name", None) == organ_name), None)
+        latest_event = self._latest_voice_event(organ_name, recent_events)
+        if organ is None:
+            return {
+                "status": "degraded" if latest_event else "not_wired",
+                "state": "degraded" if latest_event else "not_wired",
+                "not_wired": latest_event is None,
+                "readiness_message": f"{organ_name} organ missing",
+                "latest_event": latest_event,
+            }
+        try:
+            if self.voice_dialogue_state.get("running") and hasattr(organ, "passive_heartbeat"):
+                heartbeat = organ.passive_heartbeat()
+            else:
+                heartbeat = organ.heartbeat()
+            raw = self._json_ready(heartbeat)
+        except Exception as exc:  # pragma: no cover - defensive runtime boundary
+            return {
+                "status": "degraded",
+                "state": "degraded",
+                "health": "degraded",
+                "readiness_message": f"{organ_name} heartbeat failed: {exc}",
+                "latest_event": latest_event,
+            }
+        if not isinstance(raw, dict):
+            raw = {"health": "unknown", "raw": raw}
+        return self._voice_component_from_heartbeat(organ_name, raw, latest_event=latest_event)
+
+    def _voice_component_from_heartbeat(
+        self,
+        organ_name: str,
+        heartbeat: dict[str, object],
+        *,
+        latest_event: dict[str, object] | None,
+    ) -> dict[str, object]:
+        subfunctions = heartbeat.get("subfunctions")
+        subfunctions = subfunctions if isinstance(subfunctions, dict) else {}
+        if organ_name == "ear":
+            capture = self._subfunction_payload(subfunctions, "capture")
+            asr = self._subfunction_payload(subfunctions, "asr")
+            provider = self._first_text(
+                self._details_value(asr, "provider"),
+                self._details_value(asr, "backend"),
+                self._details_value(capture, "provider"),
+            )
+            status, state, readiness = self._voice_component_status(
+                organ_name,
+                heartbeat=heartbeat,
+                subfunctions=[capture, asr],
+                latest_event=latest_event,
+                wired=bool(provider),
+            )
+            payload = {
+                "status": status,
+                "state": state,
+                "health": self._text_or_none(heartbeat.get("health")),
+                "provider": provider,
+                "readiness_message": readiness,
+                "latest_event": latest_event,
+                "subfunctions": subfunctions,
+                "capture": capture,
+                "asr": asr,
+            }
+            if state == "not_wired":
+                payload["not_wired"] = True
+            return payload
+        playback = self._subfunction_payload(subfunctions, "tts_playback")
+        plan = self._subfunction_payload(subfunctions, "tts_plan")
+        backend = self._first_text(
+            self._details_value(playback, "backend"),
+            self._details_value(playback, "provider"),
+            self._details_value(plan, "backend"),
+            self._details_value(plan, "provider"),
+        )
+        status, state, readiness = self._voice_component_status(
+            organ_name,
+            heartbeat=heartbeat,
+            subfunctions=[playback, plan],
+            latest_event=latest_event,
+            wired=bool(backend and backend != "noop"),
+        )
+        payload = {
+            "status": status,
+            "state": state,
+            "health": self._text_or_none(heartbeat.get("health")),
+            "backend": backend,
+            "model": self._first_text(self._details_value(playback, "model"), self._details_value(plan, "model")),
+            "voice_id": self._first_text(
+                self._details_value(playback, "voice_id"),
+                self._details_value(plan, "voice_id"),
+            ),
+            "text_preview": self._first_text(self._details_value(playback, "text_preview")),
+            "readiness_message": readiness,
+            "latest_event": latest_event,
+            "subfunctions": subfunctions,
+            "tts_playback": playback,
+            "tts_plan": plan,
+        }
+        if state == "not_wired":
+            payload["not_wired"] = True
+        return payload
+
+    def _voice_component_status(
+        self,
+        organ_name: str,
+        *,
+        heartbeat: dict[str, object],
+        subfunctions: list[dict[str, object] | None],
+        latest_event: dict[str, object] | None,
+        wired: bool,
+    ) -> tuple[str, str, str]:
+        health = self._normalized_text(heartbeat.get("health"))
+        driver_names = {
+            self._normalized_text(self._details_value(subfunction, "driver"))
+            for subfunction in subfunctions
+            if subfunction is not None
+        }
+        sub_statuses = {
+            self._normalized_text(subfunction.get("health"))
+            for subfunction in subfunctions
+            if subfunction is not None
+        }
+        if driver_names and driver_names == {"noop"}:
+            return "not_wired", "not_wired", f"{organ_name} uses noop drivers"
+        if health in {"unavailable", "disabled", "missing", "not_wired"}:
+            return "not_wired", "not_wired", f"{organ_name} heartbeat unavailable"
+        if "degraded" in sub_statuses or health in {"degraded", "error", "failed", "unhealthy"}:
+            return "degraded", "degraded", f"{organ_name} heartbeat degraded"
+        if wired:
+            return "ok", "wired", f"{organ_name} wired"
+        if latest_event is not None:
+            return "degraded", "degraded", f"{organ_name} has recent events but heartbeat is incomplete"
+        return "unknown", "unknown", f"{organ_name} heartbeat present but no realtime data"
+
+    def _voice_dialogue_payload(self) -> dict[str, object]:
+        dialogue = dict(self.voice_dialogue_state)
+        has_turn = bool(dialogue.get("last_completed_turn") or dialogue.get("last_transcript") or dialogue.get("last_reply"))
+        has_latency = bool(dialogue.get("last_stage_latency_ms") or dialogue.get("last_latency_s"))
+        running = bool(dialogue.get("running"))
+        enabled = bool(dialogue.get("enabled"))
+        if running:
+            status = self._first_text(dialogue.get("phase"), "running")
+            state = "wired"
+            readiness = "voice dialogue running"
+        elif self._normalized_text(dialogue.get("last_status")) in {"stopped", "disabled", "offline"}:
+            status = self._first_text(dialogue.get("last_status"), "stopped")
+            state = "not_wired"
+            readiness = "voice dialogue stopped; historical turn data is retained"
+        elif has_turn or has_latency:
+            status = self._first_text(dialogue.get("last_status"), "completed")
+            state = "degraded" if not enabled else "wired"
+            readiness = "voice dialogue has recent turn data" if enabled else "voice dialogue has history but is disabled"
+        elif enabled:
+            status = "waiting_for_voice"
+            state = "degraded"
+            readiness = "voice dialogue enabled but waiting for data"
+        else:
+            status = "unknown"
+            state = "unknown"
+            readiness = "voice dialogue has no running data"
+        dialogue.update(
+            {
+                "status": status,
+                "state": state,
+                "readiness_message": readiness,
+            }
+        )
+        return dialogue
+
+    def _voice_latency_payload(self, dialogue: dict[str, object]) -> dict[str, object]:
+        stage_latency_ms = self._float_mapping(dialogue.get("last_stage_latency_ms"))
+        stage_latency_s = self._float_mapping(dialogue.get("last_latency_s"))
+        for name, seconds in stage_latency_s.items():
+            stage_latency_ms.setdefault(name, round(seconds * 1000.0, 3))
+        total_ms = None
+        explicit_total = stage_latency_ms.get("total")
+        if explicit_total is not None:
+            total_ms = explicit_total
+        if stage_latency_ms:
+            total_ms = round(
+                sum(
+                    value
+                    for key, value in stage_latency_ms.items()
+                    if key not in {"total", "overhead"}
+                ),
+                3,
+            ) if total_ms is None else total_ms
+        return {
+            "total_ms": total_ms,
+            "stage_latency_ms": stage_latency_ms,
+            "stage_latency_s": stage_latency_s,
+        }
+
+    def _voice_bottleneck_payload(
+        self,
+        dialogue: dict[str, object],
+        *,
+        latency: dict[str, object],
+    ) -> dict[str, object] | None:
+        stage = self._first_text(dialogue.get("last_bottleneck_stage"))
+        latency_ms = self._coerce_optional_float(dialogue.get("last_bottleneck_ms"))
+        stage_latency = latency.get("stage_latency_ms")
+        if (not stage or latency_ms is None) and isinstance(stage_latency, dict) and stage_latency:
+            candidates = {
+                key: value
+                for key, value in stage_latency.items()
+                if key not in {"total", "overhead"}
+            }
+            computed_stage, computed_ms = max((candidates or stage_latency).items(), key=lambda item: float(item[1]))
+            stage = stage or str(computed_stage)
+            latency_ms = latency_ms if latency_ms is not None else float(computed_ms)
+        if not stage and latency_ms is None:
+            return None
+        return {
+            "stage": stage or None,
+            "latency_ms": latency_ms,
+        }
+
+    @staticmethod
+    def _voice_last_turn(dialogue: dict[str, object]) -> dict[str, object] | None:
+        completed = dialogue.get("last_completed_turn")
+        if isinstance(completed, dict) and completed:
+            return dict(completed)
+        transcript = str(dialogue.get("last_transcript", "") or "").strip()
+        reply = str(dialogue.get("last_reply", "") or "").strip()
+        if transcript or reply:
+            return {"transcript": transcript, "reply": reply}
+        return None
+
+    def _voice_overall_status(
+        self,
+        *,
+        ear: dict[str, object],
+        mouth: dict[str, object],
+        dialogue: dict[str, object],
+        latency: dict[str, object],
+        last_turn: dict[str, object] | None,
+    ) -> tuple[str, bool, bool]:
+        states = [
+            self._normalized_text(component.get("state"))
+            for component in (ear, mouth, dialogue)
+            if isinstance(component, dict)
+        ]
+        has_signal = bool(states or last_turn or latency.get("stage_latency_ms"))
+        if not has_signal:
+            return "not_wired", False, True
+        if any(state == "wired" for state in states):
+            if any(state in {"degraded", "not_wired"} for state in states):
+                return "degraded", False, False
+            return "wired", True, False
+        if any(state == "degraded" for state in states):
+            return "degraded", False, False
+        if any(state == "not_wired" for state in states):
+            return "not_wired", False, True
+        return "unknown", False, False
+
+    def _voice_readiness_message(
+        self,
+        *,
+        status: str,
+        ear: dict[str, object],
+        mouth: dict[str, object],
+        dialogue: dict[str, object],
+    ) -> str:
+        if status == "wired":
+            return "voice loop wired"
+        messages = []
+        for name, component in (("ear", ear), ("mouth", mouth), ("dialogue", dialogue)):
+            message = self._first_text(component.get("readiness_message"), component.get("status"))
+            if message and message not in messages:
+                messages.append(f"{name}: {message}")
+        joined = "; ".join(messages)
+        if status == "not_wired":
+            return f"voice realtime not wired: {joined}" if joined else "voice realtime not wired"
+        if status == "degraded":
+            return f"voice realtime degraded: {joined}" if joined else "voice realtime degraded"
+        return f"voice realtime state unknown: {joined}" if joined else "voice realtime state unknown"
+
+    def _recent_voice_events(self) -> list[dict[str, object]]:
+        events = []
+        for event in self._recent_events:
+            source = str(event.get("source", "") or "")
+            kind = str(event.get("kind", "") or "")
+            if source.startswith(("ear", "mouth", "body_runtime.voice")) or "speech" in kind or "transcript" in kind:
+                events.append(self._json_ready(event))
+        return events[-10:]
+
+    @staticmethod
+    def _latest_voice_event(organ_name: str, events: list[dict[str, object]]) -> dict[str, object] | None:
+        prefix = "ear" if organ_name == "ear" else "mouth"
+        for event in reversed(events):
+            source = str(event.get("source", "") or "")
+            kind = str(event.get("kind", "") or "")
+            if source.startswith(prefix) or (organ_name == "mouth" and "speech" in kind):
+                return dict(event)
+        return None
+
+    @staticmethod
+    def _subfunction_payload(subfunctions: dict[str, object], name: str) -> dict[str, object] | None:
+        payload = subfunctions.get(name)
+        return dict(payload) if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _details_value(subfunction: dict[str, object] | None, key: str) -> object:
+        if not isinstance(subfunction, dict):
+            return None
+        details = subfunction.get("details")
+        if isinstance(details, dict):
+            return details.get(key)
+        return None
+
+    @staticmethod
+    def _float_mapping(value: object) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, float] = {}
+        for key, item in value.items():
+            number = BodyRuntimeApp._coerce_optional_float(item)
+            if number is not None:
+                result[str(key)] = number
+        return result
+
+    @staticmethod
+    def _json_ready(value: object) -> object:
+        if isinstance(value, dict):
+            return {str(key): BodyRuntimeApp._json_ready(item) for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [BodyRuntimeApp._json_ready(item) for item in value]
+        if is_dataclass(value):
+            return BodyRuntimeApp._json_ready(asdict(value))
+        if hasattr(value, "to_dict") and callable(value.to_dict):
+            payload = value.to_dict()
+            if isinstance(payload, dict):
+                return BodyRuntimeApp._json_ready(payload)
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
     def _refresh_interaction_mode(
         self,
         *,
@@ -912,3 +1357,30 @@ class BodyRuntimeApp:
             return float(value)
         except (TypeError, ValueError):
             return default
+
+    @staticmethod
+    def _coerce_optional_float(value: object) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _text_or_none(value: object) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    @staticmethod
+    def _first_text(*values: object) -> str:
+        for value in values:
+            text = BodyRuntimeApp._text_or_none(value)
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _normalized_text(value: object) -> str:
+        text = BodyRuntimeApp._text_or_none(value)
+        return text.lower() if text is not None else ""

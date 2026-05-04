@@ -430,6 +430,10 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_latency = _display_value(_metric_value(_voice_latency_total_ms(voice.get("latency")), suffix="ms"))
     voice_bottleneck = _display_value(_voice_bottleneck_summary(voice.get("bottleneck")))
     voice_last_turn = _display_value(_voice_last_turn_summary(voice.get("last_turn")))
+    voice_round = _display_value(_voice_round_summary(voice.get("round")))
+    voice_scheduler = _display_value(_voice_scheduler_summary(voice.get("scheduler")))
+    voice_interruption = _display_value(_voice_interruption_summary(voice.get("interruption")))
+    voice_microfeedback = _display_value(_voice_microfeedback_summary(voice.get("microfeedback")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
 
     status_json = _json_for_html(status)
@@ -500,6 +504,10 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Latency</div><span class="metric">{voice_latency}</span></div>
       <div class="card"><div class="label">Bottleneck</div><span class="metric">{voice_bottleneck}</span></div>
       <div class="card"><div class="label">Last turn</div><span class="metric">{voice_last_turn}</span></div>
+      <div class="card"><div class="label">Round</div><span class="metric">{voice_round}</span></div>
+      <div class="card"><div class="label">Scheduler</div><span class="metric">{voice_scheduler}</span></div>
+      <div class="card"><div class="label">Interrupts</div><span class="metric">{voice_interruption}</span></div>
+      <div class="card"><div class="label">Microfeedback</div><span class="metric">{voice_microfeedback}</span></div>
       <div class="card"><div class="label">Readiness</div><span class="metric">{voice_readiness}</span></div>
     </section>
     <h2>Status</h2>
@@ -649,6 +657,68 @@ def _voice_last_turn_summary(value: Any) -> str:
     if reply:
         return str(reply)
     return "unknown"
+
+
+def _voice_round_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    round_id = value.get("current_round_id") or value.get("round_id")
+    token = value.get("current_cancellation_token") or value.get("cancellation_token")
+    if not round_id:
+        return "unknown"
+    if isinstance(token, Mapping) and token.get("cancelled") is True:
+        return f"{round_id} (cancelled)"
+    if token:
+        return f"{round_id} (cancel token)"
+    return str(round_id)
+
+
+def _voice_scheduler_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    state = value.get("state") or value.get("status") or value.get("component_state") or "unknown"
+    active_round = value.get("active_round_id") or value.get("round_id")
+    stale = value.get("stale") is True
+    parts = [str(state)]
+    if active_round:
+        parts.append(str(active_round))
+    if stale and "stale" not in {part.lower() for part in parts}:
+        parts.append("stale")
+    return " / ".join(parts)
+
+
+def _voice_interruption_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    state = value.get("state") or "unknown"
+    parts = [str(state)]
+    interrupt_count = value.get("interrupt_count")
+    interrupted_round_count = value.get("interrupted_round_count")
+    if interrupt_count is not None:
+        parts.append(f"{interrupt_count} interrupts")
+    if interrupted_round_count is not None:
+        parts.append(f"{interrupted_round_count} rounds")
+    last_interrupt = value.get("last_interrupt")
+    if isinstance(last_interrupt, Mapping):
+        reason = last_interrupt.get("reason") or last_interrupt.get("type")
+        if reason:
+            parts.append(str(reason))
+    if value.get("stale") is True and "stale" not in {part.lower() for part in parts}:
+        parts.append("stale")
+    return " / ".join(parts)
+
+
+def _voice_microfeedback_summary(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, Mapping):
+        label = value.get("text") or value.get("last") or value.get("label") or value.get("status") or value.get("message")
+        score = value.get("score")
+        if label and score not in (None, ""):
+            return f"{label} ({score})"
+        if label:
+            return str(label)
+    return _metric_value(value)
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:

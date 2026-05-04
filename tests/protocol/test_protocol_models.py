@@ -20,7 +20,7 @@ def test_protocol_modules_are_importable() -> None:
 
 
 def test_protocol_models_expose_serializable_payloads() -> None:
-    from eibrain.protocol.actions import PlaySpeechAction
+    from eibrain.protocol.actions import PlaySpeechAction, StopSpeechAction
     from eibrain.protocol.envelopes import Envelope
     from eibrain.protocol.intents import SpeakIntent
     from eibrain.protocol.observations import AudioTranscriptFinal
@@ -51,11 +51,21 @@ def test_protocol_models_expose_serializable_payloads() -> None:
         source="mouth.playback",
         session_id="s1",
     )
+    stop_action = StopSpeechAction(
+        ts=5.0,
+        source="interrupt",
+        session_id="s1",
+        reason="user_barge_in",
+        details={"reason": "user_barge_in"},
+    )
     envelope = Envelope.wrap(channel="observations", payload=observation)
 
     assert observation.to_dict()["kind"] == "audio_transcript_final"
     assert intent.to_dict()["kind"] == "speak_intent"
     assert action.to_dict()["kind"] == "play_speech_action"
+    assert stop_action.to_dict()["kind"] == "stop_speech_action"
+    assert stop_action.to_dict()["reason"] == "user_barge_in"
+    assert stop_action.to_dict()["details"] == {"reason": "user_barge_in"}
     assert outcome.to_dict()["kind"] == "speech_playback_completed"
     assert envelope.channel == "observations"
     assert envelope.payload["session_id"] == "s1"

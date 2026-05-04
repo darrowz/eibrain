@@ -5,8 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from apps.body_runtime.app import BodyRuntimeApp
 from eibrain.body.raspbot_driver import RaspbotDriver
 from eibrain.body.runtime_linux import capture_frame
@@ -23,6 +23,9 @@ from eibrain.verification import (
     run_vision_frame_check,
     run_voice_dialogue_check,
 )
+
+if TYPE_CHECKING:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
 
 
 def main() -> None:
@@ -104,6 +107,8 @@ def main() -> None:
             ).to_dict(),
         )
     elif args.command == "voice-dialogue-check":
+        from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
         body_runtime = BodyRuntimeApp.from_config_path(args.config)
         cognitive_runtime = CognitiveRuntimeApp.from_config_path(args.config)
         last_observation = {}
@@ -161,6 +166,8 @@ def main() -> None:
         )
         result["cognition"] = cognitive_runtime.snapshot()
     elif args.command == "vision-frame-check":
+        from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
         runtime = CognitiveRuntimeApp.from_config_path(args.config)
         result = run_vision_frame_check(
             image_paths=list(args.images),

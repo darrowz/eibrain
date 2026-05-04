@@ -28,15 +28,20 @@ native eihead 边界接管实时链路。`eihead/ear/__init__.py` 与
 可导出文件，`/api/voice/realtime` 与 `/api/audio/realtime` 是当前的
 web 语音状态入口。
 
-当前语音链条仍处于 functional-not-complete，后续由 Realtime Cognitive
-Scheduler 接管后进入闭环。直到 scheduler 接入前，监控仅能显示
-真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`。
+当前语音链条已进入 scheduler-backed functional stage：round 生命周期、
+scheduler 状态和 interrupt 可见性会进入 Web 监控，但仍处于
+functional-not-complete。真实流式 LLM/TTS 尚未接入，监控只能展示
+真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`，不能把未接入的
+streaming LLM/TTS 阶段显示成完成。
 
 暂不做：
 
 - 不重构安全与权限层。
 - 不重构 `eimemory` 内部存储模型。
 - 不把大脑策略、人格、LLM 路由迁移到 `eihead`。
+- 不把 `eibrain.cognition.realtime` 认知调度所有权迁移到 `eihead`；
+  standalone export 只临时携带最小 scheduler 兼容目录，直到
+  eibrain/eihead protocol split 完成。
 - 不在第一版引入复杂消息总线；先用 HTTP JSON 加状态文件，后续再评估 WebSocket/MQTT。
 
 ## Current Extraction Boundary
@@ -187,6 +192,8 @@ eibrain -> eihead：
 - `Eye`: realtime stream detection 状态、`/dev/video0` 摄像头、`/dev/hailo0` Hailo、GStreamer pipeline、parser error count、FPS、检测框、分数、最近帧。
 - `Neck`: 当前水平角、目标角、动作频率、抖动抑制状态。
 - `Protocol`: 最近 `trace_id`、capability、observation、action、outcome。
+- `Voice scheduler`: round、scheduler、interrupt 状态；真实流式 LLM/TTS
+  未接入前必须显示 `not_wired/unknown/degraded`。
 
 验收标准：
 

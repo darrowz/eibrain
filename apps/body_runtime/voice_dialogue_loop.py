@@ -5,11 +5,22 @@ from __future__ import annotations
 import re
 import threading
 import time
+from typing import TYPE_CHECKING
 
-from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from apps.body_runtime.app import BodyRuntimeApp
-from eibrain.protocol.actions import PlaySpeechAction
+from eibrain.cognition.realtime import (
+    FastThinkEngine,
+    InterruptionController,
+    RealtimeTurnManager,
+    ResponseArbiter,
+    SpeechActionPlanner,
+    TurnBlackboard,
+)
+from eibrain.protocol.actions import PlaySpeechAction, StopSpeechAction
 from eibrain.protocol.observations import AudioTranscriptFinal
+
+if TYPE_CHECKING:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
 
 
 class VoiceDialogueLoop:
@@ -31,6 +42,11 @@ class VoiceDialogueLoop:
         engagement_writer: object | None = None,
         waking_phrase: str = "\u6211\u5728\u3002",
         sleeping_phrase: str = "\u597d\u7684\uff0c\u5148\u4f11\u606f\u3002",
+        realtime_turn_manager: RealtimeTurnManager | None = None,
+        fast_think_engine: FastThinkEngine | None = None,
+        response_arbiter: ResponseArbiter | None = None,
+        interruption_controller: InterruptionController | None = None,
+        speech_action_planner: SpeechActionPlanner | None = None,
     ) -> None:
         self.body_runtime = body_runtime
         self.cognitive_runtime = cognitive_runtime
@@ -57,22 +73,32 @@ class VoiceDialogueLoop:
         self._last_engagement_state = self.conversation_active
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self.realtime_turn_manager = realtime_turn_manager or RealtimeTurnManager()
+        self.fast_think_engine = fast_think_engine or FastThinkEngine()
+        self.response_arbiter = response_arbiter or ResponseArbiter()
+        self.interruption_controller = interruption_controller or InterruptionController()
+        self.speech_action_planner = speech_action_planner or SpeechActionPlanner()
+        self._turn_lock = threading.RLock()
+        self._interrupted_round_count = 0
+        self._last_microfeedback: dict[str, object] | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
-        self.body_runtime.update_voice_dialogue_state(
-            enabled=True,
-            running=True,
-            phase="starting",
-            last_status="starting",
-            last_error="",
-            wake_word=self.wake_word,
-            sleep_word=self.sleep_word,
-            conversation_active=self.conversation_active,
-            last_reply="",
-        )
+        payload = {
+            "enabled": True,
+            "running": True,
+            "phase": "starting",
+            "last_status": "starting",
+            "last_error": "",
+            "wake_word": self.wake_word,
+            "sleep_word": self.sleep_word,
+            "conversation_active": self.conversation_active,
+            "last_reply": "",
+        }
+        payload.update(self._round_state_payload())
+        self.body_runtime.update_voice_dialogue_state(**payload)
         self._publish_engagement_state(phase="running" if self.conversation_active else "sleeping")
         self._thread = threading.Thread(target=self._run, name="voice-dialogue-loop", daemon=True)
         self._thread.start()
@@ -82,14 +108,16 @@ class VoiceDialogueLoop:
         if self._thread is not None:
             self._thread.join(timeout=3)
         self._thread = None
-        self.body_runtime.update_voice_dialogue_state(
-            running=False,
-            phase="stopped",
-            last_status="stopped",
-            conversation_active=self.conversation_active,
-            wake_word=self.wake_word,
-            sleep_word=self.sleep_word,
-        )
+        payload = {
+            "running": False,
+            "phase": "stopped",
+            "last_status": "stopped",
+            "conversation_active": self.conversation_active,
+            "wake_word": self.wake_word,
+            "sleep_word": self.sleep_word,
+        }
+        payload.update(self._round_state_payload())
+        self.body_runtime.update_voice_dialogue_state(**payload)
         self._publish_engagement_state(
             phase="stopped",
             conversation_active=self.conversation_active,
@@ -123,6 +151,151 @@ class VoiceDialogueLoop:
                 last_error="engagement write failed",
             )
 
+    def request_interrupt(self, *, reason: str = "user_barge_in") -> dict[str, object]:
+        with self._turn_lock:
+            old_turn = self.realtime_turn_manager.current_turn()
+            interruption = self.interruption_controller.interrupt_and_start_new_round(
+                self.realtime_turn_manager,
+                reason=reason,
+            )
+            new_turn = self.realtime_turn_manager.current_turn()
+            if old_turn is not None and old_turn.state == "interrupted":
+                self._interrupted_round_count += 1
+            self._last_microfeedback = None
+
+        stop_status, stop_error = self._dispatch_stop_speech()
+        self._publish_state(
+            phase="listening" if self.conversation_active else "idle",
+            last_status="interrupted",
+            turn=new_turn,
+            interruption=interruption,
+            stop_speech_status=stop_status,
+            stop_speech_error=stop_error,
+            interrupt_active=True,
+            last_interrupt=interruption,
+            last_error="",
+        )
+        return interruption
+
+    def _start_round(self, *, reason: str) -> TurnBlackboard:
+        with self._turn_lock:
+            self._last_microfeedback = None
+            return self.realtime_turn_manager.start_round(reason=reason)
+
+    def _finalize_asr(
+        self,
+        turn: TurnBlackboard,
+        transcript: str,
+    ) -> TurnBlackboard:
+        with self._turn_lock:
+            finalized = self.realtime_turn_manager.finalize_asr(
+                round_id=turn.round_id,
+                cancellation_token=turn.cancellation_token,
+                asr_text=transcript,
+            )
+            if transcript.strip():
+                fast_result = self.fast_think_engine.process_partial(finalized, transcript)
+                self._last_microfeedback = {
+                    "text": fast_result.microfeedback,
+                    "deadline_ms": fast_result.deadline_ms,
+                    "source": fast_result.source,
+                    "stable": fast_result.stable,
+                }
+            return finalized
+
+    def _is_current_turn(self, turn: TurnBlackboard) -> bool:
+        with self._turn_lock:
+            return self.realtime_turn_manager.is_current(
+                round_id=turn.round_id,
+                cancellation_token=turn.cancellation_token,
+            )
+
+    def _round_state_payload(self, turn: TurnBlackboard | None = None) -> dict[str, object]:
+        with self._turn_lock:
+            current_turn = self.realtime_turn_manager.current_turn()
+            selected_turn = turn or current_turn
+            current_round_id = current_turn.round_id if current_turn is not None else ""
+            current_cancellation_token = (
+                current_turn.cancellation_token if current_turn is not None else ""
+            )
+            scheduler_state = (
+                selected_turn.to_dict()
+                if selected_turn is not None
+                else {"state": "idle", "interrupted_round_count": self._interrupted_round_count}
+            )
+            interrupted_round_count = self._interrupted_round_count
+
+        payload: dict[str, object] = {
+            "current_round_id": current_round_id,
+            "current_cancellation_token": current_cancellation_token,
+            "scheduler_state": scheduler_state,
+            "interrupted_round_count": interrupted_round_count,
+            "microfeedback": dict(self._last_microfeedback or {}),
+        }
+        if selected_turn is not None:
+            payload["round_id"] = selected_turn.round_id
+            payload["cancellation_token"] = selected_turn.cancellation_token
+        return payload
+
+    def _publish_stale_round(
+        self,
+        turn: TurnBlackboard,
+        *,
+        reason: str,
+        last_transcript: str = "",
+        last_reply: str = "",
+        last_error: str = "",
+    ) -> None:
+        self._publish_state(
+            phase="idle",
+            last_status="stale_round_blocked",
+            turn=turn,
+            last_transcript=last_transcript,
+            last_reply=last_reply,
+            last_error=last_error,
+            stale_round={
+                "round_id": turn.round_id,
+                "cancellation_token": turn.cancellation_token,
+                "state": turn.state,
+                "reason": reason,
+            },
+        )
+
+    def _dispatch_stop_speech(self) -> tuple[str, str]:
+        action = StopSpeechAction(
+            ts=time.time(),
+            source="voice_dialogue_loop",
+            session_id=self.session_id,
+            actor_id=self.actor_id,
+            reason="voice_loop_interrupt",
+            details={"reason": "voice_loop_interrupt"},
+        )
+        try:
+            outcomes = self.body_runtime.dispatch_actions([action])
+        except Exception as exc:
+            return "unsupported", str(exc)
+        if outcomes:
+            return "ok", ""
+        return "not_supported", ""
+
+    def _actions_allowed_for_turn(
+        self,
+        turn: TurnBlackboard,
+        actions: list[object],
+        reply: str,
+    ) -> bool:
+        if not self._is_current_turn(turn):
+            return False
+        if not actions or not reply:
+            return True
+        plan = self.speech_action_planner.plan(turn, speech_text=reply)
+        with self._turn_lock:
+            return self.response_arbiter.allow_speaking(
+                self.realtime_turn_manager,
+                turn,
+                plan,
+            )
+
     @staticmethod
     def _strip_trigger(text: str, trigger: str) -> tuple[str, bool]:
         value = text.strip()
@@ -137,7 +310,14 @@ class VoiceDialogueLoop:
         remainder = value[match.end() :].strip()
         return remainder, True
 
-    def _publish_state(self, *, phase: str, last_status: str, **updates: object) -> None:
+    def _publish_state(
+        self,
+        *,
+        phase: str,
+        last_status: str,
+        turn: TurnBlackboard | None = None,
+        **updates: object,
+    ) -> None:
         payload = {
             "phase": phase,
             "last_status": last_status,
@@ -147,21 +327,41 @@ class VoiceDialogueLoop:
             "sleep_word": self.sleep_word,
             "conversation_active": self.conversation_active,
         }
+        payload.update(self._round_state_payload(turn))
+        if last_status not in {"interrupted", "stale_round_blocked"}:
+            payload.setdefault("interrupt_active", False)
         payload.update(updates)
         payload.setdefault("last_reply", self.body_runtime.voice_dialogue_state.get("last_reply", ""))
         self.body_runtime.update_voice_dialogue_state(**payload)
 
-    def _dispatch_ack_reply(self, text: str):
-        actions = [
-            PlaySpeechAction(
-                ts=time.time(),
-                source="voice_dialogue_loop",
-                session_id=self.session_id,
-                actor_id=self.actor_id,
-                text=text,
-            )
-        ]
-        return self.body_runtime.dispatch_actions(actions)
+    def _dispatch_ack_reply(self, text: str, turn: TurnBlackboard) -> bool:
+        action = PlaySpeechAction(
+            ts=time.time(),
+            source="voice_dialogue_loop",
+            session_id=self.session_id,
+            actor_id=self.actor_id,
+            text=text,
+        )
+        if not self._actions_allowed_for_turn(turn, [action], text):
+            return False
+        if not self._is_current_turn(turn):
+            return False
+        self.body_runtime.dispatch_actions([action])
+        return True
+
+    def _publish_stale_ack(
+        self,
+        turn: TurnBlackboard,
+        *,
+        reason: str,
+        last_transcript: str,
+    ) -> None:
+        self._publish_stale_round(
+            turn,
+            reason=reason,
+            last_transcript=last_transcript,
+            last_reply="",
+        )
 
     def _replace_transcript(
         self,
@@ -191,7 +391,8 @@ class VoiceDialogueLoop:
                     self._sleep(self.idle_interval_s)
                     continue
                 turn_started = time.perf_counter()
-                self._publish_state(phase="listening", last_status="listening")
+                turn = self._start_round(reason="listening")
+                self._publish_state(phase="listening", last_status="listening", turn=turn)
                 listen_started = time.perf_counter()
                 chunk_count = max(
                     self.min_chunk_count,
@@ -204,6 +405,17 @@ class VoiceDialogueLoop:
                 )
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
+                try:
+                    turn = self._finalize_asr(turn, transcript)
+                except RuntimeError as exc:
+                    self._publish_stale_round(
+                        turn,
+                        reason="finalize_asr_rejected",
+                        last_transcript=transcript,
+                        last_error=str(exc),
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
 
                 if not self.conversation_active:
                     wake_transcript, woke = self._strip_trigger(transcript, self.wake_word)
@@ -221,6 +433,7 @@ class VoiceDialogueLoop:
                         self._publish_state(
                             phase="idle",
                             last_status=status,
+                            turn=turn,
                             conversation_active=False,
                             last_transcript=transcript,
                             last_latency_s={
@@ -251,12 +464,21 @@ class VoiceDialogueLoop:
                         self._publish_state(
                             phase="idle",
                             last_status="wake_acknowledged",
+                            turn=turn,
                             conversation_active=True,
                             last_transcript=self.wake_word,
                             last_reply=self.waking_phrase,
                         )
                         think_started = time.perf_counter()
-                        self._dispatch_ack_reply(self.waking_phrase)
+                        ack_dispatched = self._dispatch_ack_reply(self.waking_phrase, turn)
+                        if not ack_dispatched:
+                            self._publish_stale_ack(
+                                turn,
+                                reason="wake_ack_round_not_current",
+                                last_transcript=self.wake_word,
+                            )
+                            self._sleep(self.empty_interval_s)
+                            continue
                         think_s = time.perf_counter() - think_started
                         total_s = time.perf_counter() - turn_started
                         stage_latency_ms = self._stage_latency_ms(
@@ -267,7 +489,9 @@ class VoiceDialogueLoop:
                         self._publish_state(
                             phase="idle",
                             last_status="wake_acknowledged",
+                            turn=turn,
                             conversation_active=True,
+                            last_transcript=self.wake_word,
                             last_reply=self.waking_phrase,
                             last_latency_s={
                                 "listen_asr": round(listen_asr_s, 2),
@@ -292,6 +516,7 @@ class VoiceDialogueLoop:
                     self._publish_state(
                         phase="idle",
                         last_status="no_transcript",
+                        turn=turn,
                         last_transcript="",
                         last_error="",
                         last_latency_s={
@@ -319,11 +544,28 @@ class VoiceDialogueLoop:
                         conversation_active=False,
                         reason="sleep_word_detected",
                     )
-                    self._dispatch_ack_reply(self.sleeping_phrase)
+                    self._publish_state(
+                        phase="idle",
+                        last_status="sleep_acknowledged",
+                        turn=turn,
+                        conversation_active=False,
+                        last_transcript=self.sleep_word,
+                        last_reply=self.sleeping_phrase,
+                    )
+                    ack_dispatched = self._dispatch_ack_reply(self.sleeping_phrase, turn)
+                    if not ack_dispatched:
+                        self._publish_stale_ack(
+                            turn,
+                            reason="sleep_ack_round_not_current",
+                            last_transcript=self.sleep_word,
+                        )
+                        self._sleep(self.empty_interval_s)
+                        continue
                     think_s = time.perf_counter() - think_started
                     self._publish_state(
                         phase="idle",
                         last_status="sleep_acknowledged",
+                        turn=turn,
                         conversation_active=False,
                         last_transcript=self.sleep_word,
                         last_reply=self.sleeping_phrase,
@@ -343,6 +585,7 @@ class VoiceDialogueLoop:
                     self._publish_state(
                         phase="idle",
                         last_status="short_transcript_ignored",
+                        turn=turn,
                         last_transcript=transcript_for_cognitive,
                     )
                     self._sleep(self.empty_interval_s)
@@ -352,6 +595,15 @@ class VoiceDialogueLoop:
                 self._publish_state(
                     phase="thinking",
                     last_status="transcribed",
+                    turn=turn,
+                    conversation_active=True,
+                    last_transcript=observation.text,
+                    last_error="",
+                )
+                self._publish_state(
+                    phase="thinking",
+                    last_status="thinking",
+                    turn=turn,
                     conversation_active=True,
                     last_transcript=observation.text,
                     last_error="",
@@ -365,6 +617,14 @@ class VoiceDialogueLoop:
                     if getattr(action, "kind", "") == "play_speech_action":
                         reply = str(getattr(action, "text", "") or "")
                         break
+                if not self._actions_allowed_for_turn(turn, actions, reply):
+                    self._publish_stale_round(
+                        turn,
+                        reason="round_not_current_or_unstable",
+                        last_transcript=observation.text,
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
                 speak_started = time.perf_counter()
                 if actions:
                     outcomes = self.body_runtime.dispatch_actions(actions)
@@ -388,6 +648,7 @@ class VoiceDialogueLoop:
                 self._publish_state(
                     phase="idle",
                     last_status="reply_ready" if reply else "no_reply",
+                    turn=turn,
                     conversation_active=True,
                     last_transcript=observation.text,
                     last_reply=reply,
@@ -403,6 +664,8 @@ class VoiceDialogueLoop:
                     last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
                     last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                     last_completed_turn={
+                        "round_id": turn.round_id,
+                        "cancellation_token": turn.cancellation_token,
                         "turn_count": turn_count,
                         "transcript": observation.text,
                         "reply": reply,
