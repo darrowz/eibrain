@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from apps.body_runtime.app import BodyRuntimeApp
 from eibrain.cognition.realtime import (
@@ -19,8 +19,186 @@ from eibrain.cognition.realtime import (
 from eibrain.protocol.actions import PlaySpeechAction, StopSpeechAction
 from eibrain.protocol.observations import AudioTranscriptFinal
 
+try:  # Task A may not be present on every branch yet.
+    from eibrain.body.realtime_voice import RealtimeVoiceSession
+except Exception:  # pragma: no cover - compatibility shim
+    RealtimeVoiceSession = None  # type: ignore[assignment]
+
 if TYPE_CHECKING:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+
+class _FallbackRealtimeVoiceSession:
+    """Small local snapshot model used when Task A's session object is absent."""
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        actor_id: str,
+        round_id: str,
+        cancellation_token: str,
+    ) -> None:
+        self.session_id = session_id
+        self.actor_id = actor_id
+        self.round_id = round_id
+        self.cancellation_token = cancellation_token
+        self.phase = "idle"
+        self.status = "idle"
+        self.transcript_final = ""
+        self.reply_text = ""
+        self.interrupted = False
+        self.interrupt_reason = ""
+        self.started_at_s: float | None = None
+        self.final_asr_at_s: float | None = None
+        self.first_reply_at_s: float | None = None
+        self.first_speech_at_s: float | None = None
+        self.completed_at_s: float | None = None
+        self.events: list[dict[str, object]] = []
+
+    def start_listening(self, **_: object) -> None:
+        self.started_at_s = time.perf_counter()
+        self.phase = "listening"
+        self.status = "waiting_for_audio"
+        self._record("listening", "waiting_for_audio", lane="listening", event_type="listening_started")
+
+    def finalize_transcript(self, text: str, **_: object) -> None:
+        self.final_asr_at_s = time.perf_counter()
+        self.transcript_final = text.strip()
+        self.phase = "thinking_stream"
+        self.status = "final_transcript"
+        self._record(
+            "thinking_stream",
+            "final_transcript",
+            transcript=self.transcript_final,
+            lane="listening",
+            event_type="asr_final",
+        )
+
+    def update_microfeedback(self, text: str, **_: object) -> None:
+        self._record(
+            self.phase,
+            "microfeedback",
+            detail=text.strip(),
+            lane="fast_think",
+            event_type="microfeedback",
+            payload={"text": text.strip()},
+        )
+
+    def append_reply_delta(self, delta: str, **_: object) -> None:
+        if self.first_reply_at_s is None:
+            self.first_reply_at_s = time.perf_counter()
+        self.reply_text += delta
+        self.phase = "thinking_stream"
+        self.status = "reply_delta"
+        self._record(
+            "thinking_stream",
+            "reply_delta",
+            reply_delta=delta,
+            lane="slow_thinking",
+            event_type="agent_think",
+        )
+
+    def start_speaking(self, **_: object) -> None:
+        if self.first_speech_at_s is None:
+            self.first_speech_at_s = time.perf_counter()
+        self.phase = "speaking_stream"
+        self.status = "speech_started"
+        self._record("speaking_stream", "speech_started", lane="speaking", event_type="tts_started")
+
+    def complete(self, *, status: str = "ok", **_: object) -> None:
+        self.completed_at_s = time.perf_counter()
+        self.phase = "completed"
+        self.status = status
+        self._record("completed", status, lane="complete", event_type="complete")
+
+    def fail(self, error: str, **_: object) -> None:
+        self.completed_at_s = time.perf_counter()
+        self.phase = "error"
+        self.status = "error"
+        self._record("error", "error", detail=error, lane="complete", event_type="error")
+
+    def interrupt(self, *, reason: str = "user_barge_in", **_: object) -> None:
+        self.interrupted = True
+        self.interrupt_reason = reason
+        self.phase = "barge_in"
+        self.status = "interrupted"
+        self._record(
+            "barge_in",
+            "interrupted",
+            detail=reason,
+            lane="interrupt",
+            event_type="interrupt",
+            payload={"reason": reason},
+        )
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "session_id": self.session_id,
+            "actor_id": self.actor_id,
+            "round_id": self.round_id,
+            "roundId": self.round_id,
+            "cancellation_token": self.cancellation_token,
+            "cancellationToken": self.cancellation_token,
+            "phase": self.phase,
+            "status": self.status,
+            "transcript_final": self.transcript_final,
+            "reply_text": self.reply_text,
+            "interrupted": self.interrupted,
+            "interrupt_reason": self.interrupt_reason,
+            "latency_ms": self.latency_ms(),
+            "event_count": len(self.events),
+            "events": [dict(event) for event in self.events],
+        }
+
+    def latency_ms(self) -> dict[str, float]:
+        started = self.started_at_s
+        if started is None:
+            return {}
+        result: dict[str, float] = {}
+        if self.final_asr_at_s is not None:
+            result["final_asr"] = self._elapsed_ms(started, self.final_asr_at_s)
+        if self.first_reply_at_s is not None:
+            result["first_reply_token"] = self._elapsed_ms(started, self.first_reply_at_s)
+        if self.first_speech_at_s is not None:
+            result["first_speech"] = self._elapsed_ms(started, self.first_speech_at_s)
+        if self.completed_at_s is not None:
+            result["total"] = self._elapsed_ms(started, self.completed_at_s)
+        return result
+
+    def _record(
+        self,
+        phase: str,
+        status: str,
+        *,
+        transcript: str = "",
+        reply_delta: str = "",
+        detail: str = "",
+        lane: str,
+        event_type: str,
+        payload: dict[str, object] | None = None,
+    ) -> None:
+        self.events.append(
+            {
+                "phase": phase,
+                "status": status,
+                "lane": lane,
+                "event_type": event_type,
+                "transcript": transcript,
+                "reply_delta": reply_delta,
+                "detail": detail,
+                "at_s": time.perf_counter(),
+                "round_id": self.round_id,
+                "roundId": self.round_id,
+                "cancellation_token": self.cancellation_token,
+                "cancellationToken": self.cancellation_token,
+                "payload": dict(payload or {}),
+            }
+        )
+
+    @staticmethod
+    def _elapsed_ms(start_s: float, end_s: float) -> float:
+        return round(max(0.0, end_s - start_s) * 1000, 2)
 
 
 class VoiceDialogueLoop:
@@ -81,6 +259,7 @@ class VoiceDialogueLoop:
         self._turn_lock = threading.RLock()
         self._interrupted_round_count = 0
         self._last_microfeedback: dict[str, object] | None = None
+        self._realtime_session: object | None = None
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -154,6 +333,7 @@ class VoiceDialogueLoop:
     def request_interrupt(self, *, reason: str = "user_barge_in") -> dict[str, object]:
         with self._turn_lock:
             old_turn = self.realtime_turn_manager.current_turn()
+            old_realtime_session = self._realtime_session
             interruption = self.interruption_controller.interrupt_and_start_new_round(
                 self.realtime_turn_manager,
                 reason=reason,
@@ -163,11 +343,13 @@ class VoiceDialogueLoop:
                 self._interrupted_round_count += 1
             self._last_microfeedback = None
 
+        self._call_realtime(old_realtime_session, "interrupt", reason=reason, turn=old_turn)
         stop_status, stop_error = self._dispatch_stop_speech()
         self._publish_state(
             phase="listening" if self.conversation_active else "idle",
             last_status="interrupted",
             turn=new_turn,
+            realtime_voice_session=old_realtime_session,
             interruption=interruption,
             stop_speech_status=stop_status,
             stop_speech_error=stop_error,
@@ -210,6 +392,113 @@ class VoiceDialogueLoop:
                 cancellation_token=turn.cancellation_token,
             )
 
+    def _start_realtime_session(self, turn: TurnBlackboard) -> object:
+        session_cls = RealtimeVoiceSession or _FallbackRealtimeVoiceSession
+        session = session_cls(
+            session_id=self.session_id,
+            actor_id=self.actor_id,
+            round_id=turn.round_id,
+            cancellation_token=turn.cancellation_token,
+        )
+        self._call_realtime(session, "start_listening", turn=turn)
+        with self._turn_lock:
+            self._realtime_session = session
+        return session
+
+    def _realtime_session_for_turn(self, turn: TurnBlackboard | None = None) -> object | None:
+        with self._turn_lock:
+            session = self._realtime_session
+        if session is None or turn is None:
+            return session
+        snapshot = self._realtime_snapshot(session)
+        if snapshot.get("round_id") != turn.round_id:
+            return None
+        return session
+
+    def _call_realtime(
+        self,
+        session: object | None,
+        method_name: str,
+        *args: object,
+        turn: TurnBlackboard | None = None,
+        **kwargs: object,
+    ) -> None:
+        if session is None:
+            return
+        method = getattr(session, method_name, None)
+        if not callable(method):
+            return
+        if turn is not None:
+            kwargs.setdefault("round_id", turn.round_id)
+            kwargs.setdefault("cancellation_token", turn.cancellation_token)
+        try:
+            method(*args, **kwargs)
+        except TypeError:
+            try:
+                method(*args)
+            except (RuntimeError, ValueError, TypeError):
+                return
+        except (RuntimeError, ValueError):
+            return
+
+    def _realtime_snapshot(self, session: object | None) -> dict[str, object]:
+        if session is None:
+            return {}
+        snapshot = getattr(session, "snapshot", None)
+        if callable(snapshot):
+            try:
+                value = snapshot()
+                if isinstance(value, dict):
+                    return value
+            except (RuntimeError, ValueError, TypeError):
+                return {}
+        return {}
+
+    def _realtime_updates(
+        self,
+        session: object | None,
+        *,
+        last_reply_delta: str | None = None,
+    ) -> dict[str, object]:
+        snapshot = self._realtime_snapshot(session)
+        if not snapshot:
+            return {}
+        events = list(snapshot.get("events", []) or [])
+        if last_reply_delta is None:
+            for event in reversed(events):
+                if isinstance(event, dict) and event.get("reply_delta"):
+                    last_reply_delta = str(event.get("reply_delta") or "")
+                    break
+        latency_ms = dict(snapshot.get("latency_ms", {}) or {})
+        return {
+            "realtime_session": snapshot,
+            "realtime_events": events,
+            "last_reply_delta": last_reply_delta or "",
+            "closed_loop_state": self._closed_loop_state(snapshot, events),
+            "realtime_latency_ms": latency_ms,
+        }
+
+    @staticmethod
+    def _closed_loop_state(
+        snapshot: dict[str, object],
+        events: list[object],
+    ) -> dict[str, bool]:
+        event_types = {
+            str(event.get("event_type", ""))
+            for event in events
+            if isinstance(event, dict)
+        }
+        phase = str(snapshot.get("phase", ""))
+        return {
+            "listening": "listening_started" in event_types or phase == "listening",
+            "final_asr": "asr_final" in event_types or bool(snapshot.get("transcript_final")),
+            "reply_delta": "agent_think" in event_types or bool(snapshot.get("reply_text")),
+            "speaking": "tts_started" in event_types or bool(snapshot.get("first_speech_at_s")),
+            "complete": "complete" in event_types or phase == "completed" or bool(snapshot.get("complete")),
+            "error": "error" in event_types or phase == "error",
+            "interrupted": "interrupt" in event_types or phase == "barge_in" or bool(snapshot.get("interrupted")),
+        }
+
     def _round_state_payload(self, turn: TurnBlackboard | None = None) -> dict[str, object]:
         with self._turn_lock:
             current_turn = self.realtime_turn_manager.current_turn()
@@ -245,11 +534,13 @@ class VoiceDialogueLoop:
         last_transcript: str = "",
         last_reply: str = "",
         last_error: str = "",
+        realtime_voice_session: object | None = None,
     ) -> None:
         self._publish_state(
             phase="idle",
             last_status="stale_round_blocked",
             turn=turn,
+            realtime_voice_session=realtime_voice_session,
             last_transcript=last_transcript,
             last_reply=last_reply,
             last_error=last_error,
@@ -275,7 +566,16 @@ class VoiceDialogueLoop:
         except Exception as exc:
             return "unsupported", str(exc)
         if outcomes:
-            return "ok", ""
+            statuses = [str(getattr(outcome, "status", "") or "") for outcome in outcomes]
+            ok_statuses = {"ok", "healthy", "completed", "stopped"}
+            if all(status in ok_statuses for status in statuses):
+                return "ok", ""
+            first_status = next((status for status in statuses if status), "failed")
+            details = getattr(outcomes[0], "details", None)
+            error = ""
+            if isinstance(details, dict):
+                error = str(details.get("last_error") or details.get("error") or details.get("reason") or "")
+            return first_status, error
         return "not_supported", ""
 
     def _actions_allowed_for_turn(
@@ -316,6 +616,7 @@ class VoiceDialogueLoop:
         phase: str,
         last_status: str,
         turn: TurnBlackboard | None = None,
+        realtime_voice_session: object | None = None,
         **updates: object,
     ) -> None:
         payload = {
@@ -328,6 +629,8 @@ class VoiceDialogueLoop:
             "conversation_active": self.conversation_active,
         }
         payload.update(self._round_state_payload(turn))
+        session = realtime_voice_session or self._realtime_session_for_turn(turn)
+        payload.update(self._realtime_updates(session))
         if last_status not in {"interrupted", "stale_round_blocked"}:
             payload.setdefault("interrupt_active", False)
         payload.update(updates)
@@ -380,6 +683,169 @@ class VoiceDialogueLoop:
             target_id=observation.target_id,
         )
 
+    def _streaming_facade(self):
+        for name in (
+            "stream_observation",
+            "handle_observation_stream",
+            "stream_handle_observation",
+            "stream_response",
+        ):
+            facade = getattr(self.cognitive_runtime, name, None)
+            if callable(facade):
+                return facade
+        return None
+
+    def _open_cognitive_stream(
+        self,
+        facade,
+        observation: AudioTranscriptFinal,
+        turn: TurnBlackboard,
+        session: object,
+    ) -> Iterable[object]:
+        try:
+            return facade(
+                observation,
+                round_id=turn.round_id,
+                cancellation_token=turn.cancellation_token,
+                realtime_session=session,
+            )
+        except TypeError:
+            try:
+                return facade(
+                    observation,
+                    round_id=turn.round_id,
+                    cancellation_token=turn.cancellation_token,
+                )
+            except TypeError:
+                return facade(observation)
+
+    def _run_cognition_turn(
+        self,
+        observation: AudioTranscriptFinal,
+        turn: TurnBlackboard,
+        session: object,
+    ) -> tuple[list[object], str, float, str, bool]:
+        think_started = time.perf_counter()
+        facade = self._streaming_facade()
+        if facade is None:
+            actions = list(self.cognitive_runtime.handle_observation(observation) or [])
+            reply = self._reply_from_actions(actions)
+            think_s = time.perf_counter() - think_started
+            if not self._is_current_turn(turn):
+                return actions, reply, think_s, "round_not_current_or_unstable", False
+            return actions, reply, think_s, "", False
+
+        actions: list[object] = []
+        reply_parts: list[str] = []
+        emitted_reply_delta = False
+        for item in self._open_cognitive_stream(facade, observation, turn, session):
+            if not self._is_current_turn(turn):
+                return actions, "".join(reply_parts), time.perf_counter() - think_started, "streaming_round_not_current", emitted_reply_delta
+            delta = self._reply_delta_from_stream_item(item)
+            if delta:
+                reply_parts.append(delta)
+                emitted_reply_delta = True
+                self._call_realtime(session, "append_reply_delta", delta, turn=turn)
+                self._publish_state(
+                    phase="thinking",
+                    last_status="reply_delta",
+                    turn=turn,
+                    realtime_voice_session=session,
+                    conversation_active=True,
+                    last_transcript=observation.text,
+                    last_reply="".join(reply_parts),
+                    last_reply_delta=delta,
+                    last_error="",
+                )
+            item_actions = self._actions_from_stream_item(item, observation)
+            if item_actions:
+                actions.extend(item_actions)
+
+        reply = self._reply_from_actions(actions) or "".join(reply_parts)
+        if not actions and reply:
+            actions = [
+                PlaySpeechAction(
+                    ts=time.time(),
+                    source="voice_dialogue_loop",
+                    session_id=observation.session_id,
+                    actor_id=observation.actor_id,
+                    text=reply,
+                )
+            ]
+        return actions, reply, time.perf_counter() - think_started, "", emitted_reply_delta
+
+    @staticmethod
+    def _reply_from_actions(actions: list[object]) -> str:
+        for action in actions:
+            if getattr(action, "kind", "") == "play_speech_action":
+                return str(getattr(action, "text", "") or "")
+        return ""
+
+    @staticmethod
+    def _reply_delta_from_stream_item(item: object) -> str:
+        if isinstance(item, dict):
+            item_type = str(item.get("type") or item.get("kind") or item.get("event") or item.get("event_type") or "")
+            if item_type in {"reply_delta", "delta", "agent_think", "thinking_delta"}:
+                return str(item.get("delta") or item.get("text") or item.get("reply_delta") or "")
+            return ""
+        item_type = str(
+            getattr(item, "type", "")
+            or getattr(item, "kind", "")
+            or getattr(item, "event", "")
+            or getattr(item, "event_type", "")
+        )
+        if item_type in {"reply_delta", "delta", "agent_think", "thinking_delta"}:
+            return str(
+                getattr(item, "delta", "")
+                or getattr(item, "text", "")
+                or getattr(item, "reply_delta", "")
+                or ""
+            )
+        return ""
+
+    @staticmethod
+    def _actions_from_stream_item(item: object, observation: AudioTranscriptFinal | None = None) -> list[object]:
+        if isinstance(item, list):
+            return VoiceDialogueLoop._coerce_stream_actions(item, observation)
+        if isinstance(item, dict):
+            actions = item.get("actions")
+            if isinstance(actions, list):
+                return VoiceDialogueLoop._coerce_stream_actions(actions, observation)
+            action = item.get("action")
+            return VoiceDialogueLoop._coerce_stream_actions([action], observation) if action is not None else []
+        if getattr(item, "kind", "") == "play_speech_action":
+            return [item]
+        actions = getattr(item, "actions", None)
+        if isinstance(actions, list):
+            return VoiceDialogueLoop._coerce_stream_actions(actions, observation)
+        return []
+
+    @staticmethod
+    def _coerce_stream_actions(actions: list[object], observation: AudioTranscriptFinal | None) -> list[object]:
+        coerced: list[object] = []
+        for action in actions:
+            if isinstance(action, dict):
+                payload = action
+                kind = str(payload.get("kind") or payload.get("type") or "")
+                if kind != "play_speech_action":
+                    continue
+                text = str(payload.get("text") or payload.get("reply_text") or "")
+                if not text:
+                    continue
+                coerced.append(
+                    PlaySpeechAction(
+                        ts=float(payload.get("ts") or time.time()),
+                        source=str(payload.get("source") or "voice_dialogue_loop"),
+                        session_id=str(payload.get("session_id") or getattr(observation, "session_id", "") or ""),
+                        actor_id=str(payload.get("actor_id") or getattr(observation, "actor_id", "") or ""),
+                        target_id=str(payload.get("target_id") or getattr(observation, "target_id", "") or ""),
+                        text=text,
+                    )
+                )
+                continue
+            coerced.append(action)
+        return coerced
+
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
@@ -392,7 +858,13 @@ class VoiceDialogueLoop:
                     continue
                 turn_started = time.perf_counter()
                 turn = self._start_round(reason="listening")
-                self._publish_state(phase="listening", last_status="listening", turn=turn)
+                realtime_session = self._start_realtime_session(turn)
+                self._publish_state(
+                    phase="listening",
+                    last_status="listening",
+                    turn=turn,
+                    realtime_voice_session=realtime_session,
+                )
                 listen_started = time.perf_counter()
                 chunk_count = max(
                     self.min_chunk_count,
@@ -408,14 +880,24 @@ class VoiceDialogueLoop:
                 try:
                     turn = self._finalize_asr(turn, transcript)
                 except RuntimeError as exc:
+                    self._call_realtime(realtime_session, "fail", "finalize_asr_rejected", turn=turn)
                     self._publish_stale_round(
                         turn,
                         reason="finalize_asr_rejected",
                         last_transcript=transcript,
                         last_error=str(exc),
+                        realtime_voice_session=realtime_session,
                     )
                     self._sleep(self.empty_interval_s)
                     continue
+                self._call_realtime(realtime_session, "finalize_transcript", transcript, turn=turn)
+                if self._last_microfeedback:
+                    self._call_realtime(
+                        realtime_session,
+                        "update_microfeedback",
+                        str(self._last_microfeedback.get("text") or ""),
+                        turn=turn,
+                    )
 
                 if not self.conversation_active:
                     wake_transcript, woke = self._strip_trigger(transcript, self.wake_word)
@@ -430,10 +912,12 @@ class VoiceDialogueLoop:
                             listen_asr_s=listen_asr_s,
                             total_s=time.perf_counter() - turn_started,
                         )
+                        self._call_realtime(realtime_session, "complete", status=status, turn=turn)
                         self._publish_state(
                             phase="idle",
                             last_status=status,
                             turn=turn,
+                            realtime_voice_session=realtime_session,
                             conversation_active=False,
                             last_transcript=transcript,
                             last_latency_s={
@@ -479,6 +963,8 @@ class VoiceDialogueLoop:
                             )
                             self._sleep(self.empty_interval_s)
                             continue
+                        self._call_realtime(realtime_session, "append_reply_delta", self.waking_phrase, turn=turn)
+                        self._call_realtime(realtime_session, "start_speaking", turn=turn)
                         think_s = time.perf_counter() - think_started
                         total_s = time.perf_counter() - turn_started
                         stage_latency_ms = self._stage_latency_ms(
@@ -486,13 +972,16 @@ class VoiceDialogueLoop:
                             think_s=think_s,
                             total_s=total_s,
                         )
+                        self._call_realtime(realtime_session, "complete", status="wake_acknowledged", turn=turn)
                         self._publish_state(
                             phase="idle",
                             last_status="wake_acknowledged",
                             turn=turn,
+                            realtime_voice_session=realtime_session,
                             conversation_active=True,
                             last_transcript=self.wake_word,
                             last_reply=self.waking_phrase,
+                            last_reply_delta=self.waking_phrase,
                             last_latency_s={
                                 "listen_asr": round(listen_asr_s, 2),
                                 "think": round(think_s, 2),
@@ -513,10 +1002,12 @@ class VoiceDialogueLoop:
                         total_s=time.perf_counter() - turn_started,
                     )
                     self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                    self._call_realtime(realtime_session, "complete", status="no_transcript", turn=turn)
                     self._publish_state(
                         phase="idle",
                         last_status="no_transcript",
                         turn=turn,
+                        realtime_voice_session=realtime_session,
                         last_transcript="",
                         last_error="",
                         last_latency_s={
@@ -561,14 +1052,19 @@ class VoiceDialogueLoop:
                         )
                         self._sleep(self.empty_interval_s)
                         continue
+                    self._call_realtime(realtime_session, "append_reply_delta", self.sleeping_phrase, turn=turn)
+                    self._call_realtime(realtime_session, "start_speaking", turn=turn)
                     think_s = time.perf_counter() - think_started
+                    self._call_realtime(realtime_session, "complete", status="sleep_acknowledged", turn=turn)
                     self._publish_state(
                         phase="idle",
                         last_status="sleep_acknowledged",
                         turn=turn,
+                        realtime_voice_session=realtime_session,
                         conversation_active=False,
                         last_transcript=self.sleep_word,
                         last_reply=self.sleeping_phrase,
+                        last_reply_delta=self.sleeping_phrase,
                         last_error="",
                         last_latency_s={
                             "listen_asr": round(listen_asr_s, 2),
@@ -582,10 +1078,12 @@ class VoiceDialogueLoop:
 
                 if len(transcript_for_cognitive) <= 1:
                     self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                    self._call_realtime(realtime_session, "complete", status="short_transcript_ignored", turn=turn)
                     self._publish_state(
                         phase="idle",
                         last_status="short_transcript_ignored",
                         turn=turn,
+                        realtime_voice_session=realtime_session,
                         last_transcript=transcript_for_cognitive,
                     )
                     self._sleep(self.empty_interval_s)
@@ -608,25 +1106,64 @@ class VoiceDialogueLoop:
                     last_transcript=observation.text,
                     last_error="",
                 )
-                think_started = time.perf_counter()
-                actions = self.cognitive_runtime.handle_observation(observation)
-                think_s = time.perf_counter() - think_started
-
-                reply = ""
-                for action in actions:
-                    if getattr(action, "kind", "") == "play_speech_action":
-                        reply = str(getattr(action, "text", "") or "")
-                        break
+                actions, reply, think_s, stale_reason, emitted_reply_delta = self._run_cognition_turn(
+                    observation,
+                    turn,
+                    realtime_session,
+                )
+                if stale_reason:
+                    self._publish_stale_round(
+                        turn,
+                        reason=stale_reason,
+                        last_transcript=observation.text,
+                        realtime_voice_session=realtime_session,
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
                 if not self._actions_allowed_for_turn(turn, actions, reply):
                     self._publish_stale_round(
                         turn,
                         reason="round_not_current_or_unstable",
                         last_transcript=observation.text,
+                        realtime_voice_session=realtime_session,
                     )
                     self._sleep(self.empty_interval_s)
                     continue
+                if reply and not emitted_reply_delta:
+                    self._call_realtime(realtime_session, "append_reply_delta", reply, turn=turn)
+                    self._publish_state(
+                        phase="thinking",
+                        last_status="reply_delta",
+                        turn=turn,
+                        realtime_voice_session=realtime_session,
+                        conversation_active=True,
+                        last_transcript=observation.text,
+                        last_reply=reply,
+                        last_reply_delta=reply,
+                        last_error="",
+                    )
                 speak_started = time.perf_counter()
                 if actions:
+                    self._call_realtime(realtime_session, "start_speaking", turn=turn)
+                    self._publish_state(
+                        phase="speaking",
+                        last_status="speaking_dispatch",
+                        turn=turn,
+                        realtime_voice_session=realtime_session,
+                        conversation_active=True,
+                        last_transcript=observation.text,
+                        last_reply=reply,
+                        last_error="",
+                    )
+                    if not self._is_current_turn(turn):
+                        self._publish_stale_round(
+                            turn,
+                            reason="speaking_round_not_current",
+                            last_transcript=observation.text,
+                            realtime_voice_session=realtime_session,
+                        )
+                        self._sleep(self.empty_interval_s)
+                        continue
                     outcomes = self.body_runtime.dispatch_actions(actions)
                     all_ok = bool(outcomes) and all(
                         getattr(outcome, "status", "") == "ok" for outcome in outcomes
@@ -637,6 +1174,12 @@ class VoiceDialogueLoop:
                     outcomes = []
                     status = "no_reply"
                 speak_s = time.perf_counter() - speak_started
+                self._call_realtime(
+                    realtime_session,
+                    "complete",
+                    status="reply_ready" if reply else status,
+                    turn=turn,
+                )
                 turn_count = int(self.body_runtime.voice_dialogue_state.get("turn_count", 0) or 0) + 1
                 total_s = time.perf_counter() - turn_started
                 stage_latency_ms = self._stage_latency_ms(
@@ -649,6 +1192,7 @@ class VoiceDialogueLoop:
                     phase="idle",
                     last_status="reply_ready" if reply else "no_reply",
                     turn=turn,
+                    realtime_voice_session=realtime_session,
                     conversation_active=True,
                     last_transcript=observation.text,
                     last_reply=reply,
@@ -684,11 +1228,15 @@ class VoiceDialogueLoop:
                 )
                 self._sleep(self.idle_interval_s)
             except Exception as exc:  # pragma: no cover - runtime boundary
-                self.body_runtime.update_voice_dialogue_state(
-                    phase="error",
-                    last_status="error",
-                    last_error=str(exc),
-                )
+                session = self._realtime_session_for_turn()
+                self._call_realtime(session, "fail", str(exc))
+                payload = {
+                    "phase": "error",
+                    "last_status": "error",
+                    "last_error": str(exc),
+                }
+                payload.update(self._realtime_updates(session))
+                self.body_runtime.update_voice_dialogue_state(**payload)
                 self._sleep(max(1.5, self.empty_interval_s))
 
     def _sleep(self, seconds: float) -> None:

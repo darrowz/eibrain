@@ -23,7 +23,7 @@ def test_realtime_voice_session_tracks_streaming_latency() -> None:
     assert snapshot["phase"] == "completed"
     assert snapshot["transcript_final"] == "你好鸿途"
     assert snapshot["reply_text"] == "我在。"
-    assert snapshot["latency_ms"] == {
+    expected_latency = {
         "audio_detect": 100.0,
         "first_partial_asr": 250.0,
         "final_asr": 800.0,
@@ -31,6 +31,18 @@ def test_realtime_voice_session_tracks_streaming_latency() -> None:
         "first_speech": 1300.0,
         "total": 2000.0,
     }
+    assert expected_latency.items() <= snapshot["latency_ms"].items()
+    assert snapshot["complete"] is True
+    assert snapshot["closed_loop"] is True
+    assert snapshot["closed_loop_state"] == {
+        "final_asr": True,
+        "first_reply_delta": True,
+        "first_speech": True,
+        "complete": True,
+    }
+    assert snapshot["latency_ms"]["final_asr_to_first_reply_token"] == 300.0
+    assert snapshot["latency_ms"]["first_reply_token_to_first_speech"] == 200.0
+    assert snapshot["latency_ms"]["first_speech_to_complete"] == 700.0
 
 
 def test_realtime_voice_session_records_barge_in() -> None:
@@ -93,6 +105,61 @@ def test_realtime_voice_session_generates_stable_nonempty_round_token() -> None:
     assert session.snapshot()["cancellation_token"] == session.cancellation_token
 
 
+def test_realtime_voice_start_listening_can_rotate_to_fresh_round() -> None:
+    from eibrain.body.realtime_voice import RealtimeVoiceSession
+
+    ticks = iter([0.0, 0.5, 1.0])
+    session = RealtimeVoiceSession(
+        session_id="s1",
+        actor_id="darrow",
+        clock=lambda: next(ticks),
+        round_id="round-voice-1",
+        cancellation_token="tok-voice-1",
+    )
+
+    session.start_listening()
+    session.update_partial_transcript("old partial")
+
+    session.start_listening(
+        fresh_round=True,
+        round_id="round-voice-2",
+        cancellation_token="tok-voice-2",
+    )
+
+    snapshot = session.snapshot()
+    assert snapshot["round_id"] == "round-voice-2"
+    assert snapshot["cancellation_token"] == "tok-voice-2"
+    assert snapshot["transcript_partial"] == ""
+    assert snapshot["event_count"] == 1
+    assert snapshot["events"][0]["event_type"] == "listening_started"
+    assert snapshot["events"][0]["round_id"] == "round-voice-2"
+
+
+def test_realtime_voice_rejects_old_token_after_fresh_round_rotation() -> None:
+    from eibrain.body.realtime_voice import RealtimeVoiceSession
+
+    ticks = iter([0.0, 1.0])
+    session = RealtimeVoiceSession(
+        session_id="s1",
+        actor_id="darrow",
+        clock=lambda: next(ticks),
+        round_id="round-voice-1",
+        cancellation_token="tok-voice-1",
+    )
+
+    session.start_listening()
+    session.start_listening(
+        fresh_round=True,
+        round_id="round-voice-2",
+        cancellation_token="tok-voice-2",
+    )
+
+    assert session.is_current(round_id="round-voice-1", cancellation_token="tok-voice-1") is False
+    assert session.is_current(round_id="round-voice-2", cancellation_token="tok-voice-2") is True
+    with pytest.raises(RuntimeError, match="not current"):
+        session.note_audio(round_id="round-voice-1", cancellation_token="tok-voice-1")
+
+
 def test_realtime_voice_interrupt_records_complete_cancellation_chain() -> None:
     from eibrain.body.realtime_voice import RealtimeVoiceSession
 
@@ -116,6 +183,8 @@ def test_realtime_voice_interrupt_records_complete_cancellation_chain() -> None:
     assert session.generation_cancelled is True
     assert session.tts_stopped is True
     assert session.action_plan_cancelled is True
+    assert snapshot["complete"] is False
+    assert snapshot["closed_loop"] is False
     assert chain_targets == ["generation", "tts", "action_plan"]
     assert [event["event_type"] for event in interrupt_events] == [
         "interrupt",

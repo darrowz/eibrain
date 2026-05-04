@@ -148,7 +148,7 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
         },
         {
             "path": "eihead/monitoring/voice.py",
-            "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+            "role": "Monitor payload normalizer for offline/quasi-streaming closed-loop voice diagnostics and not-wired truthfulness.",
         },
     ]
     assert manifest["native_runtime_web_files"] == [
@@ -267,6 +267,9 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "Scheduler" in readme
     assert "scheduler-backed functional stage" in readme
     assert "real streaming LLM/TTS" in readme
+    assert "functional offline/quasi-streaming diagnostics" in readme
+    assert "not hardware-verified real streaming" in readme
+    assert "closed-loop voice diagnostics" in readme
     assert "round/scheduler/interrupt" in readme
     assert "hardware verification" in readme
     assert "Static image detection is compatibility/test-only" in readme
@@ -334,7 +337,7 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
         },
         {
             "path": "eihead/monitoring/voice.py",
-            "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+            "role": "Monitor payload normalizer for offline/quasi-streaming closed-loop voice diagnostics and not-wired truthfulness.",
         },
     ]
     assert manifest["native_runtime_web_files"] == [
@@ -371,6 +374,9 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
     assert "/api/voice/realtime" in readme
     assert "/api/audio/realtime" in readme
     assert "functional-not-complete" in readme
+    assert "functional offline/quasi-streaming diagnostics" in readme
+    assert "not hardware-verified real streaming" in readme
+    assert "closed-loop voice diagnostics" in readme
     assert "Realtime Cognitive" in readme
     assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
@@ -383,6 +389,16 @@ def test_exported_transitional_runtime_imports_without_brain_runtime(tmp_path: P
     module.export_eihead_repo(target, repo_root=REPO_ROOT)
 
     env = {**os.environ, "PYTHONPATH": str(target)}
+    compile_result = subprocess.run(
+        [sys.executable, "-m", "compileall", "-q", "."],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=target,
+        env=env,
+    )
+    assert compile_result.returncode == 0, compile_result.stderr
+
     result = subprocess.run(
         [
             sys.executable,
@@ -390,13 +406,18 @@ def test_exported_transitional_runtime_imports_without_brain_runtime(tmp_path: P
             (
                 "import apps.body_runtime.voice_dialogue_loop; "
                 "import apps.body_runtime.verify_hardware; "
+                "import eibrain.body.vad_policy; "
+                "import eibrain.body.sherpa_streaming; "
                 "import eibrain.verification; "
-                "import eibrain.cognition.realtime"
+                "import eibrain.cognition.realtime; "
+                "import eihead.monitoring.web; "
+                "import eihead.runtime.app"
             ),
         ],
         check=False,
         capture_output=True,
         text=True,
+        cwd=target,
         env=env,
     )
 

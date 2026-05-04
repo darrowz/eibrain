@@ -94,6 +94,7 @@ class RealtimeVoiceSession:
     action_plan_cancelled: bool = False
     cancellation_chain: list[dict[str, object]] = field(default_factory=list)
     events: list[RealtimeVoiceEvent] = field(default_factory=list)
+    _round_sequence: int = field(default=1, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.round_id = self._stable_identifier(self.round_id, suffix="round")
@@ -108,8 +109,12 @@ class RealtimeVoiceSession:
         *,
         round_id: str | None = None,
         cancellation_token: str | None = None,
+        fresh_round: bool = False,
     ) -> None:
-        self._reject_if_supplied_stale(round_id=round_id, cancellation_token=cancellation_token)
+        if fresh_round:
+            self._rotate_round(round_id=round_id, cancellation_token=cancellation_token)
+        else:
+            self._reject_if_supplied_stale(round_id=round_id, cancellation_token=cancellation_token)
         now_s = self._now()
         self.started_at_s = now_s
         self.first_audio_at_s = None
@@ -129,6 +134,8 @@ class RealtimeVoiceSession:
         self.tts_stopped = False
         self.action_plan_cancelled = False
         self.cancellation_chain.clear()
+        if fresh_round:
+            self.events.clear()
         self._transition(
             "listening",
             "waiting_for_audio",
@@ -344,6 +351,8 @@ class RealtimeVoiceSession:
     reject_if_cancelled = reject_if_stale
 
     def snapshot(self) -> dict[str, object]:
+        complete = self._is_complete()
+        closed_loop_state = self._closed_loop_state()
         return {
             "session_id": self.session_id,
             "actor_id": self.actor_id,
@@ -353,6 +362,9 @@ class RealtimeVoiceSession:
             "cancellationToken": self.cancellation_token,
             "phase": self.phase,
             "status": self.status,
+            "complete": complete,
+            "closed_loop": self._is_closed_loop_complete(),
+            "closed_loop_state": closed_loop_state,
             "transcript_partial": self.transcript_partial,
             "transcript_final": self.transcript_final,
             "reply_text": self.reply_text,
@@ -390,7 +402,53 @@ class RealtimeVoiceSession:
             result["first_speech"] = self._elapsed_ms(started, self.first_speech_at_s)
         if self.completed_at_s is not None:
             result["total"] = self._elapsed_ms(started, self.completed_at_s)
+        if self.final_asr_at_s is not None and self.first_reply_at_s is not None:
+            result["final_asr_to_first_reply_token"] = self._elapsed_ms(
+                self.final_asr_at_s,
+                self.first_reply_at_s,
+            )
+        if self.first_reply_at_s is not None and self.first_speech_at_s is not None:
+            result["first_reply_token_to_first_speech"] = self._elapsed_ms(
+                self.first_reply_at_s,
+                self.first_speech_at_s,
+            )
+        if self.first_speech_at_s is not None and self.completed_at_s is not None:
+            result["first_speech_to_complete"] = self._elapsed_ms(
+                self.first_speech_at_s,
+                self.completed_at_s,
+            )
         return result
+
+    def _rotate_round(
+        self,
+        *,
+        round_id: str | None,
+        cancellation_token: str | None,
+    ) -> None:
+        self._round_sequence += 1
+        self.round_id = self._stable_identifier(
+            round_id,
+            suffix=f"round-{self._round_sequence}",
+        )
+        self.cancellation_token = self._stable_identifier(
+            cancellation_token,
+            suffix="token",
+            seed=self.round_id,
+        )
+
+    def _is_complete(self) -> bool:
+        return self.phase == "completed"
+
+    def _closed_loop_state(self) -> dict[str, bool]:
+        return {
+            "final_asr": self.final_asr_at_s is not None,
+            "first_reply_delta": self.first_reply_at_s is not None,
+            "first_speech": self.first_speech_at_s is not None,
+            "complete": self._is_complete(),
+        }
+
+    def _is_closed_loop_complete(self) -> bool:
+        return all(self._closed_loop_state().values())
 
     def _transition(
         self,

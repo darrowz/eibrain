@@ -482,6 +482,99 @@ class CleanRoundVoiceApp(FakeMonitorApp):
         }
 
 
+class ClosedLoopRealtimeVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {
+                "phase": "speaking_stream",
+                "last_status": "speaking_stream",
+                "current_round_id": "round-live-1",
+                "current_cancellation_token": "tok-live-1",
+                "scheduler_state": {"state": "active", "round_id": "round-live-1"},
+                "interrupt_active": False,
+                "interrupted_round_count": 0,
+            },
+            "realtime_session": {
+                "session_id": "session-live-1",
+                "actor_id": "darrow",
+                "round_id": "round-live-1",
+                "roundId": "round-live-1",
+                "cancellation_token": "tok-live-1",
+                "cancellationToken": "tok-live-1",
+                "phase": "speaking_stream",
+                "status": "reply_delta",
+                "complete": False,
+                "closed_loop": False,
+                "closed_loop_state": {
+                    "final_asr": True,
+                    "first_reply_delta": True,
+                    "first_speech": True,
+                    "complete": False,
+                },
+                "transcript_final": "你好鸿途",
+                "reply_text": "我在。",
+                "latency_ms": {
+                    "final_asr": 800.0,
+                    "first_reply_token": 1100.0,
+                    "first_speech": 1300.0,
+                    "final_asr_to_first_reply_token": 300.0,
+                    "first_reply_token_to_first_speech": 200.0,
+                },
+                "event_count": 4,
+                "events": [
+                    {"event_type": "listening_started", "lane": "listening", "round_id": "round-live-1"},
+                    {"event_type": "asr_final", "lane": "listening", "transcript": "你好鸿途"},
+                    {
+                        "event_type": "reply_delta",
+                        "lane": "slow_thinking",
+                        "reply_delta": "我在。",
+                        "round_id": "round-live-1",
+                    },
+                    {"event_type": "tts_started", "lane": "speaking", "round_id": "round-live-1"},
+                ],
+                "cancellation_chain": [
+                    {
+                        "target": "generation",
+                        "event_type": "generation_cancelled",
+                        "reason": "new_round",
+                        "round_id": "round-old",
+                        "cancellation_token": "tok-old",
+                    }
+                ],
+            },
+        }
+
+
+class HistoricalClosedLoopOnlyVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "completed",
+            "realtime_session": {
+                "session_id": "session-old",
+                "round_id": "round-old",
+                "cancellation_token": "tok-old",
+                "phase": "completed",
+                "status": "completed",
+                "complete": True,
+                "closed_loop": True,
+                "closed_loop_state": {
+                    "final_asr": True,
+                    "first_reply_delta": True,
+                    "first_speech": True,
+                    "complete": True,
+                },
+                "latency_ms": {"first_reply_token": 1100.0, "first_speech": 1300.0, "total": 2000.0},
+                "event_count": 6,
+                "events": [{"event_type": "complete", "lane": "complete", "reply_delta": "旧回复"}],
+            },
+        }
+
+
 class FallbackMouthVoiceApp(FakeMonitorApp):
     def voice_status(self) -> dict[str, object]:
         return {
@@ -779,6 +872,76 @@ def test_voice_helper_shows_clean_interrupt_state_when_no_interrupts_seen() -> N
     assert payload["interruption"]["component_state"] == "wired"
     assert payload["interruption"]["interrupted"] is False
     assert payload["interruption"]["interrupted_round_count"] == 0
+
+
+def test_voice_helper_exposes_closed_loop_realtime_session_fields() -> None:
+    payload = build_voice_diagnostics_from_app(ClosedLoopRealtimeVoiceApp(), timestamp=657.0)
+
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["realtime_session"]["session_id"] == "session-live-1"
+    assert payload["realtime_session"]["round_id"] == "round-live-1"
+    assert payload["realtime_session"]["latency_ms"]["first_reply_token"] == 1100.0
+    assert payload["realtime_events"][-2]["reply_delta"] == "我在。"
+    assert payload["event_count"] == 4
+    assert payload["closed_loop_state"] == {
+        "final_asr": True,
+        "first_reply_delta": True,
+        "first_speech": True,
+        "complete": False,
+    }
+    assert payload["last_reply_delta"] == "我在。"
+    assert payload["latency"]["stage_latency_ms"]["first_reply_token"] == 1100.0
+    assert payload["latency"]["stage_latency_ms"]["first_speech"] == 1300.0
+    assert payload["latency"]["stage_latency_ms"]["final_asr_to_first_reply_token"] == 300.0
+    assert payload["cancellation_chain"] == [
+        {
+            "target": "generation",
+            "event_type": "generation_cancelled",
+            "reason": "new_round",
+            "round_id": "round-old",
+            "cancellation_token": "tok-old",
+        }
+    ]
+
+
+def test_voice_api_and_html_render_closed_loop_realtime_fields() -> None:
+    app = ClosedLoopRealtimeVoiceApp()
+
+    with running_server(app, clock=lambda: 657.5) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["realtime_session"]["session_id"] == "session-live-1"
+    assert payload["event_count"] == 4
+    assert payload["last_reply_delta"] == "我在。"
+    assert payload["latency"]["stage_latency_ms"]["first_speech"] == 1300.0
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Closed loop" in body
+    assert "first_reply_delta" in body
+    assert "Realtime events" in body
+    assert "4" in body
+    assert "Last reply delta" in body
+    assert "我在。" in body
+    assert "First reply token" in body
+    assert "1100.0ms" in body
+    assert "First speech" in body
+    assert "1300.0ms" in body
+    assert "Cancellation chain" in body
+    assert "generation" in body
+
+
+def test_voice_helper_keeps_historical_closed_loop_session_not_wired_without_live_components() -> None:
+    payload = build_voice_diagnostics_from_app(HistoricalClosedLoopOnlyVoiceApp(), timestamp=657.8)
+
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["not_wired"] is True
+    assert payload["realtime_session"]["session_id"] == "session-old"
+    assert payload["event_count"] == 6
+    assert payload["closed_loop_state"]["complete"] is True
 
 
 def test_voice_helper_does_not_promote_fallback_mouth_to_wired() -> None:

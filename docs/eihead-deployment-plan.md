@@ -43,7 +43,9 @@ and template set only; it does not perform deployment.
   - `GET /api/audio/realtime`
 - The voice chain has entered a scheduler-backed functional stage for
   round lifecycle, scheduler status, and interrupt visibility. It is still not
-  wired to real streaming LLM/TTS, so missing flow stages must remain explicit
+  wired to real streaming LLM/TTS. Treat the current closed-loop voice
+  diagnostics as functional offline/quasi-streaming diagnostics, not
+  hardware-verified real streaming, so missing flow stages must remain explicit
   as `not_wired/unknown/degraded`.
 - While `apps.body_runtime` is still exported, `/dev-project/eihead` also
   carries the minimal `eibrain/cognition/realtime` transitional package for
@@ -116,7 +118,10 @@ sudo systemctl enable eihead-runtime.service eihead-monitor.service
   `unknown`, or `not wired`; blank "normal" placeholders are not acceptable.
 - Voice status appears via `/api/voice/realtime` and `/api/audio/realtime`, and
   Web can show round/scheduler/interrupt state; until real streaming LLM/TTS is
-  connected, monitor values must remain explicit about incomplete flow stages.
+  connected and hardware-verified, monitor values must remain explicit about
+  incomplete flow stages. Offline/quasi-streaming closed-loop diagnostics are
+  useful for deployment triage, but they do not satisfy real streaming voice
+  acceptance by themselves.
 - Realtime eye stream detection from `/dev/video0` and `/dev/hailo0` publishes
   frame age, FPS, detection boxes, scores, backend, and stale/error state to
   the monitor.

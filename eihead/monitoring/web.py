@@ -434,6 +434,16 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_scheduler = _display_value(_voice_scheduler_summary(voice.get("scheduler")))
     voice_interruption = _display_value(_voice_interruption_summary(voice.get("interruption")))
     voice_microfeedback = _display_value(_voice_microfeedback_summary(voice.get("microfeedback")))
+    voice_closed_loop = _display_value(_voice_closed_loop_summary(voice.get("closed_loop_state")))
+    voice_event_count = _display_value(_metric_value(voice.get("event_count")))
+    voice_last_reply_delta = _display_value(voice.get("last_reply_delta") or "unknown")
+    voice_first_reply_token = _display_value(
+        _metric_value(_voice_latency_stage_ms(voice.get("latency"), "first_reply_token"), suffix="ms")
+    )
+    voice_first_speech = _display_value(
+        _metric_value(_voice_latency_stage_ms(voice.get("latency"), "first_speech"), suffix="ms")
+    )
+    voice_cancellation_chain = _display_value(_voice_cancellation_chain_summary(voice.get("cancellation_chain")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
 
     status_json = _json_for_html(status)
@@ -508,6 +518,12 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Scheduler</div><span class="metric">{voice_scheduler}</span></div>
       <div class="card"><div class="label">Interrupts</div><span class="metric">{voice_interruption}</span></div>
       <div class="card"><div class="label">Microfeedback</div><span class="metric">{voice_microfeedback}</span></div>
+      <div class="card"><div class="label">Closed loop</div><span class="metric">{voice_closed_loop}</span></div>
+      <div class="card"><div class="label">Realtime events</div><span class="metric">{voice_event_count}</span></div>
+      <div class="card"><div class="label">Last reply delta</div><span class="metric">{voice_last_reply_delta}</span></div>
+      <div class="card"><div class="label">First reply token</div><span class="metric">{voice_first_reply_token}</span></div>
+      <div class="card"><div class="label">First speech</div><span class="metric">{voice_first_speech}</span></div>
+      <div class="card"><div class="label">Cancellation chain</div><span class="metric">{voice_cancellation_chain}</span></div>
       <div class="card"><div class="label">Readiness</div><span class="metric">{voice_readiness}</span></div>
     </section>
     <h2>Status</h2>
@@ -633,6 +649,15 @@ def _voice_latency_total_ms(value: Any) -> Any:
     return value.get("total_ms")
 
 
+def _voice_latency_stage_ms(value: Any, key: str) -> Any:
+    if not isinstance(value, Mapping):
+        return None
+    stage_latency = value.get("stage_latency_ms")
+    if isinstance(stage_latency, Mapping):
+        return stage_latency.get(key)
+    return None
+
+
 def _voice_bottleneck_summary(value: Any) -> str:
     if not isinstance(value, Mapping):
         return "unknown"
@@ -719,6 +744,36 @@ def _voice_microfeedback_summary(value: Any) -> str:
         if label:
             return str(label)
     return _metric_value(value)
+
+
+def _voice_closed_loop_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    parts: list[str] = []
+    for key in ("final_asr", "first_reply_delta", "first_speech", "complete"):
+        if key in value:
+            parts.append(f"{key}={'yes' if value.get(key) is True else 'no'}")
+    return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_cancellation_chain_summary(value: Any) -> str:
+    if value is None:
+        return "none"
+    if not isinstance(value, (list, tuple)):
+        return _metric_value(value)
+    if not value:
+        return "none"
+    targets: list[str] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            target = item.get("target") or item.get("event_type") or item.get("reason")
+            if target:
+                targets.append(str(target))
+        elif item not in (None, ""):
+            targets.append(str(item))
+    if not targets:
+        return "none"
+    return " -> ".join(targets)
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:

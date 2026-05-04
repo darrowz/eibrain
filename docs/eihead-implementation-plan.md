@@ -30,9 +30,10 @@ web 语音状态入口。
 
 当前语音链条已进入 scheduler-backed functional stage：round 生命周期、
 scheduler 状态和 interrupt 可见性会进入 Web 监控，但仍处于
-functional-not-complete。真实流式 LLM/TTS 尚未接入，监控只能展示
-真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`，不能把未接入的
-streaming LLM/TTS 阶段显示成完成。
+functional-not-complete。当前闭环语音诊断是 functional offline/quasi-streaming
+diagnostics，不是 hardware-verified real streaming。真实流式 LLM/TTS 尚未接入，
+监控只能展示真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`，
+不能把未接入的 streaming LLM/TTS 阶段显示成完成。
 
 暂不做：
 

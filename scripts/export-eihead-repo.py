@@ -159,7 +159,7 @@ NATIVE_REALTIME_VOICE_FILES = (
     },
     {
         "path": "eihead/monitoring/voice.py",
-        "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+        "role": "Monitor payload normalizer for offline/quasi-streaming closed-loop voice diagnostics and not-wired truthfulness.",
     },
 )
 
@@ -258,11 +258,14 @@ Native runtime and monitor surface includes:
 
 Voice chain is now in a scheduler-backed functional stage using Realtime
 Cognitive Scheduler for round lifecycle, scheduler status, and interrupt
-visibility. Realtime Cognitive Scheduler compatibility is transitional. It is
-still functional-not-complete: the loop has not been wired to real streaming LLM/TTS,
-and the Web monitor should make
-round/scheduler/interrupt state visible without presenting missing streaming
-stages as complete.
+visibility. Realtime Cognitive Scheduler compatibility is transitional. It
+provides functional offline/quasi-streaming diagnostics for the closed-loop
+voice diagnostics surface, but it is not hardware-verified real streaming.
+The closed-loop voice diagnostics are functional offline/quasi-streaming diagnostics,
+not hardware-verified real streaming or real streaming LLM/TTS.
+It is still functional-not-complete: the loop has not been wired to real
+streaming LLM/TTS, and the Web monitor should make round/scheduler/interrupt
+state visible without presenting missing streaming stages as complete.
 
 The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:

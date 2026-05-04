@@ -77,6 +77,97 @@ class _BlockingCognition:
         ]
 
 
+class _StreamingCognition:
+    def __init__(self, deltas: list[str] | None = None, reply: str = "你好，我在。") -> None:
+        self.deltas = deltas or ["你好", "，我在。"]
+        self.reply = reply
+        self.observations = []
+        self.stream_kwargs = []
+        self.batch_called = False
+
+    def stream_observation(self, observation, **kwargs):
+        self.observations.append(observation)
+        self.stream_kwargs.append(kwargs)
+        for delta in self.deltas:
+            yield {"type": "reply_delta", "text": delta}
+        yield {
+            "type": "actions",
+            "actions": [
+                PlaySpeechAction(
+                    ts=1.0,
+                    source="test",
+                    session_id=observation.session_id,
+                    actor_id=observation.actor_id,
+                    text=self.reply,
+                )
+            ],
+        }
+
+    def handle_observation(self, observation):
+        self.batch_called = True
+        raise AssertionError("streaming cognition should not use batch fallback")
+
+
+class _JsonStreamingCognition:
+    def __init__(self) -> None:
+        self.observations = []
+        self.stream_kwargs = []
+        self.batch_called = False
+
+    def handle_observation_stream(self, observation, *, round_id: str = "", cancellation_token: str = ""):
+        self.observations.append(observation)
+        self.stream_kwargs.append({"round_id": round_id, "cancellation_token": cancellation_token})
+        yield {"type": "status", "status": "started", "round_id": round_id, "cancellation_token": cancellation_token}
+        yield {"type": "reply_delta", "delta": "JSON 回复", "round_id": round_id, "cancellation_token": cancellation_token}
+        yield {
+            "type": "actions_final",
+            "status": "planned",
+            "reply_text": "JSON 回复",
+            "round_id": round_id,
+            "cancellation_token": cancellation_token,
+            "actions": [
+                {
+                    "kind": "play_speech_action",
+                    "ts": 1.0,
+                    "source": "json-test",
+                    "session_id": observation.session_id,
+                    "actor_id": observation.actor_id,
+                    "text": "JSON 回复",
+                }
+            ],
+        }
+
+    def handle_observation(self, observation):
+        self.batch_called = True
+        raise AssertionError("JSON streaming cognition should not use batch fallback")
+
+
+class _BlockingStreamingCognition:
+    def __init__(self, *, ready: threading.Event, release: threading.Event) -> None:
+        self.ready = ready
+        self.release = release
+        self.observations = []
+
+    def stream_observation(self, observation, **kwargs):
+        self.observations.append(observation)
+        yield {"type": "reply_delta", "text": "先想一下"}
+        self.ready.set()
+        assert self.release.wait(timeout=1.0)
+        yield {"type": "reply_delta", "text": "旧 round delta"}
+        yield {
+            "type": "actions",
+            "actions": [
+                PlaySpeechAction(
+                    ts=1.0,
+                    source="test",
+                    session_id=observation.session_id,
+                    actor_id=observation.actor_id,
+                    text="旧 round 回复",
+                )
+            ],
+        }
+
+
 class _NoStopSpeechBody(_Body):
     def __init__(self, transcripts: list[str]) -> None:
         super().__init__(transcripts)
@@ -245,6 +336,111 @@ def test_voice_dialogue_loop_processes_one_turn() -> None:
     assert body.voice_dialogue_state["last_completed_turn"]["stage_latency_ms"]["total"] >= 0
 
 
+def test_voice_dialogue_loop_uses_streaming_facade_for_closed_loop_diagnostics() -> None:
+    body = _Body(["你好"])
+    cognition = _StreamingCognition(deltas=["你", "好"], reply="你好")
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: any(update.get("last_status") == "reply_ready" for update in body.updates))
+    loop.stop()
+
+    assert cognition.observations[0].text == "你好"
+    assert cognition.stream_kwargs[0]["round_id"].startswith("round-")
+    assert cognition.stream_kwargs[0]["cancellation_token"]
+    assert cognition.batch_called is False
+    assert body.dispatched[0].text == "你好"
+
+    delta_updates = [update for update in body.updates if update.get("last_status") == "reply_delta"]
+    assert [update["last_reply_delta"] for update in delta_updates[:2]] == ["你", "好"]
+    final_state = body.voice_dialogue_state
+    assert final_state["last_reply_delta"] == "好"
+    assert final_state["closed_loop_state"]["listening"] is True
+    assert final_state["closed_loop_state"]["final_asr"] is True
+    assert final_state["closed_loop_state"]["reply_delta"] is True
+    assert final_state["closed_loop_state"]["speaking"] is True
+    assert final_state["closed_loop_state"]["complete"] is True
+    assert final_state["realtime_session"]["transcript_final"] == "你好"
+    assert final_state["realtime_session"]["reply_text"] == "你好"
+    event_types = [event["event_type"] for event in final_state["realtime_events"]]
+    assert "listening_started" in event_types
+    assert "asr_final" in event_types
+    assert "agent_think" in event_types
+    assert "tts_started" in event_types
+    assert "complete" in event_types
+
+
+def test_voice_dialogue_loop_preserves_round_token_for_json_stream_facade() -> None:
+    body = _Body(["你好"])
+    cognition = _JsonStreamingCognition()
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: any(update.get("last_status") == "reply_ready" for update in body.updates))
+    loop.stop()
+
+    assert cognition.batch_called is False
+    assert cognition.stream_kwargs[0]["round_id"].startswith("round-")
+    assert cognition.stream_kwargs[0]["cancellation_token"]
+    assert body.dispatched
+    assert isinstance(body.dispatched[0], PlaySpeechAction)
+    assert body.dispatched[0].text == "JSON 回复"
+    assert body.voice_dialogue_state["last_reply_delta"] == "JSON 回复"
+
+
+def test_voice_dialogue_loop_publishes_closed_loop_snapshot_for_batch_fallback() -> None:
+    body = _Body(["你好"])
+    cognition = _Cognition(reply="批量回复")
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: any(update.get("last_status") == "reply_ready" for update in body.updates))
+    loop.stop()
+
+    final_state = body.voice_dialogue_state
+    assert final_state["last_reply"] == "批量回复"
+    assert final_state["last_reply_delta"] == "批量回复"
+    assert final_state["closed_loop_state"]["final_asr"] is True
+    assert final_state["closed_loop_state"]["reply_delta"] is True
+    assert final_state["closed_loop_state"]["speaking"] is True
+    assert final_state["closed_loop_state"]["complete"] is True
+    assert final_state["realtime_session"]["transcript_final"] == "你好"
+    assert final_state["realtime_events"]
+    assert final_state["realtime_latency_ms"]["total"] >= 0
+
+
+def test_voice_dialogue_loop_blocks_stale_streaming_deltas_and_actions_after_interrupt() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+
+    ready = threading.Event()
+    release = threading.Event()
+    body = _Body(["你好", ""])
+    cognition = _BlockingStreamingCognition(ready=ready, release=release)
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=cognition,
+        initial_conversation_active=True,
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+    loop.start()
+
+    assert ready.wait(timeout=1.0)
+    loop.request_interrupt(reason="user_barge_in")
+    release.set()
+    _wait_until(lambda: any(update.get("last_status") == "stale_round_blocked" for update in body.updates))
+    loop.stop()
+
+    assert any(update.get("last_reply_delta") == "先想一下" for update in body.updates)
+    assert not any(update.get("last_reply_delta") == "旧 round delta" for update in body.updates)
+    assert not any(
+        isinstance(action, PlaySpeechAction) and action.text == "旧 round 回复"
+        for action in body.dispatched
+    )
+    interrupted_updates = [update for update in body.updates if update.get("last_status") == "interrupted"]
+    assert interrupted_updates
+    assert interrupted_updates[-1]["closed_loop_state"]["interrupted"] is True
+    stale_update = _first_update(body, last_status="stale_round_blocked")
+    assert stale_update["stale_round"]["reason"] == "streaming_round_not_current"
+
+
 def test_voice_dialogue_loop_attaches_round_metadata_to_turn_lifecycle() -> None:
     body = _Body(["你好"])
     cognition = _Cognition()
@@ -299,6 +495,36 @@ def test_voice_dialogue_loop_request_interrupt_marks_round_and_tolerates_missing
     assert interrupt_update["current_round_id"] != old_turn.round_id
     assert interrupt_update["current_cancellation_token"] != old_turn.cancellation_token
     assert interrupt_update["stop_speech_status"] == "unsupported"
+
+
+def test_voice_dialogue_loop_request_interrupt_surfaces_stop_failure() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime.turn import RealtimeTurnManager
+
+    class _StopFailedBody(_Body):
+        def dispatch_actions(self, actions):
+            if any(isinstance(action, StopSpeechAction) for action in actions):
+                details = {"last_error": "device busy", "busy": True}
+                return [type("Outcome", (), {"status": "stop_failed", "details": details})()]
+            return super().dispatch_actions(actions)
+
+    body = _StopFailedBody([""])
+    cognition = _Cognition()
+    turn_manager = RealtimeTurnManager()
+    turn_manager.start_round(reason="test")
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=cognition,
+        realtime_turn_manager=turn_manager,
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+
+    loop.request_interrupt(reason="user_barge_in")
+
+    interrupt_update = _first_update(body, last_status="interrupted")
+    assert interrupt_update["stop_speech_status"] == "stop_failed"
+    assert interrupt_update["stop_speech_error"] == "device busy"
 
 
 def test_voice_dialogue_loop_does_not_dispatch_actions_from_stale_round() -> None:

@@ -241,6 +241,49 @@ class CognitiveRuntimeApp:
         self.last_llm_status["cognitive_latency_ms"] = dict(stage_latency_ms)
         return actions
 
+    def handle_observation_stream(
+        self,
+        observation: AudioTranscriptFinal,
+        round_id: str = "",
+        cancellation_token: str = "",
+    ) -> list[dict[str, object]]:
+        events: list[dict[str, object]] = [
+            self._stream_event(
+                "status",
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                status="started",
+            )
+        ]
+        actions = self.handle_observation(observation)
+        speech_action = next((action for action in actions if getattr(action, "kind", "") == "play_speech_action"), None)
+        reply_text = str(getattr(speech_action, "text", "") or "") if speech_action is not None else ""
+        for index, chunk in enumerate(self._split_reply_deltas(reply_text)):
+            events.append(
+                self._stream_event(
+                    "reply_delta",
+                    round_id=round_id,
+                    cancellation_token=cancellation_token,
+                    index=index,
+                    delta=chunk,
+                )
+            )
+        latency = dict(self.last_cognitive_latency_ms)
+        events.append(
+            self._stream_event(
+                "actions_final",
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                status="planned" if actions else "no_reply",
+                reply_text=reply_text,
+                actions=[self._action_payload(action) for action in actions],
+                stage_latency_ms=dict(latency),
+                cognitive_latency_ms=dict(latency),
+                llm_status=dict(self.last_llm_status),
+            )
+        )
+        return events
+
     def describe_visual_frame(self, *, image_url: str):
         if self.vision is None:
             return None
@@ -490,6 +533,53 @@ class CognitiveRuntimeApp:
     @staticmethod
     def _elapsed_ms(started: float) -> float:
         return round((time.perf_counter() - started) * 1000, 2)
+
+    @staticmethod
+    def _stream_event(
+        event_type: str,
+        *,
+        round_id: str,
+        cancellation_token: str,
+        **payload: object,
+    ) -> dict[str, object]:
+        return {
+            "type": event_type,
+            "round_id": round_id,
+            "cancellation_token": cancellation_token,
+            **payload,
+        }
+
+    @staticmethod
+    def _action_payload(action: object) -> dict[str, object]:
+        to_dict = getattr(action, "to_dict", None)
+        if callable(to_dict):
+            return dict(to_dict())
+        return {"kind": str(getattr(action, "kind", type(action).__name__))}
+
+    @staticmethod
+    def _split_reply_deltas(text: str) -> list[str]:
+        if not text:
+            return []
+        chunks: list[str] = []
+        start = 0
+        sentence_endings = ".!?。！？"
+        index = 0
+        while index < len(text):
+            if text[index] not in sentence_endings:
+                index += 1
+                continue
+            end = index + 1
+            while end < len(text) and text[end].isspace():
+                end += 1
+            chunk = text[start:end]
+            if chunk.strip():
+                chunks.append(chunk)
+            start = end
+            index = end
+        tail = text[start:]
+        if tail.strip():
+            chunks.append(tail)
+        return chunks
 
     def _retrieve_memory_for_visual(
         self,

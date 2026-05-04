@@ -75,6 +75,12 @@ def _build_voice_payload(
     interruption = _interruption_payload(data, dialogue_source)
     microfeedback = _microfeedback_payload(data, dialogue_source)
     latency = _latency_payload(data, dialogue_source)
+    realtime_session = _realtime_session_payload(data, dialogue_source)
+    realtime_events = _realtime_events_payload(data, dialogue_source, realtime_session)
+    event_count = _event_count_payload(data, dialogue_source, realtime_session, realtime_events)
+    closed_loop_state = _closed_loop_state_payload(data, dialogue_source, realtime_session)
+    last_reply_delta = _last_reply_delta_payload(data, dialogue_source, realtime_session, realtime_events)
+    cancellation_chain = _cancellation_chain_payload(data, dialogue_source, realtime_session)
     bottleneck = _bottleneck_payload(data, dialogue_source)
     last_turn = _last_turn_payload(data, dialogue_source)
     status, derived_wired, not_wired = _voice_overall_status(
@@ -86,6 +92,7 @@ def _build_voice_payload(
         last_turn=last_turn,
         latency=latency,
     )
+    _merge_realtime_latency(latency, data=data, dialogue=dialogue_source, realtime_session=realtime_session)
     is_wired = derived_wired if wired is None else bool(wired and derived_wired)
     readiness_message = _voice_readiness_message(
         data,
@@ -114,6 +121,12 @@ def _build_voice_payload(
         "interruption": interruption,
         "microfeedback": microfeedback,
         "latency": latency,
+        "realtime_session": realtime_session,
+        "realtime_events": realtime_events,
+        "event_count": event_count,
+        "closed_loop_state": closed_loop_state,
+        "last_reply_delta": last_reply_delta,
+        "cancellation_chain": cancellation_chain,
         "bottleneck": bottleneck,
         "last_turn": last_turn,
         "not_wired": bool(not_wired),
@@ -147,6 +160,14 @@ def _voice_payload_from_snapshot(app: Any) -> dict[str, Any] | None:
         "last_interrupt",
         "microfeedback",
         "last_stage_latency_ms",
+        "latency_ms",
+        "realtime_session",
+        "realtime_events",
+        "events",
+        "event_count",
+        "closed_loop_state",
+        "last_reply_delta",
+        "cancellation_chain",
     ):
         if key in snapshot:
             payload[key] = snapshot[key]
@@ -434,6 +455,132 @@ def _latency_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any]
     }
 
 
+def _realtime_session_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    raw = _first_value(data, "realtime_session", "realtime_voice_session", "voice_session")
+    if raw is None:
+        raw = _first_value(dialogue, "realtime_session", "realtime_voice_session", "voice_session")
+    session = _mapping_payload(_resolve_voice_candidate(raw)) if raw is not None else None
+    if session is not None:
+        return session
+    for candidate in (data, dialogue):
+        if isinstance(candidate, Mapping) and _looks_like_realtime_session(candidate):
+            return _json_mapping(candidate)
+    return None
+
+
+def _looks_like_realtime_session(value: Mapping[str, Any]) -> bool:
+    return any(key in value for key in ("session_id", "actor_id", "closed_loop_state", "cancellation_chain")) and any(
+        key in value for key in ("round_id", "roundId", "cancellation_token", "cancellationToken", "events")
+    )
+
+
+def _realtime_events_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> list[Any]:
+    raw = _first_value(data, "realtime_events")
+    if raw is None:
+        raw = _first_value(dialogue, "realtime_events")
+    if raw is None:
+        raw = _first_value(realtime_session, "events", "realtime_events")
+    if raw is None and _looks_like_realtime_session(data or {}):
+        raw = _first_value(data, "events")
+    return _json_list(raw)
+
+
+def _event_count_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+    realtime_events: list[Any],
+) -> int:
+    raw = _first_value(data, "event_count", "realtime_event_count")
+    if raw is None:
+        raw = _first_value(dialogue, "event_count", "realtime_event_count")
+    if raw is None:
+        raw = _first_value(realtime_session, "event_count", "realtime_event_count")
+    count = _int_or_none(raw)
+    if count is not None:
+        return count
+    return len(realtime_events)
+
+
+def _closed_loop_state_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    raw = _mapping_from_keys(data, "closed_loop_state")
+    if raw is None:
+        raw = _mapping_from_keys(dialogue, "closed_loop_state")
+    if raw is None:
+        raw = _mapping_from_keys(realtime_session, "closed_loop_state")
+    return raw
+
+
+def _last_reply_delta_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+    realtime_events: list[Any],
+) -> str:
+    explicit = _first_text(
+        _first_value(data, "last_reply_delta", "reply_delta"),
+        _first_value(dialogue, "last_reply_delta", "reply_delta"),
+        _first_value(realtime_session, "last_reply_delta", "reply_delta"),
+    )
+    if explicit:
+        return explicit
+    for event in reversed(realtime_events):
+        if not isinstance(event, Mapping):
+            continue
+        delta = _first_text(event.get("reply_delta"), event.get("delta"))
+        if delta:
+            return delta
+    return ""
+
+
+def _cancellation_chain_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> list[Any]:
+    raw = _first_value(data, "cancellation_chain")
+    if raw is None:
+        raw = _first_value(dialogue, "cancellation_chain")
+    if raw is None:
+        raw = _first_value(realtime_session, "cancellation_chain")
+    return _json_list(raw)
+
+
+def _merge_realtime_latency(
+    latency: dict[str, Any],
+    *,
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> None:
+    stage_latency_ms = latency.setdefault("stage_latency_ms", {})
+    if not isinstance(stage_latency_ms, dict):
+        return
+    for source in (data, dialogue, realtime_session):
+        realtime_latency = _mapping_from_keys(source, "latency_ms", "realtime_latency_ms")
+        if realtime_latency is None:
+            continue
+        for key, value in realtime_latency.items():
+            number = _float_or_none(value)
+            if number is not None:
+                stage_latency_ms.setdefault(str(key), number)
+    if latency.get("total_ms") is None:
+        total_ms = _float_or_none(stage_latency_ms.get("total"))
+        if total_ms is not None:
+            latency["total_ms"] = total_ms
+
+
 def _bottleneck_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any] | None:
     stage = _first_text(
         _first_value(dialogue, "last_bottleneck_stage"),
@@ -615,6 +762,18 @@ def _json_ready(value: Any) -> Any:
         if isinstance(payload, Mapping):
             return _json_mapping(payload)
     return str(value)
+
+
+def _json_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, (str, bytes)) or isinstance(value, Mapping):
+        return [_json_ready(value)]
+    try:
+        iterator = iter(value)
+    except TypeError:
+        return [_json_ready(value)]
+    return [_json_ready(item) for item in iterator]
 
 
 def _mapping_from_keys(mapping: Mapping[str, Any] | None, *keys: str) -> dict[str, Any] | None:
