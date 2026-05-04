@@ -6,36 +6,29 @@ without importing the eibrain protocol package.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any
+from dataclasses import dataclass, field
+
+from .base import ProtocolMessage
 
 
 @dataclass(slots=True)
-class _ActionMessage:
-    ts: float
-    source: str
-    session_id: str | None = None
-    actor_id: str | None = None
-    target_id: str | None = None
+class Action(ProtocolMessage):
     kind: str = field(init=False, default="action")
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
 
 @dataclass(slots=True)
-class PlaySpeechAction(_ActionMessage):
+class PlaySpeechAction(Action):
     text: str = ""
     kind: str = field(init=False, default="play_speech_action")
 
 
 @dataclass(slots=True)
-class StopSpeechAction(_ActionMessage):
+class StopSpeechAction(Action):
     kind: str = field(init=False, default="stop_speech_action")
 
 
 @dataclass(slots=True)
-class MoveHeadAction(_ActionMessage):
+class MoveHeadAction(Action):
     target_name: str = ""
     target_x: float | None = None
     target_angle: int | None = None

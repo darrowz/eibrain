@@ -20,6 +20,7 @@ def test_eihead_runtime_service_uses_target_paths_and_http_port() -> None:
     assert "WorkingDirectory=/opt/eihead/current" in text
     assert "Environment=PYTHONUNBUFFERED=1" in text
     assert "Environment=EIHEAD_CONFIG=/etc/eihead/eihead.honjia.yaml" in text
+    assert "Environment=EIHEAD_EXPORT_MANIFEST=/opt/eihead/current/EXPORT_MANIFEST.json" in text
     assert "EnvironmentFile=-/etc/eihead/eihead.env" in text
     assert "ExecStart=/opt/eihead/current/.venv/bin/eihead-runtime" in text
     assert "--config /etc/eihead/eihead.honjia.yaml" in text
@@ -34,6 +35,7 @@ def test_eihead_monitor_service_keeps_18080_compatibility_without_old_unit_edits
     assert "WorkingDirectory=/opt/eihead/current" in text
     assert "Environment=PYTHONUNBUFFERED=1" in text
     assert "Environment=EIHEAD_RUNTIME_URL=http://127.0.0.1:18081" in text
+    assert "Environment=EIHEAD_EXPORT_MANIFEST=/opt/eihead/current/EXPORT_MANIFEST.json" in text
     assert "Environment=EIHEAD_MONITOR_PORT=18080" in text
     assert "EnvironmentFile=-/etc/eihead/eihead.env" in text
     assert "Requires=eihead-runtime.service" in text

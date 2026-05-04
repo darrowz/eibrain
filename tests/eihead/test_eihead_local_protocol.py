@@ -4,6 +4,7 @@ from eihead.protocol import (
     ActionExecuted,
     MoveHeadAction,
     PlaySpeechAction,
+    ProtocolMessage,
     SpeechPlaybackCompleted,
     StopSpeechAction,
 )
@@ -30,6 +31,7 @@ def test_local_actions_keep_existing_protocol_shape() -> None:
     stop = StopSpeechAction(ts=3.0, source="eihead.runtime")
 
     assert speech.kind == "play_speech_action"
+    assert isinstance(speech, ProtocolMessage)
     assert speech.to_dict() == {
         "ts": 1.25,
         "source": "eihead.runtime",
@@ -69,6 +71,7 @@ def test_local_outcomes_keep_existing_protocol_shape() -> None:
         "status": "ok",
         "kind": "speech_playback_completed",
     }
+    assert isinstance(executed, ProtocolMessage)
     assert executed.to_dict()["kind"] == "action_executed"
     assert executed.to_dict()["action_kind"] == "move_head_action"
     assert executed.to_dict()["details"] == {"target_angle": 90}

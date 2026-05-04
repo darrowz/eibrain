@@ -8,6 +8,7 @@ import sys
 from typing import Any, Callable, Mapping, Sequence, TextIO
 
 from .app import DEFAULT_CONFIG_PATH, HeadRuntimeApp
+from .legacy_body import run_body_hardware_verifier
 
 HeadRuntimeFactory = Callable[[str], HeadRuntimeApp]
 ServerRunner = Callable[..., Mapping[str, Any] | None]
@@ -77,9 +78,7 @@ def verify_hardware_main() -> None:
 
 
 def _run_body_hardware_verifier() -> None:
-    from apps.body_runtime.verify_hardware import main as body_verify_main
-
-    body_verify_main()
+    run_body_hardware_verifier()
 
 
 def _run_http_command(

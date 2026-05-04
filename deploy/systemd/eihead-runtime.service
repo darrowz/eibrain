@@ -10,6 +10,7 @@ Group=darrow
 WorkingDirectory=/opt/eihead/current
 Environment=PYTHONUNBUFFERED=1
 Environment=EIHEAD_CONFIG=/etc/eihead/eihead.honjia.yaml
+Environment=EIHEAD_EXPORT_MANIFEST=/opt/eihead/current/EXPORT_MANIFEST.json
 Environment=EIHEAD_RUNTIME_HOST=0.0.0.0
 Environment=EIHEAD_RUNTIME_PORT=18081
 EnvironmentFile=-/etc/eihead/eihead.env

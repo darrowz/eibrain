@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 from typing import Sequence
 
@@ -34,8 +35,64 @@ COPY_GLOBS = (
     "deploy/systemd/eihead-*.service",
     "docs/eihead-*.md",
 )
+MANIFEST_FILENAME = "EXPORT_MANIFEST.json"
+EXPECTED_HONXIN_PATH = "/dev-project/eihead"
+RUNTIME_PATH = "/opt/eihead/current"
 SKIP_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
+
+TRANSITIONAL_PACKAGES = (
+    {
+        "package": "apps.body_runtime",
+        "paths": ["apps/body_runtime"],
+        "reason": "Temporary honjia body runtime compatibility during eihead split.",
+    },
+    {
+        "package": "eibrain.body",
+        "paths": ["eibrain/body"],
+        "reason": "Temporary honjia hardware/runtime implementation before native eihead modules replace it.",
+    },
+    {
+        "package": "eibrain.infra",
+        "paths": ["eibrain/infra"],
+        "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
+    },
+    {
+        "package": "eibrain.protocol",
+        "paths": ["eibrain/protocol"],
+        "reason": "Temporary protocol compatibility until eiprotocol is split into its own repo.",
+    },
+)
+
+RUNTIME_ENTRYPOINTS = (
+    {
+        "name": "eihead-runtime-http",
+        "kind": "systemd-service",
+        "service": "deploy/systemd/eihead-runtime.service",
+        "console_script": "eihead-runtime",
+        "module": "eihead.runtime.cli:main",
+        "command": "eihead-runtime --config /etc/eihead/eihead.honjia.yaml http --host 0.0.0.0 --port 18081",
+        "host": "0.0.0.0",
+        "port": 18081,
+    },
+    {
+        "name": "eihead-monitor",
+        "kind": "systemd-service",
+        "service": "deploy/systemd/eihead-monitor.service",
+        "console_script": "eihead-runtime",
+        "module": "eihead.runtime.cli:main",
+        "command": "eihead-runtime --config /etc/eihead/eihead.honjia.yaml monitor --host 0.0.0.0 --port 18080",
+        "host": "0.0.0.0",
+        "port": 18080,
+    },
+    {
+        "name": "apps.head_runtime",
+        "kind": "python-module",
+        "module": "apps.head_runtime.__main__:main",
+        "command": "python -m apps.head_runtime",
+        "compatibility": True,
+    },
+)
 
 
 PYPROJECT_TEMPLATE = """[build-system]
@@ -129,6 +186,7 @@ class ExportResult:
     copied: tuple[str, ...]
     generated: tuple[str, ...]
     force: bool = False
+    manifest: str = MANIFEST_FILENAME
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -136,6 +194,7 @@ class ExportResult:
             "copied": list(self.copied),
             "generated": list(self.generated),
             "force": self.force,
+            "manifest": self.manifest,
         }
 
 
@@ -179,7 +238,15 @@ def export_eihead_repo(
     for pattern in COPY_GLOBS:
         copied.extend(_copy_glob(source_root, target, pattern))
 
-    generated = _write_templates(target)
+    generated = list(_write_templates(target))
+    generated.append(
+        _write_export_manifest(
+            target_root=target,
+            source_root=source_root,
+            copied=tuple(sorted(copied)),
+            generated=tuple(generated),
+        )
+    )
     return ExportResult(
         target=target,
         copied=tuple(sorted(copied)),
@@ -309,6 +376,67 @@ def _write_templates(target_root: Path) -> tuple[str, ...]:
         path.write_text(text, encoding="utf-8", newline="\n")
         generated.append(rel_path)
     return tuple(generated)
+
+
+def _write_export_manifest(
+    *,
+    target_root: Path,
+    source_root: Path,
+    copied: tuple[str, ...],
+    generated: tuple[str, ...],
+) -> str:
+    generated_with_manifest = (*generated, MANIFEST_FILENAME)
+    source_state = _read_source_git_state(source_root)
+    manifest = {
+        "schema_version": 1,
+        "source": {
+            "repository": "eibrain",
+            "repo_root": str(source_root),
+            **source_state,
+        },
+        "standalone_repo": {
+            "name": "eihead",
+            "expected_honxin_path": EXPECTED_HONXIN_PATH,
+            "runtime_path": RUNTIME_PATH,
+            "manifest_path": MANIFEST_FILENAME,
+        },
+        "transitional_packages": list(TRANSITIONAL_PACKAGES),
+        "runtime_entrypoints": list(RUNTIME_ENTRYPOINTS),
+        "exported_paths": {
+            "copied": list(copied),
+            "generated": list(generated_with_manifest),
+        },
+    }
+    path = target_root / MANIFEST_FILENAME
+    path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return MANIFEST_FILENAME
+
+
+def _read_source_git_state(source_root: Path) -> dict[str, object]:
+    commit = _run_git(source_root, "rev-parse", "HEAD")
+    status_short = _run_git(source_root, "status", "--short").splitlines()
+    return {
+        "commit": commit or "unknown",
+        "dirty": bool(status_short),
+        "status_short": status_short,
+    }
+
+
+def _run_git(source_root: Path, *args: str) -> str:
+    try:
+        return subprocess.run(
+            ["git", "-C", str(source_root), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return ""
 
 
 def _relative_output_path(target_path: Path, *, target_root: Path) -> str:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -43,6 +44,7 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "eibrain/infra/config.py",
         "docs/eihead-implementation-plan.md",
         "docs/eihead-deployment-plan.md",
+        "EXPORT_MANIFEST.json",
         "pyproject.toml",
         "README.md",
     ]
@@ -59,6 +61,81 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "pyproject.toml" in result.generated
     assert "README.md" in result.generated
     assert "eibrain/protocol/__init__.py" in result.generated
+
+
+def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    result = module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+    source_commit = subprocess.run(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    assert "EXPORT_MANIFEST.json" in result.generated
+    assert result.manifest == "EXPORT_MANIFEST.json"
+    assert manifest["schema_version"] == 1
+    assert manifest["source"]["repo_root"] == str(REPO_ROOT)
+    assert manifest["source"]["commit"] == source_commit
+    assert isinstance(manifest["source"]["dirty"], bool)
+    assert isinstance(manifest["source"]["status_short"], list)
+    assert manifest["standalone_repo"]["expected_honxin_path"] == "/dev-project/eihead"
+    assert manifest["standalone_repo"]["runtime_path"] == "/opt/eihead/current"
+    assert manifest["transitional_packages"] == [
+        {
+            "package": "apps.body_runtime",
+            "paths": ["apps/body_runtime"],
+            "reason": "Temporary honjia body runtime compatibility during eihead split.",
+        },
+        {
+            "package": "eibrain.body",
+            "paths": ["eibrain/body"],
+            "reason": "Temporary honjia hardware/runtime implementation before native eihead modules replace it.",
+        },
+        {
+            "package": "eibrain.infra",
+            "paths": ["eibrain/infra"],
+            "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
+        },
+        {
+            "package": "eibrain.protocol",
+            "paths": ["eibrain/protocol"],
+            "reason": "Temporary protocol compatibility until eiprotocol is split into its own repo.",
+        },
+    ]
+    assert manifest["runtime_entrypoints"] == [
+        {
+            "name": "eihead-runtime-http",
+            "kind": "systemd-service",
+            "service": "deploy/systemd/eihead-runtime.service",
+            "console_script": "eihead-runtime",
+            "module": "eihead.runtime.cli:main",
+            "command": "eihead-runtime --config /etc/eihead/eihead.honjia.yaml http --host 0.0.0.0 --port 18081",
+            "host": "0.0.0.0",
+            "port": 18081,
+        },
+        {
+            "name": "eihead-monitor",
+            "kind": "systemd-service",
+            "service": "deploy/systemd/eihead-monitor.service",
+            "console_script": "eihead-runtime",
+            "module": "eihead.runtime.cli:main",
+            "command": "eihead-runtime --config /etc/eihead/eihead.honjia.yaml monitor --host 0.0.0.0 --port 18080",
+            "host": "0.0.0.0",
+            "port": 18080,
+        },
+        {
+            "name": "apps.head_runtime",
+            "kind": "python-module",
+            "module": "apps.head_runtime.__main__:main",
+            "command": "python -m apps.head_runtime",
+            "compatibility": True,
+        },
+    ]
 
 
 def test_export_manifest_paths_stay_relative_when_target_is_named_eihead(tmp_path: Path) -> None:
@@ -135,4 +212,10 @@ def test_cli_prints_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert output["target"] == str(target.resolve())
     assert output["force"] is False
     assert "eihead/runtime/cli.py" in output["copied"]
-    assert output["generated"] == ["pyproject.toml", "README.md", "eibrain/protocol/__init__.py"]
+    assert output["generated"] == [
+        "pyproject.toml",
+        "README.md",
+        "eibrain/protocol/__init__.py",
+        "EXPORT_MANIFEST.json",
+    ]
+    assert output["manifest"] == "EXPORT_MANIFEST.json"

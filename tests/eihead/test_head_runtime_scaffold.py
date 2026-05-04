@@ -7,6 +7,7 @@ import tomllib
 
 from apps.head_runtime.app import HeadRuntimeApp as AppsHeadRuntimeApp
 from eihead.runtime.app import HeadRuntimeApp
+from eihead.runtime.legacy_body import LegacyBodyRuntimeAdapter
 from eihead.runtime import cli
 
 
@@ -61,6 +62,42 @@ def test_from_config_path_keeps_eibrain_config_path_for_legacy_runtime() -> None
     HeadRuntimeApp.from_config_path("config/eibrain.honjia.yaml", body_runtime_factory=fake_factory)
 
     assert captured["body_config_path"] == "config/eibrain.honjia.yaml"
+
+
+def test_legacy_body_adapter_loads_body_runtime_with_resolved_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    body_config_path = tmp_path / "eibrain.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia-test",
+                "legacy:",
+                f"  body_runtime_config_path: {body_config_path.as_posix()}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, str] = {}
+
+    def fake_factory(path: str) -> FakeBodyRuntime:
+        captured["body_config_path"] = path
+        return FakeBodyRuntime()
+
+    adapter = LegacyBodyRuntimeAdapter(body_runtime_factory=fake_factory)
+    body_runtime = adapter.load_runtime(str(config_path))
+
+    assert isinstance(body_runtime, FakeBodyRuntime)
+    assert captured["body_config_path"] == body_config_path.as_posix()
+
+
+def test_head_runtime_facade_does_not_embed_legacy_body_imports() -> None:
+    app_source = Path("eihead/runtime/app.py").read_text(encoding="utf-8")
+    cli_source = Path("eihead/runtime/cli.py").read_text(encoding="utf-8")
+
+    assert "from apps.body_runtime" not in app_source
+    assert "from apps.body_runtime" not in cli_source
+    assert "from eibrain.protocol.actions" not in app_source
+    assert "def _legacy_eibrain_action" not in app_source
 
 
 def test_head_runtime_imports_and_wraps_body_snapshot() -> None:
