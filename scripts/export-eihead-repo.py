@@ -110,6 +110,14 @@ NATIVE_REALTIME_EYE_FILES = (
         "role": "Realtime GStreamer/Hailo adapter scaffold for /dev/video0 camera frames and /dev/hailo0 detections.",
     },
     {
+        "path": "eihead/eye/gstreamer.py",
+        "role": "Native realtime /dev/video0 GStreamer appsink reader and Hailo pipeline launcher.",
+    },
+    {
+        "path": "eihead/eye/hailo_metadata.py",
+        "role": "Native /dev/hailo0 Hailo ROI metadata parser for realtime detection boxes and scores.",
+    },
+    {
         "path": "eihead/eye/realtime.py",
         "role": "Realtime eye pipeline contracts shared by native adapters and monitor status.",
     },
@@ -188,6 +196,8 @@ The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:
 
 - `eihead/eye/adapters.py`
+- `eihead/eye/gstreamer.py`
+- `eihead/eye/hailo_metadata.py`
 - `eihead/eye/realtime.py`
 - `eihead/monitoring/realtime_vision.py`
 

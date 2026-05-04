@@ -21,6 +21,8 @@ from .legacy_body import (
 )
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
+DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS = 2.0
+DEFAULT_PTZ_MIN_ANGLE_DELTA = 2.0
 
 
 @dataclass(slots=True)
@@ -31,6 +33,9 @@ class HeadRuntimeApp:
     config_path: str = DEFAULT_CONFIG_PATH
     delegate_name: str = DEFAULT_BODY_RUNTIME_DELEGATE
     legacy_body_adapter: LegacyBodyRuntimeAdapter = field(default_factory=LegacyBodyRuntimeAdapter, repr=False)
+    realtime_vision_max_age_seconds: float = DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS
+    ptz_min_angle_delta: float = DEFAULT_PTZ_MIN_ANGLE_DELTA
+    _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
 
     @classmethod
     def from_config_path(
@@ -93,6 +98,7 @@ class HeadRuntimeApp:
         hook.
         """
 
+        now_ts = float(time.time())
         for attr_name in (
             "eye_realtime",
             "vision_realtime",
@@ -104,8 +110,12 @@ class HeadRuntimeApp:
             if not hasattr(self.body_runtime, attr_name):
                 continue
             source = getattr(self.body_runtime, attr_name)
-            payload = source() if callable(source) else source
-            if _is_realtime_vision_payload(payload):
+            payload = _resolve_realtime_payload_candidate(source() if callable(source) else source)
+            if _is_realtime_vision_payload(
+                payload,
+                now_ts=now_ts,
+                max_age_seconds=self.realtime_vision_max_age_seconds,
+            ):
                 return payload
         return None
 
@@ -155,6 +165,19 @@ class HeadRuntimeApp:
             target_angle = _action_value(normalized, "target_angle")
             if target_angle is None:
                 target_angle = _action_value(normalized, "angle")
+            target_angle = _optional_int(target_angle)
+
+            ptz_suppressed_reason = self._maybe_suppress_ptz_jitter(target_angle)
+            if ptz_suppressed_reason is not None:
+                return self._action_outcome(
+                    action_id=action_id,
+                    action_type=action_type,
+                    trace_id=effective_trace_id,
+                    status="skipped",
+                    success=False,
+                    details=ptz_suppressed_reason,
+                )
+
             protocol_action = MoveHeadAction(
                 ts=time.time(),
                 source="eihead.runtime",
@@ -163,15 +186,18 @@ class HeadRuntimeApp:
                 target_id=_optional_string(_action_value(normalized, "target_id")),
                 target_name=_string_or_default(_action_value(normalized, "target_name"), "manual"),
                 target_x=_optional_float(_action_value(normalized, "target_x")),
-                target_angle=_optional_int(target_angle),
+                target_angle=target_angle,
             )
-            return self._dispatch_protocol_action(
+            outcome = self._dispatch_protocol_action(
                 protocol_action,
                 action_id=action_id,
                 action_type=action_type,
                 trace_id=effective_trace_id,
                 details={"axis": "yaw"},
             )
+            if outcome.get("success") and target_angle is not None:
+                self._ptz_last_target_angle = target_angle
+            return outcome
 
         if action_type == "stop_speech":
             protocol_action = StopSpeechAction(
@@ -202,6 +228,26 @@ class HeadRuntimeApp:
             success=False,
             details={"reason": "unsupported_action_type"},
         )
+
+    def _maybe_suppress_ptz_jitter(self, target_angle: int | None) -> dict[str, Any] | None:
+        target_angle_int = target_angle
+        if target_angle_int is None:
+            return None
+        min_angle_delta = float(self.ptz_min_angle_delta)
+        previous_angle = self._ptz_last_target_angle
+        if previous_angle is None:
+            return None
+        if min_angle_delta <= 0:
+            return None
+        if abs(target_angle_int - previous_angle) <= min_angle_delta:
+            return {
+                "axis": "yaw",
+                "reason": "ptz_jitter_suppressed",
+                "previous_target_angle": previous_angle,
+                "target_angle": target_angle_int,
+                "min_angle_delta": min_angle_delta,
+            }
+        return None
 
     def serve(self) -> dict[str, Any]:
         return {
@@ -481,16 +527,17 @@ def _serialize_outcome(outcome: Any) -> dict[str, Any]:
     return {"value": outcome}
 
 
-def _is_realtime_vision_payload(payload: Any) -> bool:
+def _is_realtime_vision_payload(
+    payload: Any,
+    *,
+    now_ts: float,
+    max_age_seconds: float,
+) -> bool:
     if payload is None:
         return False
-    if isinstance(payload, Mapping):
-        data = dict(payload)
-    else:
-        try:
-            data = serialize_message(payload)
-        except TypeError:
-            return False
+    data = _payload_mapping(payload)
+    if data is None:
+        return False
 
     kind = _normalized_payload_text(data.get("kind"))
     mode = _normalized_payload_text(data.get("mode"))
@@ -513,7 +560,106 @@ def _is_realtime_vision_payload(payload: Any) -> bool:
         or source == "vision_state"
     ):
         return False
-    return kind == "realtime_vision_observation" or mode in {"realtime", "realtime_stream"}
+    if not (kind == "realtime_vision_observation" or mode in {"realtime", "realtime_stream"}):
+        return False
+    return _is_realtime_payload_fresh(data, now_ts=now_ts, max_age_seconds=max_age_seconds)
+
+
+def _resolve_realtime_payload_candidate(payload: Any, *, seen: set[int] | None = None) -> Any:
+    if payload is None:
+        return None
+    seen = seen or set()
+    candidate_id = id(payload)
+    if candidate_id in seen:
+        return payload
+    seen.add(candidate_id)
+
+    latest_status = getattr(payload, "latest_status", None)
+    if latest_status is not None:
+        resolved = _resolve_realtime_payload_candidate(latest_status, seen=seen)
+        if resolved is not None:
+            return resolved
+
+    for method_name in ("status", "poll"):
+        method = getattr(payload, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            resolved = _resolve_realtime_payload_candidate(method(), seen=seen)
+        except TypeError:
+            continue
+        if resolved is not None:
+            return resolved
+
+    return payload
+
+
+def _payload_mapping(payload: Any) -> dict[str, Any] | None:
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    if hasattr(payload, "to_dict") and callable(payload.to_dict):
+        data = payload.to_dict()
+        if isinstance(data, Mapping):
+            return dict(data)
+    if is_dataclass(payload):
+        return asdict(payload)
+    try:
+        serialized = serialize_message(payload)
+    except TypeError:
+        return None
+    return dict(serialized) if isinstance(serialized, Mapping) else None
+
+
+def _is_realtime_payload_fresh(data: Mapping[str, Any], *, now_ts: float, max_age_seconds: float) -> bool:
+    if max_age_seconds <= 0:
+        return True
+    capture_ts = _extract_realtime_capture_timestamp(data)
+    if capture_ts is None:
+        return True
+    if now_ts < capture_ts:
+        return True
+    return now_ts - capture_ts <= max_age_seconds
+
+
+def _extract_realtime_capture_timestamp(data: Mapping[str, Any]) -> float | None:
+    for key in (
+        "last_frame_captured_at_ts",
+        "captured_at_ts",
+        "timestamp_ms",
+        "timestamp",
+    ):
+        value = _coerce_realtime_timestamp(data.get(key))
+        if value is not None:
+            return value
+
+    stream = data.get("stream")
+    if isinstance(stream, Mapping):
+        for key in ("last_frame_captured_at_ts", "captured_at_ts", "timestamp_ms", "timestamp"):
+            value = _coerce_realtime_timestamp(stream.get(key))
+            if value is not None:
+                return value
+    health = data.get("health")
+    if isinstance(health, Mapping):
+        for key in ("last_frame_captured_at_ts", "captured_at_ts", "timestamp_ms", "timestamp"):
+            value = _coerce_realtime_timestamp(health.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _coerce_realtime_timestamp(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        timestamp = float(raw)
+    except (TypeError, ValueError):
+        return None
+    absolute_timestamp = abs(timestamp)
+    if absolute_timestamp <= 2_000_000_000:
+        return timestamp
+    if absolute_timestamp <= 2_000_000_000_000:
+        return timestamp / 1000.0
+    return None
 
 
 def _normalized_payload_text(value: Any) -> str:

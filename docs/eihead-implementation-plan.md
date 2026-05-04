@@ -16,6 +16,10 @@
 Eye 方向单独明确：正式目标是 `/dev/video0` + `/dev/hailo0` 的 realtime stream detection，也就是从
 摄像头/Hailo 连续流产生 `RealtimeVisionObservation`、运行状态和监控检测框。
 静态图片检测只作为兼容/测试占位，不作为部署目标或验收主线。
+本轮 native eye 的代码边界进一步收敛为 `eihead/eye/gstreamer.py` 负责
+`/dev/video0` appsink 实时帧，`eihead/eye/hailo_metadata.py` 负责
+`/dev/hailo0` Hailo ROI metadata 检测框和分数解析，`eihead/eye/adapters.py`
+只做组合、truthfulness 和 monitor/status 契约适配。
 
 暂不做：
 
@@ -169,7 +173,7 @@ eibrain -> eihead：
 - `Runtime`: 服务心跳、刷新频率、平均延迟、错误。
 - `Ear`: 输入设备、VAD、ASR、最近文本、分段耗时。
 - `Mouth`: TTS provider、合成耗时、播放状态、错误。
-- `Eye`: realtime stream detection 状态、`/dev/video0` 摄像头、`/dev/hailo0` Hailo、FPS、检测框、分数、最近帧。
+- `Eye`: realtime stream detection 状态、`/dev/video0` 摄像头、`/dev/hailo0` Hailo、GStreamer pipeline、parser error count、FPS、检测框、分数、最近帧。
 - `Neck`: 当前水平角、目标角、动作频率、抖动抑制状态。
 - `Protocol`: 最近 `trace_id`、capability、observation、action、outcome。
 
@@ -231,7 +235,8 @@ eibrain -> eihead：
 
 1. `eiprotocol` MVP：消息模型、JSON schema、trace_id。
 2. `eihead` scaffold：复制而不是大改，先让独立仓库能跑。
-3. capability + monitor：先让 honjia 的真实设备能力和 realtime eye stream detection 状态稳定显示。
+3. capability + monitor：先让 honjia 的真实设备能力和 realtime eye stream detection 状态稳定显示，
+   且硬件/插件/metadata parser 缺失时必须显示 `not_wired`、`unknown` 或 degraded，不能假正常。
 
 完成这三步后，再迁移语音、realtime eye stream detection、云台 action bridge。这样每一步都有回滚点，
 不会把已经打通的现场链路重新搅乱。

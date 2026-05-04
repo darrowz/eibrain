@@ -174,6 +174,11 @@ class RealtimeEyeStatus:
     not_wired: bool = True
     compatibility_mode: bool = False
     message: str = "realtime eye pipeline is not wired"
+    pipeline: dict[str, Any] | None = None
+    devices: dict[str, Any] | None = None
+    readiness_message: str = ""
+    parse_error_count: int | None = None
+    parse_errors: list[Any] = field(default_factory=list)
 
     @property
     def last_frame_age_s(self) -> float | None:
@@ -199,6 +204,11 @@ class RealtimeEyeStatus:
             "not_wired": self.not_wired,
             "compatibility_mode": self.compatibility_mode,
             "message": self.message,
+            "pipeline": dict(self.pipeline) if isinstance(self.pipeline, Mapping) else self.pipeline,
+            "devices": dict(self.devices) if isinstance(self.devices, Mapping) else self.devices,
+            "readiness_message": self.readiness_message,
+            "parse_error_count": self.parse_error_count,
+            "parse_errors": list(self.parse_errors),
         }
 
 

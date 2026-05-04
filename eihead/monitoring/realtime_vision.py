@@ -34,7 +34,7 @@ def realtime_vision_payload_from_app(app: Any, *, timestamp: float) -> dict[str,
         if not hasattr(app, attr_name):
             continue
         source = getattr(app, attr_name)
-        raw_payload = source() if callable(source) else source
+        raw_payload = _resolve_realtime_observation_candidate(source() if callable(source) else source)
         payload = build_realtime_vision_payload(
             raw_payload,
             timestamp=timestamp,
@@ -66,7 +66,8 @@ def build_realtime_vision_payload(
 ) -> dict[str, Any]:
     """Return the monitor JSON envelope for primary realtime eye state."""
 
-    serialized_observation = _serialize_observation(observation) if observation is not None else None
+    resolved_observation = _resolve_realtime_observation_candidate(observation)
+    serialized_observation = _serialize_observation(resolved_observation) if resolved_observation is not None else None
     derived_status, derived_wired, derived_message = _derive_realtime_status(serialized_observation)
     is_wired = derived_wired if wired is None else bool(wired and derived_wired)
     diagnostic = _build_realtime_diagnostic(
@@ -96,11 +97,21 @@ def build_realtime_vision_payload(
         "detections": diagnostic["detections"],
         "boxes": diagnostic["boxes"],
         "scores": diagnostic["scores"],
+        "score_threshold": diagnostic["score_threshold"],
+        "top_k": diagnostic["top_k"],
         "top_detection": diagnostic["top_detection"],
         "not_wired": diagnostic["not_wired"],
         "placeholder": diagnostic["placeholder"],
         "stale": diagnostic["stale"],
         "compat_static_active": diagnostic["compat_static"],
+        "frame_interval_ms": diagnostic["frame_interval_ms"],
+        "jitter_guard": diagnostic["jitter_guard"],
+        "hooks_used": diagnostic["hooks_used"],
+        "pipeline": diagnostic["pipeline"],
+        "devices": diagnostic["devices"],
+        "readiness_message": diagnostic["readiness_message"],
+        "parse_error_count": diagnostic["parse_error_count"],
+        "parse_errors": diagnostic["parse_errors"],
     }
     if not is_wired:
         if derived_message:
@@ -115,7 +126,7 @@ def build_realtime_vision_payload(
 def _derive_realtime_status(observation: Mapping[str, Any] | None) -> tuple[str, bool, str]:
     if observation is None:
         return "not_wired", False, ""
-    status = str(observation.get("status", "") or "").strip().lower()
+    status = _coerce_status(observation.get("status"))
     kind = str(observation.get("kind", "") or "").strip().lower()
     mode = str(observation.get("mode", "") or "").strip().lower()
     primary_mode = observation.get("primary_mode")
@@ -124,7 +135,7 @@ def _derive_realtime_status(observation: Mapping[str, Any] | None) -> tuple[str,
     compatibility_mode = _truthy(observation.get("compatibility_mode", False))
     stale = _is_stale_observation(observation, status=status)
 
-    if not_wired or placeholder or status in {"not_wired", "offline", "missing", "unavailable"}:
+    if not_wired or placeholder or _status_is_not_wired(status):
         return "not_wired", False, "eye.realtime payload is present but not ready"
     if kind == "vision_observation" or mode == VISION_STATIC_COMPAT_MODE or primary_mode is False or compatibility_mode:
         return "compat_static", False, "compat/static vision payload is not accepted as realtime eye data"
@@ -143,18 +154,38 @@ def _build_realtime_diagnostic(
     timestamp: float,
 ) -> dict[str, Any]:
     detections = _normalized_detections(_first_present(observation, "detections") if observation else None)
-    boxes = [box for box in (_normalize_box(item.get("bbox")) for item in detections) if box is not None]
-    scores = [score for score in (_detection_score(item) for item in detections) if score is not None]
+    score_threshold = _detection_score_threshold(observation)
+    top_k = _detection_top_k(observation)
+    filtered_detections, scores = _filter_detections(
+        detections,
+        score_threshold=score_threshold,
+        top_k=top_k,
+    )
+    boxes = [
+        box
+        for box in (_normalize_box(item.get("bbox")) for item in filtered_detections)
+        if box is not None
+    ]
     top_detection = _normalized_detection(_first_present(observation, "top_detection") if observation else None)
     if top_detection is None:
-        top_detection = _top_detection(detections)
+        top_detection = _top_detection(filtered_detections)
 
-    pipeline_status = _string_or_none(_first_present(observation, "status") if observation else None)
+    pipeline_status = _coerce_status(_first_present(observation, "status") if observation else None)
     last_frame_age = _last_frame_age(observation, timestamp=timestamp)
     placeholder = _truthy(_first_present(observation, "placeholder")) if observation else False
-    not_wired = status == "not_wired" or bool(observation and _truthy(_first_present(observation, "not_wired")))
+    not_wired = _status_is_not_wired(status) or bool(
+        observation and _truthy(_first_present(observation, "not_wired"))
+    )
     compat_static = status == "compat_static" or _is_compat_static_observation(observation)
     stale = status == "stale" or _is_stale_observation(observation, status=pipeline_status or "")
+    frame_interval_ms = _number_or_none(_first_nested_present(observation, "frame_interval_ms", "frame_interval"))
+    jitter_guard = _first_nested_present(observation, "jitter_guard", "jitter")
+    hooks_used = _hooks_used(_first_nested_present(observation, "hooks_used", "hooks"))
+    pipeline = _json_object_or_none(_first_nested_present(observation, "pipeline"))
+    devices = _json_object_or_none(_first_nested_present(observation, "devices", "device_paths"))
+    readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
+    parse_error_count = _int_or_none(_first_nested_present(observation, "parse_error_count"))
+    parse_errors = _parse_errors(_first_nested_present(observation, "parse_errors", "errors"))
 
     return {
         "status": status,
@@ -169,11 +200,23 @@ def _build_realtime_diagnostic(
         "fps": _number_or_none(_first_nested_present(observation, "fps")),
         "last_frame_age": last_frame_age,
         "last_frame_age_s": last_frame_age,
-        "detection_count": len(detections),
+        "detection_count": len(filtered_detections),
         "boxes": boxes,
         "scores": scores,
         "top_detection": top_detection,
-        "detections": detections,
+        "detection_count_raw": len(detections),
+        "score_threshold": score_threshold,
+        "detection_score_threshold": score_threshold,
+        "top_k": top_k,
+        "frame_interval_ms": frame_interval_ms,
+        "jitter_guard": _coerce_optional_bool(jitter_guard),
+        "hooks_used": hooks_used,
+        "pipeline": pipeline,
+        "devices": devices,
+        "readiness_message": readiness_message,
+        "parse_error_count": parse_error_count,
+        "parse_errors": parse_errors,
+        "detections": filtered_detections,
     }
 
 
@@ -195,7 +238,7 @@ def _is_compat_static_observation(observation: Mapping[str, Any] | None) -> bool
 def _is_stale_observation(observation: Mapping[str, Any] | None, *, status: str = "") -> bool:
     if observation is None:
         return False
-    if str(status or "").strip().lower() == "stale":
+    if _coerce_status(status) == "stale":
         return True
     if _truthy(observation.get("stale")):
         return True
@@ -221,6 +264,110 @@ def _normalized_detections(raw_detections: Any) -> list[dict[str, Any]]:
         for detection in (_normalized_detection(item) for item in raw_items)
         if detection is not None
     ]
+
+
+def _coerce_status(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "ok" if value else "not_wired"
+    status = str(value).strip().lower()
+    if status in {"", "none", "null", "false", "0"}:
+        return ""
+    if status in {"not_wired", "offline", "missing", "unavailable"}:
+        return "not_wired"
+    return status
+
+
+def _status_is_not_wired(status: str) -> bool:
+    return _coerce_status(status) == "not_wired"
+
+
+def _coerce_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"", "none", "null", "0"}:
+            return None
+        if lowered in {"1", "true", "yes", "on", "enabled", "enable", "open"}:
+            return True
+        if lowered in {"false", "off", "disabled", "disable", "close", "closed"}:
+            return False
+        return bool(lowered)
+    return bool(value)
+
+
+def _detection_score_threshold(observation: Mapping[str, Any] | None) -> float:
+    if observation is None:
+        return 0.0
+    raw = _first_nested_present(
+        observation,
+        "score_threshold",
+        "detection_score_threshold",
+        "filter_score_threshold",
+    )
+    threshold = _number_or_none(raw)
+    if threshold is None or threshold < 0.0:
+        return 0.0
+    return threshold
+
+
+def _detection_top_k(observation: Mapping[str, Any] | None) -> int | None:
+    if observation is None:
+        return None
+    raw = _first_nested_present(observation, "top_k", "max_detections", "max_detection_count")
+    value = _number_or_none(raw)
+    if value is None:
+        return None
+    rounded = int(value)
+    if rounded <= 0:
+        return None
+    return rounded
+
+
+def _filter_detections(
+    detections: list[dict[str, Any]],
+    *,
+    score_threshold: float,
+    top_k: int | None,
+) -> tuple[list[dict[str, Any]], list[float]]:
+    with_scores: list[tuple[dict[str, Any], float | None]] = []
+    for detection in detections:
+        score = _detection_score(detection)
+        if score is not None and score < score_threshold:
+            continue
+        with_scores.append((detection, score))
+
+    if top_k is not None:
+        with_scores = sorted(with_scores, key=lambda item: item[1] if item[1] is not None else -1.0, reverse=True)
+        with_scores = with_scores[:top_k]
+
+    filtered = [detection for detection, _ in with_scores]
+    filtered_scores = [score for _, score in with_scores if score is not None]
+    return filtered, filtered_scores
+
+
+def _hooks_used(value: Any) -> list[Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, (str, bytes, Mapping)):
+        return [_json_ready(value)]
+    return [_json_ready(value)]
+
+
+def _parse_errors(value: Any) -> list[Any] | None:
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return [_json_ready(value)]
 
 
 def _normalized_detection(raw_detection: Any) -> dict[str, Any] | None:
@@ -327,11 +474,24 @@ def _number_or_none(value: Any) -> float | None:
         return None
 
 
+def _int_or_none(value: Any) -> int | None:
+    number = _number_or_none(value)
+    if number is None:
+        return None
+    return int(number)
+
+
 def _string_or_none(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _json_object_or_none(value: Any) -> Any:
+    if value is None:
+        return None
+    return _json_ready(value)
 
 
 def _truthy(value: Any) -> bool:
@@ -340,9 +500,44 @@ def _truthy(value: Any) -> bool:
     return bool(value)
 
 
+def _resolve_realtime_observation_candidate(observation: Any, *, seen: set[int] | None = None) -> Any:
+    if observation is None:
+        return None
+    seen = seen or set()
+    candidate_id = id(observation)
+    if candidate_id in seen:
+        return observation
+    seen.add(candidate_id)
+
+    latest_status = getattr(observation, "latest_status", None)
+    if latest_status is not None:
+        resolved = _resolve_realtime_observation_candidate(latest_status, seen=seen)
+        if resolved is not None:
+            return resolved
+
+    for method_name in ("status", "poll"):
+        method = getattr(observation, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            resolved = _resolve_realtime_observation_candidate(method(), seen=seen)
+        except TypeError:
+            continue
+        if resolved is not None:
+            return resolved
+
+    return observation
+
+
 def _serialize_observation(observation: Any) -> dict[str, Any]:
     if isinstance(observation, Mapping):
         return {str(k): _json_ready(v) for k, v in observation.items()}
+    if hasattr(observation, "to_dict") and callable(observation.to_dict):
+        payload = observation.to_dict()
+        if isinstance(payload, Mapping):
+            return {str(k): _json_ready(v) for k, v in payload.items()}
+    if is_dataclass(observation):
+        return {str(k): _json_ready(v) for k, v in asdict(observation).items()}
     try:
         payload = serialize_message(observation)
     except TypeError:

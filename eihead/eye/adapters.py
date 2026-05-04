@@ -28,7 +28,7 @@ from .realtime import (
 DeviceExists = Callable[[str], bool]
 GstAvailable = Callable[[], bool]
 FrameReader = Callable[[], RealtimeVisionFrame | Mapping[str, Any] | None]
-DetectionReader = Callable[[RealtimeVisionFrame], Iterable[RealtimeDetection | Mapping[str, Any]]]
+DetectionReader = Callable[[RealtimeVisionFrame], Iterable[Any]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +41,12 @@ class GStreamerHailoRealtimeConfig:
     height: int = 480
     framerate: int = 30
     hef_path: str = ""
+    postprocess_so_path: str = ""
+    postprocess_config_path: str = ""
+    postprocess_function: str = "filter"
+    score_threshold: float = 0.3
+    labels: tuple[str, ...] = ("person", "face")
+    strict_metadata: bool = False
     model_id: str = "hailo"
     backend: str = "gstreamer_hailo"
     source_name: str = "gstreamer_hailo"
@@ -57,6 +63,13 @@ class GStreamerHailoRealtimeConfig:
         inference_parts = ["hailonet", f"device={self.hailo_device}"]
         if self.hef_path:
             inference_parts.append(f"hef-path={self.hef_path}")
+        postprocess_parts = ["hailofilter", "qos=false"]
+        if self.postprocess_so_path:
+            postprocess_parts.append(f"so-path={self.postprocess_so_path}")
+        if self.postprocess_config_path:
+            postprocess_parts.append(f"config-path={self.postprocess_config_path}")
+        if self.postprocess_function:
+            postprocess_parts.append(f"function-name={self.postprocess_function}")
         return {
             "mode": self.mode,
             "backend": self.backend,
@@ -66,6 +79,7 @@ class GStreamerHailoRealtimeConfig:
             "caps": f"video/x-raw,width={int(self.width)},height={int(self.height)},framerate={int(self.framerate)}/1",
             "convert": "videoconvert",
             "inference": " ".join(inference_parts),
+            "postprocess": " ".join(postprocess_parts),
             "sink": (
                 f"appsink name={self.appsink_name} emit-signals=true "
                 "sync=false max-buffers=1 drop=true"
@@ -80,6 +94,7 @@ class GStreamerHailoRealtimeConfig:
                 fields["caps"],
                 fields["convert"],
                 fields["inference"],
+                fields["postprocess"],
                 fields["sink"],
             ]
         )
@@ -152,7 +167,12 @@ class GStreamerHailoFrameSource:
             ) from exc
         if raw_frame is None:
             return None
-        return _coerce_realtime_frame(raw_frame, config=self.config, clock=self._clock)
+        try:
+            return _coerce_realtime_frame(raw_frame, config=self.config, clock=self._clock)
+        except Exception as exc:
+            raise AdapterRuntimeError(
+                f"realtime frame conversion failed: {exc.__class__.__name__}: {exc}"
+            ) from exc
 
 
 class GStreamerHailoDetector:
@@ -192,19 +212,29 @@ class GStreamerHailoDetector:
             )
         return readiness
 
-    def detect(self, frame: RealtimeVisionFrame) -> list[RealtimeDetection]:
-        if not self.readiness().ready or self._detection_reader is None:
+    def detect(self, frame: RealtimeVisionFrame) -> list[RealtimeDetection | Mapping[str, Any]]:
+        if frame is None or not self.readiness().ready or self._detection_reader is None:
             return []
         try:
             raw_detections = list(self._detection_reader(frame))
+        except TypeError as exc:
+            raise AdapterRuntimeError(
+                f"realtime detection reader did not return iterable: {exc.__class__.__name__}: {exc}"
+            ) from exc
         except Exception as exc:
             raise AdapterRuntimeError(
                 f"realtime detection reader failed: {exc.__class__.__name__}: {exc}"
             ) from exc
-        return [
-            normalize_hailo_detection(raw_detection, frame=frame, config=self.config)
-            for raw_detection in raw_detections
-        ]
+        normalized: list[RealtimeDetection | Mapping[str, Any]] = []
+        for raw_detection in raw_detections:
+            normalized.append(
+                normalize_hailo_detection(
+                    raw_detection,
+                    frame=frame,
+                    config=self.config,
+                )
+            )
+        return normalized
 
 
 class GStreamerHailoRealtimeAdapter:
@@ -225,6 +255,8 @@ class GStreamerHailoRealtimeAdapter:
         self._gst_available = gst_available or _default_gst_available
         self._frame_reader = frame_reader
         self._detection_reader = detection_reader
+        self._parser_state: dict[str, Any] = {"parse_error_count": 0, "errors": []}
+        self._native_frame_reader = None
         self.frame_source = GStreamerHailoFrameSource(
             self.config,
             device_exists=self._device_exists,
@@ -246,6 +278,91 @@ class GStreamerHailoRealtimeAdapter:
             clock=clock,
         )
         self._last_status = self._initial_status()
+
+    @classmethod
+    def from_native_gstreamer(
+        cls,
+        config: GStreamerHailoRealtimeConfig | None = None,
+        *,
+        device_exists: DeviceExists | None = None,
+        gst_available: GstAvailable | None = None,
+        clock: Callable[[], float] = time.time,
+        frame_reader_factory: Callable[..., Any] | None = None,
+        hailo_module_loader: Callable[[], Any] | None = None,
+    ) -> "GStreamerHailoRealtimeAdapter":
+        """Build the native `/dev/video0` + `/dev/hailo0` appsink adapter."""
+
+        adapter_config = config or GStreamerHailoRealtimeConfig()
+        if frame_reader_factory is None:
+            from .gstreamer import GStreamerAppSinkFrameReader
+
+            frame_reader_factory = GStreamerAppSinkFrameReader
+        if hailo_module_loader is None:
+            from .gstreamer import _load_gstreamer_modules
+
+            hailo_module_loader = lambda: _load_gstreamer_modules()[3]
+
+        native_reader = frame_reader_factory(
+            camera_device=adapter_config.camera_device,
+            hailo_device=adapter_config.hailo_device,
+            width=adapter_config.width,
+            height=adapter_config.height,
+            framerate=adapter_config.framerate,
+            backend=adapter_config.backend,
+            hef_path=adapter_config.hef_path,
+            appsink_name=adapter_config.appsink_name,
+            hailofilter_so_path=adapter_config.postprocess_so_path,
+            hailofilter_config_path=adapter_config.postprocess_config_path,
+            hailofilter_function=adapter_config.postprocess_function,
+            clock=clock,
+            pipeline_metadata={"adapter": "eihead.eye.adapters"},
+        )
+        parser_state: dict[str, Any] = {"parse_error_count": 0, "errors": []}
+
+        def read_frame() -> RealtimeVisionFrame | Mapping[str, Any] | None:
+            if hasattr(native_reader, "start"):
+                native_reader.start()
+            frame = native_reader.read_frame()
+            if isinstance(frame, Mapping) and frame.get("error"):
+                raise AdapterRuntimeError(f"native GStreamer frame read failed: {frame.get('error')}")
+            return frame
+
+        def read_detections(frame: RealtimeVisionFrame) -> Iterable[Mapping[str, Any]]:
+            from .hailo_metadata import parse_hailo_detections
+
+            sample = frame.payload
+            if sample is None or not hasattr(sample, "get_buffer"):
+                return []
+            try:
+                buffer = sample.get_buffer()
+            except Exception as exc:
+                raise AdapterRuntimeError(
+                    f"native GStreamer sample buffer unavailable: {exc.__class__.__name__}: {exc}"
+                ) from exc
+            parsed = parse_hailo_detections(
+                buffer=buffer,
+                hailo_module=hailo_module_loader(),
+                model_id=adapter_config.model_id,
+                score_threshold=adapter_config.score_threshold,
+                labels=adapter_config.labels,
+                strict=adapter_config.strict_metadata,
+            )
+            parser_state["parse_error_count"] = _safe_int(parsed.get("parse_error_count")) or 0
+            parser_state["errors"] = parsed.get("errors", [])
+            detections = parsed.get("detections", [])
+            return detections if isinstance(detections, list) else []
+
+        adapter = cls(
+            adapter_config,
+            device_exists=device_exists,
+            gst_available=gst_available,
+            frame_reader=read_frame,
+            detection_reader=read_detections,
+            clock=clock,
+        )
+        adapter._native_frame_reader = native_reader
+        adapter._parser_state = parser_state
+        return adapter
 
     def readiness(self) -> AdapterReadiness:
         readiness = _readiness(self.config, device_exists=self._device_exists, gst_available=self._gst_available)
@@ -274,13 +391,21 @@ class GStreamerHailoRealtimeAdapter:
     def status(self) -> RealtimeEyeStatus:
         readiness = self.readiness()
         if not readiness.ready:
-            self._last_status = _not_wired_status(self.config, readiness.message)
+            self._last_status = _not_wired_status(
+                self.config,
+                readiness.message,
+                parser_state=self._parser_state,
+            )
         return self._last_status
 
     def poll(self) -> RealtimeEyeStatus:
         readiness = self.readiness()
         if not readiness.ready:
-            self._last_status = _not_wired_status(self.config, readiness.message)
+            self._last_status = _not_wired_status(
+                self.config,
+                readiness.message,
+                parser_state=self._parser_state,
+            )
             return self._last_status
 
         try:
@@ -294,13 +419,33 @@ class GStreamerHailoRealtimeAdapter:
                 f"realtime adapter poll failed: {exc.__class__.__name__}: {exc}",
             )
             return self._last_status
-        self._last_status = _status_from_payload(payload)
+        if isinstance(payload, Mapping):
+            self._last_status = _status_from_payload(
+                {
+                    **dict(payload),
+                    **_adapter_diagnostics(
+                        self.config,
+                        readiness_message=readiness.message,
+                        parser_state=self._parser_state,
+                    ),
+                }
+            )
+            return self._last_status
+        self._last_status = _not_wired_status(
+            self.config,
+            f"invalid realtime payload from pipeline: {type(payload).__name__}",
+            parser_state=self._parser_state,
+        )
         return self._last_status
 
     def _initial_status(self) -> RealtimeEyeStatus:
         readiness = self.readiness()
         if not readiness.ready:
-            return _not_wired_status(self.config, readiness.message)
+            return _not_wired_status(
+                self.config,
+                readiness.message,
+                parser_state=self._parser_state,
+            )
         return RealtimeEyeStatus(
             mode=self.config.mode,
             status="waiting_for_frame",
@@ -309,41 +454,80 @@ class GStreamerHailoRealtimeAdapter:
             placeholder=False,
             not_wired=False,
             message="realtime adapter is wired; waiting for frames",
+            **_adapter_diagnostics(
+                self.config,
+                readiness_message=readiness.message,
+                parser_state=self._parser_state,
+            ),
         )
 
 
 def normalize_hailo_detection(
-    raw_detection: RealtimeDetection | Mapping[str, Any],
+    raw_detection: Any,
     *,
     frame: RealtimeVisionFrame,
     config: GStreamerHailoRealtimeConfig | None = None,
-) -> RealtimeDetection:
-    """Convert a raw Hailo/GStreamer detection payload to RealtimeDetection."""
+) -> dict[str, Any]:
+    """Convert a raw Hailo/GStreamer detection payload to normalized detection fields.
 
-    if isinstance(raw_detection, RealtimeDetection):
-        return raw_detection
+    The adapter always emits a dict for downstream normalization into
+    ``RealtimeDetection``. This keeps parser output shape stable across mapping
+    and dataclass sources.
+    """
 
     adapter_config = config or GStreamerHailoRealtimeConfig()
-    bbox = _normalize_bbox(_raw_bbox(raw_detection), frame=frame)
-    class_id = _safe_int(raw_detection.get("class_id"))
-    label = _first_text(raw_detection, ("label", "class_name", "name")) or (
+    frame_ts = _safe_float(frame.timestamp, default=0.0)
+    if isinstance(raw_detection, RealtimeDetection):
+        return {
+            "label": str(raw_detection.label),
+            "score": float(raw_detection.confidence),
+            "bbox": _bbox_dict(raw_detection.bbox),
+            "class_id": raw_detection.class_id,
+            "track_id": raw_detection.track_id,
+            "source": raw_detection.source,
+            "model_id": raw_detection.model_id,
+            "ts": frame_ts,
+            "raw": raw_detection.to_dict(),
+            "attributes": raw_detection.attributes,
+        }
+
+    raw_mapping = raw_detection if isinstance(raw_detection, Mapping) else {}
+    if isinstance(raw_detection, (list, tuple)) and len(raw_detection) == 4:
+        raw_mapping = {"bbox": raw_detection}
+    raw_payload = raw_detection if isinstance(raw_detection, Mapping) else {"value": raw_detection}
+    raw_bbox = _raw_bbox(raw_mapping)
+    normalized_bbox = _normalize_bbox(raw_bbox, frame=frame)
+    class_id = _safe_int(raw_mapping.get("class_id"))
+    label = _first_text(raw_mapping, ("label", "class_name", "name")) or (
         f"class_{class_id}" if class_id is not None else "unknown"
     )
-    confidence = _safe_float(
-        _first_value(raw_detection, ("confidence", "score", "probability")),
+    score = _safe_float(
+        _first_value(raw_mapping, ("score", "confidence", "probability")),
         default=0.0,
     )
-    attributes = raw_detection.get("attributes", {})
-    return RealtimeDetection(
-        label=label,
-        confidence=confidence,
-        bbox=bbox,
-        class_id=class_id,
-        track_id=raw_detection.get("track_id"),
-        source=adapter_config.source_name,
-        model_id=adapter_config.model_id,
-        attributes=attributes if isinstance(attributes, Mapping) else {},
+    ts = _safe_float(
+        _first_value(
+            raw_mapping,
+            ("ts", "timestamp", "captured_at_ts", "frame_ts", "frame_timestamp"),
+        ),
+        default=frame_ts,
     )
+    if ts is None:
+        ts = frame_ts
+    attributes = raw_mapping.get("attributes") if isinstance(raw_mapping.get("attributes"), Mapping) else {}
+    return {
+        "label": label,
+        "score": score,
+        "confidence": score,
+        "bbox": normalized_bbox,
+        "class_id": class_id,
+        "track_id": raw_mapping.get("track_id"),
+        "source": str(raw_mapping.get("source", adapter_config.source_name)),
+        "model_id": str(raw_mapping.get("model_id", adapter_config.model_id)),
+        "attributes": attributes if isinstance(attributes, Mapping) else {},
+        "ts": ts,
+        "raw": raw_payload,
+    }
 
 
 def _readiness(
@@ -369,7 +553,12 @@ def _readiness(
     return AdapterReadiness(ready=True, status="ready", message="realtime adapter is wired")
 
 
-def _not_wired_status(config: GStreamerHailoRealtimeConfig, message: str) -> RealtimeEyeStatus:
+def _not_wired_status(
+    config: GStreamerHailoRealtimeConfig,
+    message: str,
+    *,
+    parser_state: Mapping[str, Any] | None = None,
+) -> RealtimeEyeStatus:
     return RealtimeEyeStatus(
         mode=config.mode,
         status="not_wired",
@@ -378,7 +567,27 @@ def _not_wired_status(config: GStreamerHailoRealtimeConfig, message: str) -> Rea
         placeholder=True,
         not_wired=True,
         message=message,
+        **_adapter_diagnostics(config, readiness_message=message, parser_state=parser_state),
     )
+
+
+def _adapter_diagnostics(
+    config: GStreamerHailoRealtimeConfig,
+    *,
+    readiness_message: str,
+    parser_state: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    parser_state = parser_state or {}
+    return {
+        "pipeline": config.pipeline_fields(),
+        "devices": {
+            "camera": config.camera_device,
+            "hailo": config.hailo_device,
+        },
+        "readiness_message": readiness_message,
+        "parse_error_count": _safe_int(parser_state.get("parse_error_count")) or 0,
+        "parse_errors": list(parser_state.get("errors", [])) if isinstance(parser_state.get("errors"), list) else [],
+    }
 
 
 def _coerce_realtime_frame(
@@ -446,6 +655,11 @@ def _status_from_payload(payload: Mapping[str, Any]) -> RealtimeEyeStatus:
         not_wired=bool(payload.get("not_wired", False)),
         compatibility_mode=bool(payload.get("compatibility_mode", False)),
         message=str(payload.get("message", "") or ""),
+        pipeline=dict(payload["pipeline"]) if isinstance(payload.get("pipeline"), Mapping) else None,
+        devices=dict(payload["devices"]) if isinstance(payload.get("devices"), Mapping) else None,
+        readiness_message=str(payload.get("readiness_message", "") or ""),
+        parse_error_count=_safe_int(payload.get("parse_error_count")),
+        parse_errors=list(payload.get("parse_errors", [])) if isinstance(payload.get("parse_errors"), list) else [],
     )
 
 
@@ -454,6 +668,13 @@ def _detection_from_payload(payload: Any) -> RealtimeDetection:
         return payload
     if not isinstance(payload, Mapping):
         return RealtimeDetection(label="unknown", confidence=0.0, bbox=None)
+    attributes: dict[str, Any] = {}
+    if isinstance(payload.get("attributes"), Mapping):
+        attributes = dict(payload["attributes"])
+    if "ts" in payload and "ts" not in attributes:
+        attributes["ts"] = payload["ts"]
+    if "raw" in payload and "raw" not in attributes:
+        attributes["raw"] = payload["raw"]
     return RealtimeDetection(
         label=str(payload.get("label", "unknown")),
         confidence=_safe_float(payload.get("confidence", payload.get("score")), default=0.0),
@@ -462,8 +683,27 @@ def _detection_from_payload(payload: Any) -> RealtimeDetection:
         track_id=payload.get("track_id"),
         source=str(payload.get("source", "gstreamer_hailo")),
         model_id=str(payload.get("model_id", "")),
-        attributes=payload.get("attributes") if isinstance(payload.get("attributes"), Mapping) else {},
+        attributes=attributes,
     )
+
+
+def _bbox_dict(value: Any) -> dict[str, float] | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        normalized = {}
+        for key in ("x_min", "y_min", "x_max", "y_max"):
+            normalized[key] = _safe_float(value.get(key), default=0.0)
+        return normalized
+    if isinstance(value, (list, tuple)) and len(value) == 4:
+        x_min, y_min, x_max, y_max = value
+        return {
+            "x_min": _safe_float(x_min, default=0.0),
+            "y_min": _safe_float(y_min, default=0.0),
+            "x_max": _safe_float(x_max, default=0.0),
+            "y_max": _safe_float(y_max, default=0.0),
+        }
+    return None
 
 
 def _raw_bbox(raw_detection: Mapping[str, Any]) -> Any:
@@ -544,7 +784,7 @@ def _default_gst_available() -> bool:
             return False
         return all(
             element_factory.find(element_name) is not None
-            for element_name in ("v4l2src", "videoconvert", "appsink", "hailonet")
+            for element_name in ("v4l2src", "videoconvert", "appsink", "hailonet", "hailofilter")
         )
     except Exception:
         return False

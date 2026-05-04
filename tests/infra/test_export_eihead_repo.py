@@ -205,6 +205,14 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
             "role": "Realtime GStreamer/Hailo adapter scaffold for /dev/video0 camera frames and /dev/hailo0 detections.",
         },
         {
+            "path": "eihead/eye/gstreamer.py",
+            "role": "Native realtime /dev/video0 GStreamer appsink reader and Hailo pipeline launcher.",
+        },
+        {
+            "path": "eihead/eye/hailo_metadata.py",
+            "role": "Native /dev/hailo0 Hailo ROI metadata parser for realtime detection boxes and scores.",
+        },
+        {
             "path": "eihead/eye/realtime.py",
             "role": "Realtime eye pipeline contracts shared by native adapters and monitor status.",
         },
@@ -215,6 +223,10 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
     ]
     assert "eihead/eye/adapters.py" in result.copied
     assert "eihead/eye/adapters.py" in readme
+    assert "eihead/eye/gstreamer.py" in result.copied
+    assert "eihead/eye/gstreamer.py" in readme
+    assert "eihead/eye/hailo_metadata.py" in result.copied
+    assert "eihead/eye/hailo_metadata.py" in readme
     assert "eihead/eye/realtime.py" in readme
     assert "eihead/monitoring/realtime_vision.py" in readme
     assert "/dev/video0" in readme

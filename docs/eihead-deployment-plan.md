@@ -25,12 +25,17 @@ and template set only; it does not perform deployment.
   `/dev/video0` camera plus `/dev/hailo0` Hailo feed into
   `RealtimeVisionObservation` payloads, runtime status, and the `18080`
   monitor.
-- The exported realtime Eye files are `eihead/eye/realtime.py` for the adapter
-  boundary and `eihead/monitoring/realtime_vision.py` for monitor payload
-  truthfulness.
+- The exported realtime Eye files are `eihead/eye/realtime.py` for contracts,
+  `eihead/eye/adapters.py` for the runtime adapter boundary,
+  `eihead/eye/gstreamer.py` for the native `/dev/video0` appsink reader,
+  `eihead/eye/hailo_metadata.py` for `/dev/hailo0` detection metadata parsing,
+  and `eihead/monitoring/realtime_vision.py` for monitor payload truthfulness.
 - Static-image detection is compatibility/test-only. It can support fixtures,
   old callers, and no-hardware checks, but it is not the deployment direction
   and must not be used as the primary acceptance signal.
+- If the camera, Hailo device, GStreamer runtime, or Hailo metadata parser is
+  missing, the monitor must show `not_wired`, `unknown`, or explicit degraded
+  state. A blank or fake-normal Eye panel is a deployment failure.
 - `/dev-project/eihead` exports should make this direction visible in README,
   manifest metadata, and migration docs while transitional body/runtime code is
   still present.

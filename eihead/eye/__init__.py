@@ -9,6 +9,8 @@ from .adapters import (
     GStreamerHailoRealtimeConfig,
     normalize_hailo_detection,
 )
+from .gstreamer import GStreamerAppSinkFrameReader
+from .hailo_metadata import HailoMetadataParseError, parse_hailo_detections
 from .realtime import (
     CompatStaticFrameSource,
     RealtimeDetection,
@@ -25,9 +27,12 @@ __all__ = [
     "GStreamerHailoFrameSource",
     "GStreamerHailoRealtimeAdapter",
     "GStreamerHailoRealtimeConfig",
+    "GStreamerAppSinkFrameReader",
+    "HailoMetadataParseError",
     "RealtimeDetection",
     "RealtimeEyePipeline",
     "RealtimeEyeStatus",
     "RealtimeVisionFrame",
     "normalize_hailo_detection",
+    "parse_hailo_detections",
 ]

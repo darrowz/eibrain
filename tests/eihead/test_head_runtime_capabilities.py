@@ -133,6 +133,22 @@ def test_handle_action_move_head_defaults_to_yaw_and_keeps_horizontal_only() -> 
     assert body_runtime.dispatched[0].target_name == "speaker"
 
 
+def test_handle_action_move_head_suppresses_jitter_within_min_angle_delta() -> None:
+    body_runtime = _BodyRuntime()
+    runtime = HeadRuntimeApp(body_runtime=body_runtime, ptz_min_angle_delta=4.0)
+
+    first_outcome = runtime.handle_action({"type": "move_head", "angle": 112})
+    second_outcome = runtime.handle_action({"type": "move_head", "angle": 115})
+    third_outcome = runtime.handle_action({"type": "move_head", "angle": 119})
+
+    assert first_outcome["status"] == "accepted"
+    assert second_outcome["status"] == "skipped"
+    assert second_outcome["details"]["reason"] == "ptz_jitter_suppressed"
+    assert second_outcome["details"]["min_angle_delta"] == 4.0
+    assert third_outcome["status"] == "accepted"
+    assert len(body_runtime.dispatched) == 2
+
+
 def test_handle_action_rejects_non_yaw_axis_without_dispatching() -> None:
     body_runtime = _BodyRuntime()
     runtime = HeadRuntimeApp(body_runtime=body_runtime)

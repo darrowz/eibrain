@@ -153,6 +153,114 @@ class PipelineStatusDictApp(FakeMonitorApp):
         }
 
 
+ADAPTER_PIPELINE_STATUS = {
+    "schema": "eihead.eye.realtime_status.v1",
+    "mode": "realtime_stream",
+    "status": "tracking",
+    "backend": "gstreamer_hailo",
+    "frame_count": 9,
+    "detection_count": 2,
+    "fps": 26.5,
+    "last_frame_id": "frame-adapter-9",
+    "last_frame_age": 0.245,
+    "last_frame_captured_at_ts": 1233.755,
+    "top_detection": {
+        "label": "person",
+        "score": 0.93,
+        "bbox": {"x_min": 0.22, "y_min": 0.11, "x_max": 0.56, "y_max": 0.88},
+    },
+    "detections": [
+        {
+            "label": "person",
+            "score": 0.93,
+            "bbox": {"x_min": 0.22, "y_min": 0.11, "x_max": 0.56, "y_max": 0.88},
+        },
+        {
+            "label": "dog",
+            "confidence": 0.61,
+            "bbox": {"x_min": 0.61, "y_min": 0.26, "x_max": 0.84, "y_max": 0.72},
+        },
+    ],
+    "pipeline": {"source": "v4l2src", "sink": "appsink", "transport": "gstreamer"},
+    "devices": {"camera": "/dev/video0", "hailo": "/dev/hailo0"},
+    "readiness_message": "reader/parser wired",
+    "parse_error_count": "2",
+    "parse_errors": [{"index": 3, "exception": "AttributeError", "message": "bbox missing"}],
+    "source": "eihead.eye.adapters",
+    "placeholder": "false",
+    "not_wired": "false",
+    "compatibility_mode": "false",
+    "message": "realtime adapter status",
+}
+
+
+class AdapterPayload:
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = dict(payload)
+
+    def to_dict(self) -> dict[str, object]:
+        return dict(self._payload)
+
+
+class LatestStatusAdapterApp(FakeMonitorApp):
+    class Adapter:
+        latest_status = AdapterPayload(ADAPTER_PIPELINE_STATUS)
+
+    eye_realtime = Adapter()
+
+
+class StatusMethodAdapterApp(FakeMonitorApp):
+    class Adapter:
+        def status(self) -> AdapterPayload:
+            return AdapterPayload(ADAPTER_PIPELINE_STATUS)
+
+    eye_realtime = Adapter()
+
+
+class PollMethodAdapterApp(FakeMonitorApp):
+    class Adapter:
+        def poll(self) -> AdapterPayload:
+            return AdapterPayload(ADAPTER_PIPELINE_STATUS)
+
+    eye_realtime = Adapter()
+
+
+class ToDictAdapterApp(FakeMonitorApp):
+    class Adapter:
+        def to_dict(self) -> dict[str, object]:
+            return dict(ADAPTER_PIPELINE_STATUS)
+
+    eye_realtime = Adapter()
+
+
+class NotWiredAdapterApp(FakeMonitorApp):
+    class Adapter:
+        latest_status = AdapterPayload(
+            {
+                **ADAPTER_PIPELINE_STATUS,
+                "status": "not_wired",
+                "placeholder": "true",
+                "not_wired": "true",
+                "readiness_message": "reader missing",
+            }
+        )
+
+    eye_realtime = Adapter()
+
+
+class CompatStaticAdapterApp(FakeMonitorApp):
+    class Adapter:
+        latest_status = AdapterPayload(
+            {
+                **ADAPTER_PIPELINE_STATUS,
+                "mode": "compat/static",
+                "compatibility_mode": "true",
+            }
+        )
+
+    eye_realtime = Adapter()
+
+
 class CompatStaticVisionMethodApp(FakeMonitorApp):
     def vision_realtime(self) -> VisionObservation:
         return VisionObservation(
@@ -274,6 +382,18 @@ def test_realtime_vision_helper_standardizes_observation_payload() -> None:
     assert payload["diagnostic"]["compat_static"] is False
     assert payload["diagnostic"]["stale"] is False
     assert payload["diagnostic"]["detection_count"] == 2
+    assert payload["diagnostic"]["detection_count_raw"] == 2
+    assert payload["diagnostic"]["score_threshold"] == 0.0
+    assert payload["diagnostic"]["detection_score_threshold"] == 0.0
+    assert payload["diagnostic"]["top_k"] is None
+    assert payload["diagnostic"]["frame_interval_ms"] is None
+    assert payload["diagnostic"]["jitter_guard"] is None
+    assert payload["diagnostic"]["hooks_used"] is None
+    assert payload["score_threshold"] == 0.0
+    assert payload["top_k"] is None
+    assert payload["frame_interval_ms"] is None
+    assert payload["jitter_guard"] is None
+    assert payload["hooks_used"] is None
 
 
 def test_realtime_vision_api_and_html_render_wired_payload() -> None:
@@ -295,6 +415,12 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert payload["boxes"][0]["x_min"] == 0.1
     assert payload["scores"] == [0.95, 0.72]
     assert payload["diagnostic"]["top_detection"]["score"] == 0.95
+    assert payload["diagnostic"]["detection_count_raw"] == 2
+    assert payload["score_threshold"] == 0.0
+    assert payload["top_k"] is None
+    assert payload["frame_interval_ms"] is None
+    assert payload["jitter_guard"] is None
+    assert payload["hooks_used"] is None
     assert alias_code == 200
     assert alias_payload["observation"] == payload["observation"]
     assert alias_payload["diagnostic"] == payload["diagnostic"]
@@ -307,6 +433,15 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert "Backend" in body
     assert "boxes" in body
     assert "scores" in body
+    assert "Frame interval" in body
+    assert "Jitter guard" in body
+    assert "Top K" in body
+    assert "Score threshold" in body
+    assert "Hooks used" in body
+    assert "Pipeline" in body
+    assert "Devices" in body
+    assert "Readiness" in body
+    assert "Parse errors" in body
     assert "/api/vision/realtime" in body
     assert "eye.realtime" in body
 
@@ -343,44 +478,105 @@ def test_realtime_vision_api_normalizes_pipeline_status_dict() -> None:
         {"x_min": 0.62, "y_min": 0.24, "x_max": 0.86, "y_max": 0.74},
     ]
     assert payload["scores"] == [0.91, 0.66]
+    assert payload["score_threshold"] == 0.0
+    assert payload["top_k"] is None
+    assert payload["frame_interval_ms"] is None
+    assert payload["jitter_guard"] is None
+    assert payload["hooks_used"] is None
     assert payload["top_detection"]["label"] == "person"
-    assert payload["diagnostic"] == {
-        "status": "wired",
-        "pipeline_status": "ok",
-        "wired": True,
-        "not_wired": False,
-        "placeholder": False,
-        "compat_static": False,
-        "stale": False,
-        "backend": "gstreamer_hailo",
-        "frame_id": "frame-42",
-        "fps": 27.5,
-        "last_frame_age": 0.333,
-        "last_frame_age_s": 0.333,
-        "detection_count": 2,
-        "boxes": [
-            {"x_min": 0.3, "y_min": 0.1, "x_max": 0.6, "y_max": 0.9},
-            {"x_min": 0.62, "y_min": 0.24, "x_max": 0.86, "y_max": 0.74},
-        ],
-        "scores": [0.91, 0.66],
-        "top_detection": {
-            "label": "person",
-            "score": 0.91,
-            "bbox": {"x_min": 0.3, "y_min": 0.1, "x_max": 0.6, "y_max": 0.9},
+    assert payload["diagnostic"]["status"] == "wired"
+    assert payload["diagnostic"]["pipeline_status"] == "ok"
+    assert payload["diagnostic"]["wired"] is True
+    assert payload["diagnostic"]["not_wired"] is False
+    assert payload["diagnostic"]["placeholder"] is False
+    assert payload["diagnostic"]["compat_static"] is False
+    assert payload["diagnostic"]["stale"] is False
+    assert payload["diagnostic"]["backend"] == "gstreamer_hailo"
+    assert payload["diagnostic"]["frame_id"] == "frame-42"
+    assert payload["diagnostic"]["fps"] == 27.5
+    assert payload["diagnostic"]["last_frame_age"] == 0.333
+    assert payload["diagnostic"]["last_frame_age_s"] == 0.333
+    assert payload["diagnostic"]["detection_count"] == 2
+    assert payload["diagnostic"]["detection_count_raw"] == 2
+    assert payload["diagnostic"]["detection_score_threshold"] == 0.0
+    assert payload["diagnostic"]["score_threshold"] == 0.0
+    assert payload["diagnostic"]["top_k"] is None
+    assert payload["diagnostic"]["frame_interval_ms"] is None
+    assert payload["diagnostic"]["jitter_guard"] is None
+    assert payload["diagnostic"]["hooks_used"] is None
+
+
+@pytest.mark.parametrize(
+    "app_cls",
+    [
+        LatestStatusAdapterApp,
+        StatusMethodAdapterApp,
+        PollMethodAdapterApp,
+        ToDictAdapterApp,
+    ],
+)
+def test_realtime_vision_api_accepts_live_adapter_payload_forms(app_cls: type[FakeMonitorApp]) -> None:
+    app = app_cls()
+
+    with running_server(app, clock=lambda: 1234.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/eye/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["backend"] == "gstreamer_hailo"
+    assert payload["frame_id"] == "frame-adapter-9"
+    assert payload["pipeline"] == {"source": "v4l2src", "sink": "appsink", "transport": "gstreamer"}
+    assert payload["devices"] == {"camera": "/dev/video0", "hailo": "/dev/hailo0"}
+    assert payload["readiness_message"] == "reader/parser wired"
+    assert payload["parse_error_count"] == 2
+    assert payload["parse_errors"] == [{"index": 3, "exception": "AttributeError", "message": "bbox missing"}]
+    assert payload["diagnostic"]["pipeline"] == payload["pipeline"]
+    assert payload["diagnostic"]["devices"] == payload["devices"]
+    assert payload["diagnostic"]["readiness_message"] == "reader/parser wired"
+    assert payload["diagnostic"]["parse_error_count"] == 2
+    assert payload["diagnostic"]["parse_errors"] == payload["parse_errors"]
+
+
+def test_realtime_vision_payload_filters_detections_by_threshold_and_top_k() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime",
+            "status": "ok",
+            "frame_id": "filtered-1",
+            "score_threshold": 0.7,
+            "top_k": 2,
+            "frame_interval_ms": 33,
+            "jitter_guard": True,
+            "hooks_used": ["model-a", "tracker-b"],
+            "fps": 30.0,
+            "detections": [
+                {"label": "person", "score": 0.95, "bbox": {"x_min": 0.1, "y_min": 0.1, "x_max": 0.2, "y_max": 0.2}},
+                {"label": "cat", "confidence": 0.72, "bbox": {"x_min": 0.2, "y_min": 0.2, "x_max": 0.3, "y_max": 0.3}},
+                {"label": "dog", "score": 0.68, "bbox": {"x_min": 0.3, "y_min": 0.3, "x_max": 0.4, "y_max": 0.4}},
+            ],
         },
-        "detections": [
-            {
-                "label": "person",
-                "score": 0.91,
-                "bbox": {"x_min": 0.3, "y_min": 0.1, "x_max": 0.6, "y_max": 0.9},
-            },
-            {
-                "label": "dog",
-                "confidence": 0.66,
-                "bbox": {"x_min": 0.62, "y_min": 0.24, "x_max": 0.86, "y_max": 0.74},
-            },
-        ],
-    }
+        timestamp=777.0,
+        source="eye_realtime",
+    )
+
+    assert payload["status"] == "wired"
+    assert payload["score_threshold"] == 0.7
+    assert payload["top_k"] == 2
+    assert payload["diagnostic"]["detection_count"] == 2
+    assert payload["diagnostic"]["detection_count_raw"] == 3
+    assert payload["scores"] == [0.95, 0.72]
+    assert payload["boxes"] == [
+        {"x_min": 0.1, "y_min": 0.1, "x_max": 0.2, "y_max": 0.2},
+        {"x_min": 0.2, "y_min": 0.2, "x_max": 0.3, "y_max": 0.3},
+    ]
+    assert payload["frame_interval_ms"] == 33.0
+    assert payload["jitter_guard"] is True
+    assert payload["hooks_used"] == ["model-a", "tracker-b"]
+    assert payload["diagnostic"]["detection_count"] == 2
+    assert payload["diagnostic"]["detection_count_raw"] == 3
+    assert payload["diagnostic"]["top_detection"]["label"] == "person"
 
 
 def test_realtime_vision_api_reports_not_wired_without_runtime_hook() -> None:
@@ -457,6 +653,47 @@ def test_realtime_vision_api_parses_string_false_flags_as_false() -> None:
     assert payload["not_wired"] is False
     assert payload["placeholder"] is False
     assert payload["compat_static_active"] is False
+
+
+def test_realtime_vision_api_keeps_live_adapter_status_wired_when_flags_are_false_strings() -> None:
+    payload = build_realtime_vision_payload(
+        ADAPTER_PIPELINE_STATUS,
+        timestamp=991.5,
+        source="eye_realtime",
+    )
+
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["not_wired"] is False
+    assert payload["placeholder"] is False
+    assert payload["compat_static_active"] is False
+
+
+def test_realtime_vision_api_does_not_promote_not_wired_adapter_status() -> None:
+    app = NotWiredAdapterApp()
+
+    with running_server(app, clock=lambda: 1234.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/eye/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["readiness_message"] == "reader missing"
+    assert payload["diagnostic"]["not_wired"] is True
+    assert payload["diagnostic"]["placeholder"] is True
+
+
+def test_realtime_vision_api_rejects_compat_static_adapter_status() -> None:
+    app = CompatStaticAdapterApp()
+
+    with running_server(app, clock=lambda: 1234.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/eye/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "compat_static"
+    assert payload["wired"] is False
+    assert payload["compat_static_active"] is True
+    assert payload["diagnostic"]["compat_static"] is True
 
 
 def test_realtime_vision_api_does_not_promote_static_vision_observation_to_wired() -> None:

@@ -406,6 +406,15 @@ def _render_index(app: Any, timestamp: float) -> str:
     vision_top_detection = _display_value(_top_detection_summary(realtime_diagnostic.get("top_detection")))
     vision_frame_age = _display_value(_metric_value(realtime_diagnostic.get("last_frame_age"), suffix="s"))
     vision_backend = _display_value(realtime_diagnostic.get("backend") or "unknown")
+    vision_frame_interval = _display_value(_metric_value(realtime.get("frame_interval_ms"), suffix="ms"))
+    vision_jitter_guard = _display_value(realtime.get("jitter_guard") if realtime.get("jitter_guard") is not None else "unknown")
+    vision_top_k = _display_value(_metric_value(realtime.get("top_k")))
+    vision_score_threshold = _display_value(_metric_value(realtime.get("score_threshold")))
+    vision_hooks_used = _display_value(_hooks_used_summary(realtime.get("hooks_used")))
+    vision_pipeline = _display_value(_pipeline_summary(realtime.get("pipeline")))
+    vision_devices = _display_value(_devices_summary(realtime.get("devices")))
+    vision_readiness = _display_value(realtime.get("readiness_message") or "unknown")
+    vision_parse_errors = _display_value(_metric_value(realtime.get("parse_error_count")))
 
     status_json = _json_for_html(status)
     capabilities_json = _json_for_html(capabilities)
@@ -453,6 +462,15 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Top detection</div><span class="metric">{vision_top_detection}</span></div>
       <div class="card"><div class="label">Frame age</div><span class="metric">{vision_frame_age}</span></div>
       <div class="card"><div class="label">Backend</div><span class="metric">{vision_backend}</span></div>
+      <div class="card"><div class="label">Frame interval</div><span class="metric">{vision_frame_interval}</span></div>
+      <div class="card"><div class="label">Jitter guard</div><span class="metric">{vision_jitter_guard}</span></div>
+      <div class="card"><div class="label">Top K</div><span class="metric">{vision_top_k}</span></div>
+      <div class="card"><div class="label">Score threshold</div><span class="metric">{vision_score_threshold}</span></div>
+      <div class="card"><div class="label">Hooks used</div><span class="metric">{vision_hooks_used}</span></div>
+      <div class="card"><div class="label">Pipeline</div><span class="metric">{vision_pipeline}</span></div>
+      <div class="card"><div class="label">Devices</div><span class="metric">{vision_devices}</span></div>
+      <div class="card"><div class="label">Readiness</div><span class="metric">{vision_readiness}</span></div>
+      <div class="card"><div class="label">Parse errors</div><span class="metric">{vision_parse_errors}</span></div>
     </section>
     <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
     <h2>Status</h2>
@@ -506,6 +524,38 @@ def _top_detection_summary(value: Any) -> str:
     if score in (None, ""):
         return str(label)
     return f"{label} ({score})"
+
+
+def _hooks_used_summary(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "[]"
+        return ", ".join(_metric_value(item) for item in value)
+    return _metric_value(value)
+
+
+def _pipeline_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    backend = value.get("backend") or value.get("transport") or value.get("source")
+    sink = value.get("sink")
+    if backend and sink:
+        return f"{backend} -> {sink}"
+    if backend:
+        return _metric_value(backend)
+    return _metric_value(value)
+
+
+def _devices_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    camera = value.get("camera") or value.get("camera_device")
+    hailo = value.get("hailo") or value.get("hailo_device")
+    if camera and hailo:
+        return f"{camera}, {hailo}"
+    return _metric_value(value)
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:
