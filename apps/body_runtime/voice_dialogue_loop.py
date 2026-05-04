@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
 from apps.body_runtime.app import BodyRuntimeApp
-from apps.body_runtime.engagement_state import EngagementStateWriter
 from eibrain.protocol.actions import PlaySpeechAction
-
-
-WAKE_WORD = "\u9e3f\u9014"
-SLEEP_WORD = "\u7ed3\u675f\u5bf9\u8bdd"
-WAKE_ACK_REPLY = "\u6211\u5728\u3002"
-SLEEP_ACK_REPLY = "\u597d\u7684\uff0c\u5148\u4f11\u606f\u3002"
-WAKE_STRIP_CHARS = " \t\r\n\uff0c,\u3002.!\uff01?\uff1f:\uff1a;\uff1b\u3001"
-
+from eibrain.protocol.observations import AudioTranscriptFinal
 
 
 class VoiceDialogueLoop:
@@ -25,31 +18,43 @@ class VoiceDialogueLoop:
         *,
         body_runtime: BodyRuntimeApp,
         cognitive_runtime: CognitiveRuntimeApp,
-        chunk_count: int = 3,
+        chunk_count: int = 2,
+        max_chunk_count: int = 4,
+        min_chunk_count: int = 1,
         idle_interval_s: float = 0.5,
         empty_interval_s: float = 0.25,
         session_id: str = "voice-dialogue-loop",
         actor_id: str = "darrow",
+        wake_word: str = "\u9e3f\u9014",
+        sleep_word: str = "\u7ed3\u675f\u5bf9\u8bdd",
         initial_conversation_active: bool = False,
-        wake_word: str = WAKE_WORD,
-        sleep_word: str = SLEEP_WORD,
-        wake_ack_reply: str = WAKE_ACK_REPLY,
-        sleep_ack_reply: str = SLEEP_ACK_REPLY,
-        engagement_writer: EngagementStateWriter | None = None,
+        engagement_writer: object | None = None,
+        waking_phrase: str = "\u6211\u5728\u3002",
+        sleeping_phrase: str = "\u597d\u7684\uff0c\u5148\u4f11\u606f\u3002",
     ) -> None:
         self.body_runtime = body_runtime
         self.cognitive_runtime = cognitive_runtime
-        self.chunk_count = chunk_count
+        self.wake_word = wake_word
+        self.sleep_word = sleep_word
+        self.waking_phrase = waking_phrase
+        self.sleeping_phrase = sleeping_phrase
+        self.conversation_active = bool(initial_conversation_active)
+        self.engagement_writer = engagement_writer
+        self.chunk_count = max(1, int(chunk_count))
+        self.max_chunk_count = max(1, int(max_chunk_count))
+        self.min_chunk_count = max(1, int(min_chunk_count))
+        if self.min_chunk_count > self.max_chunk_count:
+            self.min_chunk_count = self.max_chunk_count
+        if self.chunk_count > self.max_chunk_count:
+            self.chunk_count = self.max_chunk_count
+        if self.chunk_count < self.min_chunk_count:
+            self.chunk_count = self.min_chunk_count
+        self._rolling_chunk_count = self.chunk_count
         self.idle_interval_s = idle_interval_s
         self.empty_interval_s = empty_interval_s
         self.session_id = session_id
         self.actor_id = actor_id
-        self.conversation_active = initial_conversation_active
-        self.wake_word = wake_word
-        self.sleep_word = sleep_word
-        self.wake_ack_reply = wake_ack_reply
-        self.sleep_ack_reply = sleep_ack_reply
-        self.engagement_writer = engagement_writer
+        self._last_engagement_state = self.conversation_active
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -62,12 +67,13 @@ class VoiceDialogueLoop:
             running=True,
             phase="starting",
             last_status="starting",
-            conversation_active=self.conversation_active,
+            last_error="",
             wake_word=self.wake_word,
             sleep_word=self.sleep_word,
-            last_error="",
+            conversation_active=self.conversation_active,
+            last_reply="",
         )
-        self._write_engagement_state(phase="starting", reason="voice_loop_start")
+        self._publish_engagement_state(phase="running" if self.conversation_active else "sleeping")
         self._thread = threading.Thread(target=self._run, name="voice-dialogue-loop", daemon=True)
         self._thread.start()
 
@@ -84,142 +90,293 @@ class VoiceDialogueLoop:
             wake_word=self.wake_word,
             sleep_word=self.sleep_word,
         )
-        self._write_engagement_state(phase="stopped", reason="voice_loop_stop")
+        self._publish_engagement_state(
+            phase="stopped",
+            conversation_active=self.conversation_active,
+            reason="loop_stopped",
+        )
+
+    def _publish_engagement_state(
+        self,
+        *,
+        phase: str,
+        conversation_active: bool | None = None,
+        reason: str = "",
+    ) -> None:
+        if self.engagement_writer is None:
+            return
+        next_conversation_active = self.conversation_active if conversation_active is None else conversation_active
+        if next_conversation_active == self._last_engagement_state and phase != "stopped":
+            return
+        try:
+            self.engagement_writer.write(
+                conversation_active=next_conversation_active,
+                phase=phase,
+                reason=reason,
+                security_mode=False,
+            )
+            self._last_engagement_state = next_conversation_active
+        except Exception:
+            self.body_runtime.update_voice_dialogue_state(
+                last_status="engagement_writer_error",
+                phase="error",
+                last_error="engagement write failed",
+            )
+
+    @staticmethod
+    def _strip_trigger(text: str, trigger: str) -> tuple[str, bool]:
+        value = text.strip()
+        if not value or not trigger:
+            return value, False
+        if value == trigger:
+            return "", True
+        pattern = re.compile(r"^\s*" + re.escape(trigger) + r"[，,、\\s:.!！?？:：]*")
+        match = pattern.match(value)
+        if match is None:
+            return value, False
+        remainder = value[match.end() :].strip()
+        return remainder, True
+
+    def _publish_state(self, *, phase: str, last_status: str, **updates: object) -> None:
+        payload = {
+            "phase": phase,
+            "last_status": last_status,
+            "running": True,
+            "enabled": True,
+            "wake_word": self.wake_word,
+            "sleep_word": self.sleep_word,
+            "conversation_active": self.conversation_active,
+        }
+        payload.update(updates)
+        payload.setdefault("last_reply", self.body_runtime.voice_dialogue_state.get("last_reply", ""))
+        self.body_runtime.update_voice_dialogue_state(**payload)
+
+    def _dispatch_ack_reply(self, text: str):
+        actions = [
+            PlaySpeechAction(
+                ts=time.time(),
+                source="voice_dialogue_loop",
+                session_id=self.session_id,
+                actor_id=self.actor_id,
+                text=text,
+            )
+        ]
+        return self.body_runtime.dispatch_actions(actions)
+
+    def _replace_transcript(
+        self,
+        observation: AudioTranscriptFinal,
+        text: str,
+    ) -> AudioTranscriptFinal:
+        if observation.text == text:
+            return observation
+        return AudioTranscriptFinal(
+            ts=observation.ts,
+            source=observation.source,
+            text=text,
+            language=getattr(observation, "language", "und"),
+            session_id=observation.session_id,
+            actor_id=observation.actor_id,
+            target_id=observation.target_id,
+        )
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
             try:
                 if self.body_runtime.is_speaking():
-                    self.body_runtime.update_voice_dialogue_state(
+                    self._publish_state(
                         phase="speaking",
                         last_status="playback_active",
-                        conversation_active=self.conversation_active,
                     )
                     self._sleep(self.idle_interval_s)
                     continue
                 turn_started = time.perf_counter()
-                self.body_runtime.update_voice_dialogue_state(
-                    phase="listening",
-                    last_status="listening",
-                    conversation_active=self.conversation_active,
-                )
+                self._publish_state(phase="listening", last_status="listening")
                 listen_started = time.perf_counter()
+                chunk_count = max(
+                    self.min_chunk_count,
+                    min(self.max_chunk_count, self._rolling_chunk_count),
+                )
                 observation = self.body_runtime.transcribe_audio_window(
-                    chunk_count=self.chunk_count,
+                    chunk_count=chunk_count,
                     session_id=self.session_id,
                     actor_id=self.actor_id,
                 )
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
-                if len(transcript) == 1:
-                    total_s = time.perf_counter() - turn_started
-                    stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
-                    self.body_runtime.update_voice_dialogue_state(
-                        phase="idle",
-                        last_status="short_transcript_ignored",
-                        conversation_active=self.conversation_active,
-                        last_transcript=transcript,
-                        last_latency_s={
-                            "listen_asr": round(listen_asr_s, 2),
-                            "total": round(total_s, 2),
-                        },
-                        last_stage_latency_ms=stage_latency_ms,
-                        last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
-                        last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
-                    )
-                    self._sleep(self.empty_interval_s)
-                    continue
-                if not transcript:
-                    total_s = time.perf_counter() - turn_started
-                    stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
-                    self.body_runtime.update_voice_dialogue_state(
-                        phase="idle",
-                        last_status="no_transcript",
-                        conversation_active=self.conversation_active,
-                        last_transcript="",
-                        last_latency_s={
-                            "listen_asr": round(listen_asr_s, 2),
-                            "total": round(total_s, 2),
-                        },
-                        last_stage_latency_ms=stage_latency_ms,
-                        last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
-                        last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
-                    )
-                    self._sleep(self.empty_interval_s)
-                    continue
-                if self.conversation_active and self.sleep_word in transcript:
-                    self.conversation_active = False
-                    self._write_engagement_state(phase="idle", reason="sleep_word")
-                    self._dispatch_short_reply(
-                        reply=self.sleep_ack_reply,
-                        phase="idle",
-                        status="sleep_acknowledged",
-                        transcript=transcript,
-                        listen_asr_s=listen_asr_s,
-                        turn_started=turn_started,
-                    )
-                    self._sleep(self.idle_interval_s)
-                    continue
+
                 if not self.conversation_active:
-                    if self.wake_word not in transcript:
-                        total_s = time.perf_counter() - turn_started
-                        stage_latency_ms = self._stage_latency_ms(listen_asr_s=listen_asr_s, total_s=total_s)
-                        self.body_runtime.update_voice_dialogue_state(
+                    wake_transcript, woke = self._strip_trigger(transcript, self.wake_word)
+                    if not woke:
+                        if not transcript:
+                            status = "no_transcript"
+                            self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                        else:
+                            status = "waiting_for_wake_word"
+                            self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                        stage_latency_ms = self._stage_latency_ms(
+                            listen_asr_s=listen_asr_s,
+                            total_s=time.perf_counter() - turn_started,
+                        )
+                        self._publish_state(
                             phase="idle",
-                            last_status="waiting_for_wake_word",
+                            last_status=status,
                             conversation_active=False,
                             last_transcript=transcript,
                             last_latency_s={
                                 "listen_asr": round(listen_asr_s, 2),
-                                "total": round(total_s, 2),
+                                "total": round(time.perf_counter() - turn_started, 2),
                             },
                             last_stage_latency_ms=stage_latency_ms,
                             last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
                             last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                         )
+                        self._publish_engagement_state(
+                            phase="sleeping",
+                            conversation_active=False,
+                            reason="waiting_for_wake_word",
+                        )
                         self._sleep(self.empty_interval_s)
                         continue
+
                     self.conversation_active = True
-                    self._write_engagement_state(phase="idle", reason="wake_word")
-                    transcript_after_wake = self._strip_wake_word(transcript)
-                    if not transcript_after_wake:
-                        self._dispatch_short_reply(
-                            reply=self.wake_ack_reply,
+                    transcript = wake_transcript
+                    observation = self._replace_transcript(observation, transcript)
+                    self._publish_engagement_state(
+                        phase="running",
+                        conversation_active=True,
+                        reason="wake_word_detected",
+                    )
+                    if not transcript:
+                        self._publish_state(
                             phase="idle",
-                            status="wake_acknowledged",
-                            transcript=transcript,
-                            listen_asr_s=listen_asr_s,
-                            turn_started=turn_started,
+                            last_status="wake_acknowledged",
+                            conversation_active=True,
+                            last_transcript=self.wake_word,
+                            last_reply=self.waking_phrase,
                         )
-                        self._sleep(self.idle_interval_s)
+                        think_started = time.perf_counter()
+                        self._dispatch_ack_reply(self.waking_phrase)
+                        think_s = time.perf_counter() - think_started
+                        total_s = time.perf_counter() - turn_started
+                        stage_latency_ms = self._stage_latency_ms(
+                            listen_asr_s=listen_asr_s,
+                            think_s=think_s,
+                            total_s=total_s,
+                        )
+                        self._publish_state(
+                            phase="idle",
+                            last_status="wake_acknowledged",
+                            conversation_active=True,
+                            last_reply=self.waking_phrase,
+                            last_latency_s={
+                                "listen_asr": round(listen_asr_s, 2),
+                                "think": round(think_s, 2),
+                                "speak": 0.0,
+                                "total": round(total_s, 2),
+                            },
+                            last_stage_latency_ms=stage_latency_ms,
+                            last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                            last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
+                            last_error="",
+                        )
+                        self._sleep(self.empty_interval_s)
                         continue
-                    observation = self._with_transcript(observation, transcript_after_wake)
-                    transcript = transcript_after_wake
-                self.body_runtime.update_voice_dialogue_state(
+
+                if not transcript:
+                    stage_latency_ms = self._stage_latency_ms(
+                        listen_asr_s=listen_asr_s,
+                        total_s=time.perf_counter() - turn_started,
+                    )
+                    self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                    self._publish_state(
+                        phase="idle",
+                        last_status="no_transcript",
+                        last_transcript="",
+                        last_error="",
+                        last_latency_s={
+                            "listen_asr": round(listen_asr_s, 2),
+                            "total": round(time.perf_counter() - turn_started, 2),
+                        },
+                        last_stage_latency_ms=stage_latency_ms,
+                        last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
+                        last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
+
+                transcript_for_cognitive, requested_sleep = self._strip_trigger(
+                    transcript,
+                    self.sleep_word,
+                )
+                if requested_sleep:
+                    transcript = transcript_for_cognitive
+                if requested_sleep and not transcript:
+                    think_started = time.perf_counter()
+                    self.conversation_active = False
+                    self._publish_engagement_state(
+                        phase="stopped",
+                        conversation_active=False,
+                        reason="sleep_word_detected",
+                    )
+                    self._dispatch_ack_reply(self.sleeping_phrase)
+                    think_s = time.perf_counter() - think_started
+                    self._publish_state(
+                        phase="idle",
+                        last_status="sleep_acknowledged",
+                        conversation_active=False,
+                        last_transcript=self.sleep_word,
+                        last_reply=self.sleeping_phrase,
+                        last_error="",
+                        last_latency_s={
+                            "listen_asr": round(listen_asr_s, 2),
+                            "think": round(think_s, 2),
+                            "speak": 0.0,
+                            "total": round(time.perf_counter() - turn_started, 2),
+                        },
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
+
+                if len(transcript_for_cognitive) <= 1:
+                    self._rolling_chunk_count = max(self.min_chunk_count, chunk_count - 1)
+                    self._publish_state(
+                        phase="idle",
+                        last_status="short_transcript_ignored",
+                        last_transcript=transcript_for_cognitive,
+                    )
+                    self._sleep(self.empty_interval_s)
+                    continue
+
+                observation = self._replace_transcript(observation, transcript_for_cognitive)
+                self._publish_state(
                     phase="thinking",
                     last_status="transcribed",
-                    conversation_active=self.conversation_active,
-                    last_transcript=transcript,
-                    last_latency_s={"listen_asr": round(listen_asr_s, 2)},
+                    conversation_active=True,
+                    last_transcript=observation.text,
+                    last_error="",
                 )
                 think_started = time.perf_counter()
                 actions = self.cognitive_runtime.handle_observation(observation)
                 think_s = time.perf_counter() - think_started
-                reply = next((str(getattr(action, "text", "") or "") for action in actions if getattr(action, "kind", "") == "play_speech_action"), "")
-                self.body_runtime.update_voice_dialogue_state(
-                    phase="speaking",
-                    last_status="reply_ready" if reply else "no_reply",
-                    conversation_active=self.conversation_active,
-                    last_reply=reply,
-                    last_latency_s={
-                        "listen_asr": round(listen_asr_s, 2),
-                        "think": round(think_s, 2),
-                    },
-                )
+
+                reply = ""
+                for action in actions:
+                    if getattr(action, "kind", "") == "play_speech_action":
+                        reply = str(getattr(action, "text", "") or "")
+                        break
                 speak_started = time.perf_counter()
-                outcomes = self.body_runtime.dispatch_actions(actions)
+                if actions:
+                    outcomes = self.body_runtime.dispatch_actions(actions)
+                    all_ok = bool(outcomes) and all(
+                        getattr(outcome, "status", "") == "ok" for outcome in outcomes
+                    )
+                    status = "ok" if all_ok else "degraded"
+                    self._rolling_chunk_count = min(self.max_chunk_count, chunk_count + 1)
+                else:
+                    outcomes = []
+                    status = "no_reply"
                 speak_s = time.perf_counter() - speak_started
-                status = "ok" if outcomes and all(getattr(outcome, "status", "") == "ok" for outcome in outcomes) else "degraded"
                 turn_count = int(self.body_runtime.voice_dialogue_state.get("turn_count", 0) or 0) + 1
                 total_s = time.perf_counter() - turn_started
                 stage_latency_ms = self._stage_latency_ms(
@@ -228,10 +385,12 @@ class VoiceDialogueLoop:
                     speak_s=speak_s,
                     total_s=total_s,
                 )
-                self.body_runtime.update_voice_dialogue_state(
+                self._publish_state(
                     phase="idle",
-                    last_status=status,
-                    conversation_active=self.conversation_active,
+                    last_status="reply_ready" if reply else "no_reply",
+                    conversation_active=True,
+                    last_transcript=observation.text,
+                    last_reply=reply,
                     turn_count=turn_count,
                     last_error="",
                     last_latency_s={
@@ -245,7 +404,7 @@ class VoiceDialogueLoop:
                     last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
                     last_completed_turn={
                         "turn_count": turn_count,
-                        "transcript": transcript,
+                        "transcript": observation.text,
                         "reply": reply,
                         "status": status,
                         "latency_s": {
@@ -261,86 +420,13 @@ class VoiceDialogueLoop:
                     },
                 )
                 self._sleep(self.idle_interval_s)
-            except Exception as exc:  # pragma: no cover - hardware loop resilience
+            except Exception as exc:  # pragma: no cover - runtime boundary
                 self.body_runtime.update_voice_dialogue_state(
                     phase="error",
                     last_status="error",
-                    conversation_active=self.conversation_active,
                     last_error=str(exc),
                 )
-                self._sleep(max(2.0, self.empty_interval_s))
-
-    def _strip_wake_word(self, transcript: str) -> str:
-        return transcript.replace(self.wake_word, "", 1).lstrip(WAKE_STRIP_CHARS).strip()
-
-    def _with_transcript(self, observation, transcript: str):
-        return type(observation)(
-            ts=observation.ts,
-            source=observation.source,
-            session_id=observation.session_id,
-            actor_id=observation.actor_id,
-            target_id=observation.target_id,
-            text=transcript,
-            language=getattr(observation, "language", "und"),
-        )
-
-    def _dispatch_short_reply(
-        self,
-        *,
-        reply: str,
-        phase: str,
-        status: str,
-        transcript: str,
-        listen_asr_s: float,
-        turn_started: float,
-    ) -> None:
-        action = PlaySpeechAction(
-            ts=time.time(),
-            source="body.voice_dialogue_loop",
-            session_id=self.session_id,
-            actor_id=self.actor_id,
-            text=reply,
-        )
-        speak_started = time.perf_counter()
-        outcomes = self.body_runtime.dispatch_actions([action])
-        speak_s = time.perf_counter() - speak_started
-        dispatch_status = "ok" if outcomes and all(getattr(outcome, "status", "") == "ok" for outcome in outcomes) else "degraded"
-        total_s = time.perf_counter() - turn_started
-        stage_latency_ms = self._stage_latency_ms(
-            listen_asr_s=listen_asr_s,
-            speak_s=speak_s,
-            total_s=total_s,
-        )
-        self.body_runtime.update_voice_dialogue_state(
-            phase=phase,
-            last_status=status if dispatch_status == "ok" else dispatch_status,
-            conversation_active=self.conversation_active,
-            wake_word=self.wake_word,
-            sleep_word=self.sleep_word,
-            last_transcript=transcript,
-            last_reply=reply,
-            last_error="",
-            last_latency_s={
-                "listen_asr": round(listen_asr_s, 2),
-                "speak": round(speak_s, 2),
-                "total": round(total_s, 2),
-            },
-            last_stage_latency_ms=stage_latency_ms,
-            last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
-            last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
-        )
-
-    def _write_engagement_state(self, *, phase: str, reason: str) -> None:
-        if self.engagement_writer is None:
-            return
-        try:
-            self.engagement_writer.write(
-                conversation_active=self.conversation_active,
-                phase=phase,
-                reason=reason,
-            )
-        except OSError:
-            return
+                self._sleep(max(1.5, self.empty_interval_s))
 
     def _sleep(self, seconds: float) -> None:
         self._stop_event.wait(max(0.0, seconds))
@@ -350,28 +436,28 @@ class VoiceDialogueLoop:
         *,
         listen_asr_s: float,
         total_s: float,
-        think_s: float | None = None,
-        speak_s: float | None = None,
+        think_s: float = 0.0,
+        speak_s: float = 0.0,
     ) -> dict[str, float]:
-        stage_latency_ms: dict[str, float] = {
+        stages = {
             "listen_asr": round(max(0.0, listen_asr_s) * 1000, 2),
+            "think": round(max(0.0, think_s) * 1000, 2),
+            "speak": round(max(0.0, speak_s) * 1000, 2),
             "total": round(max(0.0, total_s) * 1000, 2),
         }
-        accounted_s = listen_asr_s
-        if think_s is not None:
-            stage_latency_ms["think"] = round(max(0.0, think_s) * 1000, 2)
-            accounted_s += think_s
-        if speak_s is not None:
-            stage_latency_ms["speak"] = round(max(0.0, speak_s) * 1000, 2)
-            accounted_s += speak_s
-        overhead_s = total_s - accounted_s
-        if overhead_s > 0.01:
-            stage_latency_ms["overhead"] = round(overhead_s * 1000, 2)
-        return stage_latency_ms
+        stages["overhead"] = round(
+            max(0.0, stages["total"] - stages["listen_asr"] - stages["think"] - stages["speak"]),
+            2,
+        )
+        return stages
 
     @classmethod
     def _bottleneck_stage(cls, stage_latency_ms: dict[str, float]) -> str:
-        candidates = {key: value for key, value in stage_latency_ms.items() if key != "total"}
+        candidates = {
+            key: value
+            for key, value in stage_latency_ms.items()
+            if key not in {"total", "overhead"}
+        }
         if not candidates:
             return ""
         return max(candidates, key=candidates.get)

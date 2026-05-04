@@ -2,19 +2,71 @@
 
 from __future__ import annotations
 
-from eiskills.compiler import SkillCompiler as EISkillCompiler
-
 from eibrain.protocol.actions import Action
 from eibrain.protocol.actions import MoveHeadAction, PlaySpeechAction, StopSpeechAction
-from eibrain.protocol.intents import Intent
+from eibrain.protocol.intents import Intent, OrientIntent, PauseIntent, SpeakIntent
+
+try:
+    from eiskills.compiler import SkillCompiler as EISkillCompiler
+except ModuleNotFoundError:  # pragma: no cover - fallback in environments without eiskills
+    EISkillCompiler = None
 
 
 class SkillCompiler:
     def __init__(self) -> None:
-        self._compiler = EISkillCompiler()
+        self._compiler = EISkillCompiler() if EISkillCompiler is not None else None
 
     def compile(self, intents: Intent | list[Intent]) -> list[Action]:
-        return [_to_eibrain_action(action) for action in self._compiler.compile(intents)]
+        if self._compiler is not None:
+            return [_to_eibrain_action(action) for action in self._compiler.compile(intents)]
+        return _fallback_compile(intents)
+
+
+def _fallback_compile(intents: Intent | list[Intent]) -> list[Action]:
+    if isinstance(intents, (list, tuple)):
+        iterable = intents
+    else:
+        iterable = [intents]
+    actions: list[Action] = []
+    for intent in iterable:
+        if isinstance(intent, SpeakIntent):
+            actions.append(
+                PlaySpeechAction(
+                    ts=intent.ts,
+                    source=intent.source,
+                    session_id=intent.session_id,
+                    actor_id=intent.actor_id,
+                    target_id=intent.target_id,
+                    text=intent.text,
+                )
+            )
+            continue
+        if isinstance(intent, PauseIntent):
+            actions.append(
+                StopSpeechAction(
+                    ts=intent.ts,
+                    source=intent.source,
+                    session_id=intent.session_id,
+                    actor_id=intent.actor_id,
+                    target_id=intent.target_id,
+                )
+            )
+            continue
+        if isinstance(intent, OrientIntent):
+            actions.append(
+                MoveHeadAction(
+                    ts=intent.ts,
+                    source=intent.source,
+                    session_id=intent.session_id,
+                    actor_id=intent.actor_id,
+                    target_id=intent.target_id,
+                    target_name=intent.target_name,
+                    target_x=intent.target_x,
+                )
+            )
+            continue
+        raise ValueError(f"Unsupported intent kind: {getattr(intent, 'kind', type(intent).__name__)}")
+    return actions
 
 
 def _to_eibrain_action(action) -> Action:
@@ -47,3 +99,4 @@ def _to_eibrain_action(action) -> Action:
             target_angle=action.target_angle,
         )
     raise ValueError(f"Unsupported eiskills action kind: {action.kind}")
+

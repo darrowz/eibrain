@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import deque
 import json
 from pathlib import Path
-import threading
 import time
 
 from eibrain.protocol.actions import PlaySpeechAction
@@ -31,8 +30,8 @@ class BodyRuntimeApp:
         self.degradation_manager = DegradationManager()
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
-        self._visual_lock = threading.RLock()
         self._visual_tracking_misses = 0
+        self._visual_tracking_recentered_this_episode = False
         self._speech_busy_until = 0.0
         self.voice_dialogue_state: dict[str, object] = {
             "enabled": False,
@@ -55,7 +54,7 @@ class BodyRuntimeApp:
         self.visual_tracking_state: dict[str, object] = {
             "running": False,
             "status": "idle",
-            "source": "inactive",
+            "source": "startup",
             "updated_at_ts": None,
             "frame_captured_at_ts": None,
             "detection_count": 0,
@@ -124,10 +123,9 @@ class BodyRuntimeApp:
             vad_min_voice_ms=int(capture_cfg.driver.extra.get("vad_min_voice_ms", 160)),
             vad_end_silence_ms=int(capture_cfg.driver.extra.get("vad_end_silence_ms", 360)),
             vad_pre_roll_ms=int(capture_cfg.driver.extra.get("vad_pre_roll_ms", 240)),
-            vad_min_capture_ms=int(capture_cfg.driver.extra.get("vad_min_capture_ms", 0)),
-            transcribe_vad_miss=bool(capture_cfg.driver.extra.get("transcribe_vad_miss", False)),
-            vad_miss_rms_threshold=float(capture_cfg.driver.extra.get("vad_miss_rms_threshold", 0.0)),
-            vad_endpoint_policy=bool(capture_cfg.driver.extra.get("vad_endpoint_policy", False)),
+            vad_backend=str(capture_cfg.driver.extra.get("vad_backend", "rms")),
+            vad_noise_ratio=float(capture_cfg.driver.extra.get("vad_noise_ratio", 1.18)),
+            vad_silero_threshold=float(capture_cfg.driver.extra.get("vad_silero_threshold", 0.5)),
         )
 
     def _make_recognizer(self, asr_cfg):
@@ -247,7 +245,9 @@ class BodyRuntimeApp:
                         "vad_elapsed_ms": capture_details.get("vad_elapsed_ms"),
                         "captured_at_ts": capture_details.get("captured_at_ts"),
                         "asr_elapsed_ms": details.get("elapsed_ms"),
+                        "asr_decode_elapsed_ms": details.get("elapsed_ms"),
                         "capture_elapsed_ms": capture_details.get("elapsed_ms"),
+                        "capture_window_elapsed_ms": capture_details.get("elapsed_ms"),
                     },
                 }
             )
@@ -319,16 +319,6 @@ class BodyRuntimeApp:
         chunks = list(getattr(capture, "last_chunks", []) or [])
         stats = pcm_signal_stats(chunks, channels=int(getattr(capture, "channels", 1) or 1)) if chunks else {}
         text = observation.text.strip()
-        vad_triggered = bool(getattr(capture, "last_vad_triggered", False))
-        if text:
-            speech_window_summary = "transcribed speech"
-            asr_status = "transcribed"
-        elif vad_triggered:
-            speech_window_summary = "vad speech without transcript"
-            asr_status = "no_transcript"
-        else:
-            speech_window_summary = "no vad speech trigger"
-            asr_status = "silence"
         self._recent_events.append(
             {
                 "kind": observation.kind,
@@ -338,8 +328,8 @@ class BodyRuntimeApp:
                 "recorded_at_ts": time.time(),
                 "details": {
                     "text": text,
-                    "speech_window_summary": speech_window_summary,
-                    "asr_status": asr_status,
+                    "speech_window_summary": "transcribed speech" if text else "no vad speech trigger",
+                    "asr_status": "transcribed" if text else "silence",
                     "asr_voice_activity": bool(text),
                     "recognizer_prewarmed": bool(getattr(recognizer, "prewarmed", False)),
                     "recognizer_prewarm_error": getattr(recognizer, "prewarm_error", ""),
@@ -355,11 +345,15 @@ class BodyRuntimeApp:
                     "streaming_vad": getattr(capture, "streaming_vad", False),
                     "vad_triggered": getattr(capture, "last_vad_triggered", None),
                     "vad_elapsed_ms": getattr(capture, "last_vad_elapsed_ms", None),
-                    "vad_reason": getattr(capture, "last_vad_reason", ""),
+                    "vad_backend": getattr(capture, "last_vad_backend", None),
+                    "vad_threshold": getattr(capture, "last_vad_threshold", None),
+                    "vad_noise_floor": getattr(capture, "last_vad_noise_floor", None),
+                    "vad_error": getattr(capture, "last_vad_error", ""),
+                    "capture_elapsed_ms": getattr(capture, "last_capture_ms", None),
+                    "capture_chunk_count": getattr(capture, "last_capture_chunk_count", None),
                     "captured_at_ts": time.time(),
                     "asr_elapsed_ms": elapsed_ms,
-                    "capture_elapsed_ms": getattr(self.ear_processor, "last_capture_elapsed_ms", None),
-                    "asr_decode_elapsed_ms": getattr(self.ear_processor, "last_decode_elapsed_ms", None),
+                    "asr_decode_elapsed_ms": getattr(self.ear_processor, "last_asr_decode_ms", None),
                 },
             }
         )
@@ -401,30 +395,9 @@ class BodyRuntimeApp:
         recenter_after_misses: int = 3,
         session_id: str = "tracking-session",
         actor_id: str = "vision-runtime",
-        source: str = "active",
+        source: str = "tracking-loop",
     ):
-        with self._visual_lock:
-            return self._track_visual_target_once_locked(
-                preferred_labels=preferred_labels,
-                recenter_after_misses=recenter_after_misses,
-                session_id=session_id,
-                actor_id=actor_id,
-                source=source,
-            )
-
-    def _track_visual_target_once_locked(
-        self,
-        *,
-        preferred_labels: tuple[str, ...],
-        recenter_after_misses: int,
-        session_id: str,
-        actor_id: str,
-        source: str,
-    ):
-        target, eye_details = self._select_visual_tracking_target(
-            preferred_labels=preferred_labels,
-            source=source,
-        )
+        target, eye_details = self._select_visual_tracking_target(preferred_labels=preferred_labels)
         self._update_visual_tracking_state(
             running=True,
             source=source,
@@ -441,7 +414,9 @@ class BodyRuntimeApp:
                 miss_count=self._visual_tracking_misses,
                 last_outcome_status=None,
             )
-            if self._visual_tracking_misses != recenter_after_misses:
+            if self._visual_tracking_recentered_this_episode:
+                return None
+            if self._visual_tracking_misses < recenter_after_misses:
                 return None
             action = MoveHeadAction(
                 ts=1.0,
@@ -451,6 +426,7 @@ class BodyRuntimeApp:
                 target_name="recenter",
                 target_angle=self._neck_home_angle(),
             )
+            self._visual_tracking_recentered_this_episode = True
             outcomes = self.dispatch_actions([action])
             outcome = outcomes[0] if outcomes else None
             self._update_visual_tracking_state(
@@ -462,6 +438,7 @@ class BodyRuntimeApp:
             self._refresh_interaction_mode(force_reason="recenter_after_miss")
             return outcome
         self._visual_tracking_misses = 0
+        self._visual_tracking_recentered_this_episode = False
         tracking_target = self._prepare_tracking_target(target)
         if tracking_target is None:
             self._update_visual_tracking_state(
@@ -488,6 +465,39 @@ class BodyRuntimeApp:
         )
         return outcome
 
+    def pause_visual_tracking(self, *, reason: str) -> None:
+        self._visual_tracking_misses = 0
+        self._visual_tracking_recentered_this_episode = False
+        self._update_visual_tracking_state(
+            running=False,
+            status="idle",
+            source="engagement_gate",
+            target=None,
+            miss_count=0,
+            detection_count=0,
+            top_detection=None,
+            last_outcome_status=None,
+            last_error="",
+        )
+        self.interaction_state.update(
+            {
+                "tracking_locked": False,
+                "tracking_target_label": "",
+                "tracking_target_score": 0.0,
+                "tracking_target_x": None,
+                "tracking_raw_target_x": None,
+                "tracking_stable_count": 0,
+                "tracking_miss_count": 0,
+            }
+        )
+        neck = self._get_neck_organ()
+        if neck is not None and hasattr(neck, "clear_neck_control"):
+            neck.clear_neck_control(reason=reason)
+        self._refresh_interaction_mode(force_reason=reason or "visual_pause")
+
+    def _get_neck_organ(self):
+        return next((organ for organ in self.organs if organ.name == "neck"), None)
+
     def snapshot(self) -> dict[str, object]:
         organ_states = [
             self._snapshot_organ(organ)
@@ -503,48 +513,9 @@ class BodyRuntimeApp:
             "recent_event_count": len(self._recent_events),
             "voice_dialogue": dict(self.voice_dialogue_state),
             "visual_tracking": dict(self.visual_tracking_state),
-            "neck_control": self._neck_control_snapshot(),
             "interaction_state": dict(self.interaction_state),
             "identity_registry": dict(self.identity_registry),
         }
-
-    def _neck_control_snapshot(self) -> dict[str, object]:
-        neck = next((organ for organ in self.organs if organ.name == "neck"), None)
-        snapshot = getattr(neck, "neck_control_snapshot", None)
-        if callable(snapshot):
-            return dict(snapshot())
-        return {}
-
-    def pause_visual_tracking(self, *, reason: str = "engagement_inactive") -> None:
-        """Clear stale visual/neck intent when engagement gates tracking off."""
-        with self._visual_lock:
-            self._visual_tracking_misses = 0
-            now_ts = time.time()
-            self._update_visual_tracking_state(
-                running=False,
-                status="idle",
-                source="engagement_gate",
-                target=None,
-                miss_count=0,
-                last_outcome_status=None,
-                frame_captured_at_ts=None,
-                detection_count=0,
-                top_detection=None,
-            )
-            self.interaction_state.update(
-                {
-                    "tracking_locked": False,
-                    "tracking_target_label": "",
-                    "tracking_target_score": 0.0,
-                    "tracking_target_x": None,
-                    "tracking_raw_target_x": None,
-                    "tracking_stable_count": 0,
-                    "tracking_miss_count": 0,
-                    "updated_at_ts": now_ts,
-                }
-            )
-            self._clear_neck_control(reason=reason)
-            self._refresh_interaction_mode(force_reason=reason)
 
     def register_current_identity(
         self,
@@ -653,23 +624,13 @@ class BodyRuntimeApp:
                 last_error=str((details or {}).get("error", "") or ""),
             )
 
-    def _clear_neck_control(self, *, reason: str) -> None:
-        neck = next((organ for organ in self.organs if organ.name == "neck"), None)
-        clear = getattr(neck, "clear_neck_control", None)
-        if callable(clear):
-            clear(reason=reason)
-
     def _snapshot_organ(self, organ):
         if organ.name == "ear" and self.voice_dialogue_state.get("running"):
             if hasattr(organ, "passive_heartbeat"):
                 return organ.passive_heartbeat()
         if organ.name == "eye" and self.voice_dialogue_state.get("running"):
             if hasattr(organ, "passive_heartbeat"):
-                with self._visual_lock:
-                    return organ.passive_heartbeat()
-        if organ.name == "eye":
-            with self._visual_lock:
-                return organ.heartbeat()
+                return organ.passive_heartbeat()
         return organ.heartbeat()
 
     def recent_events(self) -> list[dict[str, object]]:
@@ -686,11 +647,7 @@ class BodyRuntimeApp:
         target = self.visual_tracking_state.get("target")
         if isinstance(target, dict) and target.get("label") and target.get("bbox"):
             return dict(target)
-        with self._visual_lock:
-            target, _eye_details = self._select_visual_tracking_target(
-                preferred_labels=("face", "person"),
-                source="state",
-            )
+        target, _eye_details = self._select_visual_tracking_target(preferred_labels=("face", "person"))
         if target is not None:
             return dict(target)
         return None
@@ -732,35 +689,21 @@ class BodyRuntimeApp:
         self,
         *,
         preferred_labels: tuple[str, ...],
-        source: str = "active",
     ) -> tuple[dict[str, object] | None, dict[str, object]]:
         eye = next((organ for organ in self.organs if organ.name == "eye"), None)
         if eye is None:
             return None, {}
-        if source == "state":
-            read_state = getattr(eye, "read_visual_tracking_snapshot", None)
-            eye_details = read_state() if callable(read_state) else {}
-            if not isinstance(eye_details, dict):
-                eye_details = {}
-        else:
-            heartbeat = eye.heartbeat()
-            detection_state = heartbeat.subfunctions.get("detection")
-            if detection_state is None:
-                return None, {}
-            eye_details = {
-                "frame_captured_at_ts": detection_state.details.get("frame_captured_at_ts"),
-                "detection_count": 0,
-                "top_detection": detection_state.details.get("top_detection"),
-                "detections": detection_state.details.get("detections", []),
-            }
-        detections = eye_details.get("detections", [])
+        heartbeat = eye.heartbeat()
+        detection_state = heartbeat.subfunctions.get("detection")
+        if detection_state is None:
+            return None, {}
+        detections = detection_state.details.get("detections", [])
         if not isinstance(detections, list):
             detections = []
         eye_details = {
-            **eye_details,
+            "frame_captured_at_ts": detection_state.details.get("frame_captured_at_ts"),
             "detection_count": len(detections),
-            "top_detection": eye_details.get("top_detection"),
-            "tracking_source": source,
+            "top_detection": detection_state.details.get("top_detection"),
         }
         ranked: list[tuple[int, float, dict[str, object]]] = []
         for detection in detections:
@@ -776,9 +719,7 @@ class BodyRuntimeApp:
             except (TypeError, ValueError):
                 continue
             label = str(detection.get("label", "target"))
-            if preferred_labels and label not in preferred_labels:
-                continue
-            priority = preferred_labels.index(label) if label in preferred_labels else 0
+            priority = preferred_labels.index(label) if label in preferred_labels else len(preferred_labels)
             ranked.append(
                 (
                     priority,
@@ -791,6 +732,8 @@ class BodyRuntimeApp:
                     },
                 )
             )
+        if ranked and all(item[0] >= len(preferred_labels) for item in ranked):
+            return None, eye_details
         if not ranked:
             return None, eye_details
         ranked.sort(key=lambda item: (item[0], item[1]))
@@ -819,15 +762,22 @@ class BodyRuntimeApp:
             self._note_visual_miss(reason="low_confidence_target")
             return None
         raw_target_x = self._coerce_float(target.get("target_x"), default=0.5)
+        had_tracking_target = (
+            isinstance(self.interaction_state.get("tracking_target_x"), (int, float))
+            and isinstance(self.interaction_state.get("tracking_raw_target_x"), (int, float))
+        )
         previous_x = self._coerce_float(self.interaction_state.get("tracking_target_x"), default=raw_target_x)
         previous_raw_x = self._coerce_float(self.interaction_state.get("tracking_raw_target_x"), default=raw_target_x)
+        previous_locked = bool(self.interaction_state.get("tracking_locked", False))
         stable_count = int(self.interaction_state.get("tracking_stable_count", 0))
-        stable_count = stable_count + 1 if abs(raw_target_x - previous_raw_x) <= 0.12 else 1
-        alpha = 0.25 if stable_count > 1 else 0.45
-        smoothed_target_x = raw_target_x
-        if self.interaction_state.get("tracking_locked"):
+        stable_count = stable_count + 1 if abs(raw_target_x - previous_raw_x) <= 0.08 else 1
+        alpha = 0.35 if stable_count > 1 else 0.65
+        if previous_locked:
             smoothed_target_x = previous_x + ((raw_target_x - previous_x) * alpha)
+        else:
+            smoothed_target_x = raw_target_x
         current_ts = time.time()
+        smoothed_target_x = max(0.0, min(1.0, round(smoothed_target_x, 4)))
         last_neck_action_at_ts = self.interaction_state.get("last_neck_action_at_ts")
         since_last_action_s = (
             current_ts - float(last_neck_action_at_ts)
@@ -835,7 +785,32 @@ class BodyRuntimeApp:
             else None
         )
         command_delta = abs(smoothed_target_x - previous_x)
-        if since_last_action_s is not None and since_last_action_s < 0.75 and command_delta < 0.1:
+        if (
+            had_tracking_target
+            and previous_locked
+            and since_last_action_s is not None
+            and since_last_action_s < 0.45
+            and command_delta < 0.04
+        ):
+            self.interaction_state.update(
+                {
+                    "tracking_locked": True,
+                    "tracking_target_label": str(target.get("label", "target")),
+                    "tracking_target_score": score,
+                    "tracking_target_x": round(smoothed_target_x, 4),
+                    "tracking_raw_target_x": round(raw_target_x, 4),
+                    "tracking_stable_count": stable_count,
+                    "tracking_miss_count": 0,
+                    "updated_at_ts": current_ts,
+                }
+            )
+            self._refresh_interaction_mode(force_mode="attention", force_reason="tracking_hold")
+            return None
+        if (
+            had_tracking_target
+            and previous_locked
+            and command_delta < 0.02
+        ):
             self.interaction_state.update(
                 {
                     "tracking_locked": True,
@@ -854,7 +829,7 @@ class BodyRuntimeApp:
             **target,
             "label": str(target.get("label", "target")),
             "score": score,
-            "target_x": max(0.0, min(1.0, round(smoothed_target_x, 4))),
+            "target_x": smoothed_target_x,
             "raw_target_x": round(raw_target_x, 4),
             "tracking_stable_count": stable_count,
         }

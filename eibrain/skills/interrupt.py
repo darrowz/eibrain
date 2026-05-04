@@ -5,11 +5,24 @@ from __future__ import annotations
 from eibrain.protocol.actions import StopSpeechAction
 from eibrain.protocol.intents import PauseIntent
 
-from eiskills.interrupt import InterruptForUserSkill as EIInterruptForUserSkill
+try:
+    from eiskills.interrupt import InterruptForUserSkill as EIInterruptForUserSkill
+except ModuleNotFoundError:  # pragma: no cover
+    EIInterruptForUserSkill = None
 
 
 class InterruptForUserSkill:
     def compile(self, intent: PauseIntent) -> list[StopSpeechAction]:
+        if EIInterruptForUserSkill is None:
+            return [
+                StopSpeechAction(
+                    ts=intent.ts,
+                    source=intent.source,
+                    session_id=intent.session_id,
+                    actor_id=intent.actor_id,
+                    target_id=intent.target_id,
+                )
+            ]
         return [
             StopSpeechAction(
                 ts=action.ts,
@@ -20,3 +33,4 @@ class InterruptForUserSkill:
             )
             for action in EIInterruptForUserSkill().compile(intent)
         ]
+

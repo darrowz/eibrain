@@ -5,11 +5,27 @@ from __future__ import annotations
 from eibrain.protocol.actions import MoveHeadAction
 from eibrain.protocol.intents import OrientIntent
 
-from eiskills.orient import OrientToSpeakerSkill as EIOrientToSpeakerSkill
+try:
+    from eiskills.orient import OrientToSpeakerSkill as EIOrientToSpeakerSkill
+except ModuleNotFoundError:  # pragma: no cover
+    EIOrientToSpeakerSkill = None
 
 
 class OrientToSpeakerSkill:
     def compile(self, intent: OrientIntent) -> list[MoveHeadAction]:
+        if EIOrientToSpeakerSkill is None:
+            return [
+                MoveHeadAction(
+                    ts=intent.ts,
+                    source=intent.source,
+                    session_id=intent.session_id,
+                    actor_id=intent.actor_id,
+                    target_id=intent.target_id,
+                    target_name=intent.target_name,
+                    target_x=intent.target_x,
+                    target_angle=None,
+                )
+            ]
         return [
             MoveHeadAction(
                 ts=action.ts,
@@ -23,3 +39,4 @@ class OrientToSpeakerSkill:
             )
             for action in EIOrientToSpeakerSkill().compile(intent)
         ]
+
