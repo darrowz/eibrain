@@ -119,6 +119,41 @@ class HeadRuntimeApp:
                 return payload
         return None
 
+    def voice_status(self) -> Mapping[str, Any] | Any | None:
+        """Return native voice diagnostics when available, else a body snapshot fallback."""
+
+        for attr_name in (
+            "voice_realtime",
+            "voice_status",
+            "latest_voice_realtime",
+            "latest_voice_status",
+        ):
+            if not hasattr(self.body_runtime, attr_name):
+                continue
+            source = getattr(self.body_runtime, attr_name)
+            payload = _resolve_realtime_payload_candidate(source() if callable(source) else source)
+            if payload is not None:
+                return payload
+
+        body_snapshot = self._body_snapshot()
+        voice_dialogue = body_snapshot.get("voice_dialogue")
+        organs = body_snapshot.get("organs") if isinstance(body_snapshot.get("organs"), Mapping) else {}
+        ear = organs.get("ear") if isinstance(organs, Mapping) and isinstance(organs.get("ear"), Mapping) else None
+        mouth = organs.get("mouth") if isinstance(organs, Mapping) and isinstance(organs.get("mouth"), Mapping) else None
+        if isinstance(voice_dialogue, Mapping) or ear is not None or mouth is not None:
+            payload: dict[str, Any] = {}
+            if isinstance(voice_dialogue, Mapping):
+                payload["voice_dialogue"] = dict(voice_dialogue)
+            if ear is not None:
+                payload["ear"] = dict(ear)
+            if mouth is not None:
+                payload["mouth"] = dict(mouth)
+            return payload
+        return None
+
+    def voice_realtime(self) -> Mapping[str, Any] | Any | None:
+        return self.voice_status()
+
     def handle_action(self, action: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
         normalized, effective_trace_id = self._normalize_action(action, trace_id=trace_id)
         action_type = self._action_type(normalized)

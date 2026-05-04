@@ -21,6 +21,17 @@ Eye 方向单独明确：正式目标是 `/dev/video0` + `/dev/hailo0` 的 realt
 `/dev/hailo0` Hailo ROI metadata 检测框和分数解析，`eihead/eye/adapters.py`
 只做组合、truthfulness 和 monitor/status 契约适配。
 
+语音边界并未退回 legacy body：`eihead/ear` 与 `eihead/mouth` 已作为
+native eihead 边界接管实时链路。`eihead/ear/__init__.py` 与
+`eihead/ear/realtime.py`、`eihead/mouth/__init__.py` 与
+`eihead/mouth/playback.py` 及 `eihead/monitoring/voice.py` 属于 native
+可导出文件，`/api/voice/realtime` 与 `/api/audio/realtime` 是当前的
+web 语音状态入口。
+
+当前语音链条仍处于 functional-not-complete，后续由 Realtime Cognitive
+Scheduler 接管后进入闭环。直到 scheduler 接入前，监控仅能显示
+真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`。
+
 暂不做：
 
 - 不重构安全与权限层。

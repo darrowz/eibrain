@@ -127,6 +127,44 @@ NATIVE_REALTIME_EYE_FILES = (
     },
 )
 
+NATIVE_REALTIME_VOICE_FILES = (
+    {
+        "path": "eihead/ear/__init__.py",
+        "role": "Native eihead ear realtime package boundary and exports.",
+    },
+    {
+        "path": "eihead/ear/realtime.py",
+        "role": "Native realtime voice ingestion pipeline contracts and status shapes.",
+    },
+    {
+        "path": "eihead/mouth/__init__.py",
+        "role": "Native eihead mouth package boundary and exports.",
+    },
+    {
+        "path": "eihead/mouth/playback.py",
+        "role": "Native speech synthesis/playback service with stop and busy-state reporting.",
+    },
+    {
+        "path": "eihead/monitoring/voice.py",
+        "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+    },
+)
+
+NATIVE_RUNTIME_WEB_FILES = (
+    {
+        "path": "eihead/runtime/http_api.py",
+        "role": "Runtime HTTP API surface for native head status/action requests.",
+    },
+    {
+        "path": "eihead/monitoring/web.py",
+        "role": "Web monitor composition including /api/voice/realtime and /api/audio/realtime voice panels.",
+    },
+    {
+        "path": "eihead/runtime/app.py",
+        "role": "Runtime service facade that binds realtime vision/voice/mouth status into monitor payloads.",
+    },
+)
+
 MIGRATION_NOTES = (
     {
         "area": "eye",
@@ -192,6 +230,20 @@ The production eye target for `/dev-project/eihead` is realtime stream detection
 continuous `/dev/video0` camera frames and `/dev/hailo0` detections feeding live
 RealtimeVisionObservation payloads, runtime status, and the operator monitor.
 
+The native voice boundary is under `eihead/ear` and `eihead/mouth`:
+`eihead/ear/realtime.py`, `eihead/ear/__init__.py`,
+`eihead/mouth/playback.py`, and `eihead/mouth/__init__.py`.
+Its monitor adapter is `eihead/monitoring/voice.py`.
+The monitor endpoint bridge is exported in `eihead/monitoring/web.py`, with
+runtime facade support in `eihead/runtime/app.py`.
+
+Native runtime and monitor surface includes:
+- `GET /api/voice/realtime`
+- `GET /api/audio/realtime`
+
+Voice chain remains functional-not-complete and awaits the Realtime Cognitive
+Scheduler handoff.
+
 The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:
 
@@ -200,6 +252,16 @@ monitor payload files:
 - `eihead/eye/hailo_metadata.py`
 - `eihead/eye/realtime.py`
 - `eihead/monitoring/realtime_vision.py`
+
+Native voice boundaries are exported as:
+
+- `eihead/ear/__init__.py`
+- `eihead/ear/realtime.py`
+- `eihead/mouth/__init__.py`
+- `eihead/mouth/playback.py`
+- `eihead/monitoring/voice.py`
+- `eihead/runtime/http_api.py`
+- `eihead/monitoring/web.py`
 
 The monitor truthfulness rule is strict: missing live wiring must be shown as
 `not wired`, `not_wired`, `unknown`, or explicit offline/degraded data. Do not
@@ -466,6 +528,8 @@ def _write_export_manifest(
         "transitional_packages": list(TRANSITIONAL_PACKAGES),
         "runtime_entrypoints": list(RUNTIME_ENTRYPOINTS),
         "native_realtime_eye_files": list(NATIVE_REALTIME_EYE_FILES),
+        "native_realtime_voice_files": list(NATIVE_REALTIME_VOICE_FILES),
+        "native_runtime_web_files": list(NATIVE_RUNTIME_WEB_FILES),
         "future_capabilities": list(FUTURE_CAPABILITIES),
         "migration_notes": list(MIGRATION_NOTES),
         "exported_paths": {

@@ -16,6 +16,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from .realtime_vision import realtime_vision_payload_from_app
+from .voice import build_voice_diagnostics_from_app
 
 
 JsonObject = dict[str, Any]
@@ -165,6 +166,12 @@ def create_handler(
                 self._write_json(
                     HTTPStatus.OK,
                     realtime_vision_payload_from_app(runtime_app, timestamp=now()),
+                )
+                return
+            if path in {"/api/voice/realtime", "/api/audio/realtime"}:
+                self._write_json(
+                    HTTPStatus.OK,
+                    build_voice_diagnostics_from_app(runtime_app, timestamp=now()),
                 )
                 return
             if path in {"/api/actions/recent", "/api/recent-actions"}:
@@ -389,6 +396,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     status = _safe_payload(lambda: _call_json_object(app, "status"))
     capabilities = _safe_payload(lambda: _call_json_object(app, "capabilities"))
     realtime = _safe_payload(lambda: realtime_vision_payload_from_app(app, timestamp=timestamp))
+    voice = _safe_payload(lambda: build_voice_diagnostics_from_app(app, timestamp=timestamp))
     recent = _safe_payload(lambda: _recent_actions_payload(app, timestamp))
 
     node_id = _display_value(status.get("node_id") or capabilities.get("node_id") or "honjia")
@@ -399,6 +407,7 @@ def _render_index(app: Any, timestamp: float) -> str:
         or "unknown"
     )
     realtime_state = _display_value(realtime.get("status", "unknown"))
+    voice_state = _display_value(voice.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
     realtime_diagnostic = realtime.get("diagnostic") if isinstance(realtime.get("diagnostic"), Mapping) else {}
     vision_status = _display_value(realtime_diagnostic.get("status") or realtime.get("status", "unknown"))
@@ -415,10 +424,18 @@ def _render_index(app: Any, timestamp: float) -> str:
     vision_devices = _display_value(_devices_summary(realtime.get("devices")))
     vision_readiness = _display_value(realtime.get("readiness_message") or "unknown")
     vision_parse_errors = _display_value(_metric_value(realtime.get("parse_error_count")))
+    voice_ear = _display_value(_voice_component_summary(voice.get("ear"), kind="ear"))
+    voice_mouth = _display_value(_voice_component_summary(voice.get("mouth"), kind="mouth"))
+    voice_dialogue = _display_value(_voice_dialogue_summary(voice.get("dialogue")))
+    voice_latency = _display_value(_metric_value(_voice_latency_total_ms(voice.get("latency")), suffix="ms"))
+    voice_bottleneck = _display_value(_voice_bottleneck_summary(voice.get("bottleneck")))
+    voice_last_turn = _display_value(_voice_last_turn_summary(voice.get("last_turn")))
+    voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
 
     status_json = _json_for_html(status)
     capabilities_json = _json_for_html(capabilities)
     realtime_json = _json_for_html(realtime)
+    voice_json = _json_for_html(voice)
     recent_json = _json_for_html(recent)
 
     return f"""<!doctype html>
@@ -446,12 +463,13 @@ def _render_index(app: Any, timestamp: float) -> str:
   <main>
     <header>
       <h1>eihead native monitor</h1>
-      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · actions <strong>{recent_state}</strong></p>
+      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · actions <strong>{recent_state}</strong></p>
     </header>
     <section class="grid">
       <div class="card"><div class="label">Status API</div><a href="/api/status">/api/status</a></div>
       <div class="card"><div class="label">Capabilities API</div><a href="/api/capabilities">/api/capabilities</a></div>
       <div class="card"><div class="label">Realtime Vision API</div><a href="/api/vision/realtime">/api/vision/realtime</a></div>
+      <div class="card"><div class="label">Voice Diagnostics API</div><a href="/api/voice/realtime">/api/voice/realtime</a></div>
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
       <div class="card"><div class="label">Health API</div><a href="/health">/health</a></div>
     </section>
@@ -473,12 +491,25 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Parse errors</div><span class="metric">{vision_parse_errors}</span></div>
     </section>
     <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
+    <h2>Voice Diagnostics</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Status</div><span class="metric">{voice_state}</span></div>
+      <div class="card"><div class="label">Ear</div><span class="metric">{voice_ear}</span></div>
+      <div class="card"><div class="label">Mouth</div><span class="metric">{voice_mouth}</span></div>
+      <div class="card"><div class="label">Dialogue</div><span class="metric">{voice_dialogue}</span></div>
+      <div class="card"><div class="label">Latency</div><span class="metric">{voice_latency}</span></div>
+      <div class="card"><div class="label">Bottleneck</div><span class="metric">{voice_bottleneck}</span></div>
+      <div class="card"><div class="label">Last turn</div><span class="metric">{voice_last_turn}</span></div>
+      <div class="card"><div class="label">Readiness</div><span class="metric">{voice_readiness}</span></div>
+    </section>
     <h2>Status</h2>
     <pre>{status_json}</pre>
     <h2>Capabilities</h2>
     <pre>{capabilities_json}</pre>
     <h2>Realtime Vision</h2>
     <pre>{realtime_json}</pre>
+    <h2>Voice</h2>
+    <pre>{voice_json}</pre>
     <h2>Recent Actions</h2>
     <pre>{recent_json}</pre>
   </main>
@@ -556,6 +587,68 @@ def _devices_summary(value: Any) -> str:
     if camera and hailo:
         return f"{camera}, {hailo}"
     return _metric_value(value)
+
+
+def _voice_component_summary(value: Any, *, kind: str) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    state = value.get("state") or value.get("status") or "unknown"
+    if kind == "ear":
+        provider = value.get("provider")
+        if provider:
+            return f"{state} ({provider})"
+        return str(state)
+    backend = value.get("backend")
+    model = value.get("model")
+    if backend and model:
+        return f"{state} ({backend}/{model})"
+    if backend:
+        return f"{state} ({backend})"
+    return str(state)
+
+
+def _voice_dialogue_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    phase = value.get("phase") or value.get("last_status")
+    transcript = value.get("last_transcript")
+    if phase and transcript:
+        return f"{phase}: {transcript}"
+    if phase:
+        return str(phase)
+    return "unknown"
+
+
+def _voice_latency_total_ms(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return None
+    return value.get("total_ms")
+
+
+def _voice_bottleneck_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    stage = value.get("stage")
+    latency_ms = value.get("latency_ms")
+    if stage and latency_ms not in (None, ""):
+        return f"{stage} ({latency_ms}ms)"
+    if stage:
+        return str(stage)
+    return "unknown"
+
+
+def _voice_last_turn_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    transcript = value.get("transcript") or value.get("text")
+    reply = value.get("reply") or value.get("response")
+    if transcript and reply:
+        return f"{transcript} -> {reply}"
+    if transcript:
+        return str(transcript)
+    if reply:
+        return str(reply)
+    return "unknown"
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:

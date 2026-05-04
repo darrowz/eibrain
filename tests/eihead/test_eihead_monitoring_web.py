@@ -11,7 +11,10 @@ from urllib.error import HTTPError
 import pytest
 
 from eihead.monitoring import build_realtime_vision_payload
+from eihead.monitoring import build_voice_diagnostics_from_app as exported_build_voice_diagnostics_from_app
+from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.monitoring.web import create_handler, create_server
+from eihead.mouth import MouthTtsConfig, build_mouth_status
 from eihead.protocol import RealtimeVisionObservation, VisionObservation
 
 
@@ -300,6 +303,121 @@ class FallbackHealthApp(FakeMonitorApp):
     health = None
 
 
+class SnapshotVoiceApp(FakeMonitorApp):
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "runtime": "eihead",
+            "node_id": "honjia-test",
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "phase": "speaking",
+                "last_status": "completed",
+                "last_transcript": "你好 honjia",
+                "last_reply": "你好",
+                "last_stage_latency_ms": {"capture": 85.0, "llm": 415.0, "tts": 240.0},
+                "last_bottleneck_stage": "llm",
+                "last_bottleneck_ms": 415.0,
+                "last_completed_turn": {"transcript": "你好 honjia", "reply": "你好"},
+            },
+            "organs": {
+                "ear": {
+                    "organ": "ear",
+                    "health": "healthy",
+                    "subfunctions": {
+                        "capture": {"health": "healthy", "details": {"device": "default"}},
+                        "asr": {"health": "healthy", "details": {"provider": "faster_whisper"}},
+                    },
+                },
+                "mouth": {
+                    "organ": "mouth",
+                    "health": "healthy",
+                    "subfunctions": {
+                        "tts_playback": {
+                            "health": "healthy",
+                            "details": {
+                                "backend": "minimax",
+                                "model": "speech-2.8-hd",
+                                "voice_id": "female-shaonv",
+                                "text_preview": "你好 honjia",
+                            },
+                        }
+                    },
+                },
+            },
+        }
+
+
+class WaitingEarVoiceApp(FakeMonitorApp):
+    def voice_status(self) -> dict[str, object]:
+        return {
+            "ear": {
+                "status": "waiting_for_data",
+                "live_probe_skipped": True,
+                "readiness_message": "ear waiting for data",
+            },
+            "mouth": {
+                "status": "noop",
+                "backend": "noop",
+                "readiness_message": "mouth noop backend",
+            },
+            "dialogue": {
+                "phase": "idle",
+                "last_status": "waiting_for_voice",
+            },
+        }
+
+
+class NativeVoiceRealtimeApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "wired",
+            "ear": {
+                "status": "ok",
+                "provider": "faster_whisper",
+                "readiness_message": "ear wired",
+            },
+            "mouth": {
+                "status": "ok",
+                "backend": "minimax",
+                "model": "speech-2.8-hd",
+                "voice_id": "female-shaonv",
+                "text_preview": "你好 honjia",
+            },
+            "dialogue": {
+                "phase": "speaking",
+                "last_status": "completed",
+                "last_completed_turn": {"transcript": "你好 honjia", "reply": "你好"},
+            },
+            "last_stage_latency_ms": {"capture": 70.0, "llm": 390.0, "tts": 250.0},
+            "last_bottleneck_stage": "llm",
+            "last_bottleneck_ms": 390.0,
+            "readiness_message": "voice loop wired",
+        }
+
+
+class FallbackMouthVoiceApp(FakeMonitorApp):
+    def voice_status(self) -> dict[str, object]:
+        return {
+            "ear": {
+                "status": "ok",
+                "provider": "faster_whisper",
+                "readiness_message": "ear wired",
+            },
+            "mouth": build_mouth_status(
+                config=MouthTtsConfig(provider="espeak", model="espeak-ng", voice_id="zh"),
+                status="completed",
+                details={"text_preview": "fallback done", "text_char_count": 13},
+            ).to_dict(),
+            "dialogue": {
+                "phase": "speaking",
+                "last_status": "completed",
+                "last_completed_turn": {"transcript": "你好", "reply": "你好"},
+            },
+        }
+
+
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
@@ -345,6 +463,35 @@ def test_health_status_and_capabilities_return_json_objects() -> None:
     assert status_payload["runtime"] == "eihead"
     assert capabilities_code == 200
     assert capabilities_payload["capabilities"]["neck"]["limits"]["tilt_deg"] is None
+
+
+def test_voice_helper_uses_body_snapshot_and_exposes_latency_bottleneck_and_last_turn() -> None:
+    payload = build_voice_diagnostics_from_app(SnapshotVoiceApp(), timestamp=432.1)
+
+    assert payload["schema"] == "eihead.monitor.voice_realtime.v1"
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "snapshot"
+    assert payload["captured_at_ts"] == 432.1
+    assert payload["dialogue"]["phase"] == "speaking"
+    assert payload["ear"]["provider"] == "faster_whisper"
+    assert payload["mouth"]["backend"] == "minimax"
+    assert payload["latency"]["stage_latency_ms"]["llm"] == 415.0
+    assert payload["bottleneck"] == {"stage": "llm", "latency_ms": 415.0}
+    assert payload["last_turn"] == {"transcript": "你好 honjia", "reply": "你好"}
+
+
+def test_voice_helper_marks_waiting_ear_and_noop_mouth_as_truthful_not_fake_ok() -> None:
+    payload = build_voice_diagnostics_from_app(WaitingEarVoiceApp(), timestamp=433.0)
+
+    assert payload["status"] == "degraded"
+    assert payload["wired"] is False
+    assert payload["not_wired"] is False
+    assert payload["ear"]["status"] == "waiting_for_data"
+    assert payload["ear"]["state"] == "degraded"
+    assert payload["mouth"]["backend"] == "noop"
+    assert payload["mouth"]["state"] == "not_wired"
+    assert "waiting" in payload["readiness_message"]
 
 
 def test_realtime_vision_helper_standardizes_observation_payload() -> None:
@@ -444,6 +591,44 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert "Parse errors" in body
     assert "/api/vision/realtime" in body
     assert "eye.realtime" in body
+
+
+def test_voice_api_aliases_and_html_render_voice_diagnostics() -> None:
+    app = NativeVoiceRealtimeApp()
+
+    with running_server(app, clock=lambda: 654.5) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        alias_code, _, alias_payload = read_json(f"{base_url}/api/audio/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert alias_code == 200
+    assert payload == alias_payload
+    assert payload["status"] == "wired"
+    assert payload["mouth"]["backend"] == "minimax"
+    assert payload["mouth"]["model"] == "speech-2.8-hd"
+    assert payload["latency"]["stage_latency_ms"]["tts"] == 250.0
+    assert payload["bottleneck"] == {"stage": "llm", "latency_ms": 390.0}
+    assert payload["last_turn"]["transcript"] == "你好 honjia"
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Voice Diagnostics" in body
+    assert "/api/voice/realtime" in body
+    assert "MiniMax" in body or "minimax" in body
+
+
+def test_voice_helper_does_not_promote_fallback_mouth_to_wired() -> None:
+    assert exported_build_voice_diagnostics_from_app is build_voice_diagnostics_from_app
+
+    payload = build_voice_diagnostics_from_app(FallbackMouthVoiceApp(), timestamp=655.5)
+
+    assert payload["status"] == "degraded"
+    assert payload["wired"] is False
+    assert payload["ear"]["state"] == "wired"
+    assert payload["mouth"]["backend"] == "espeak"
+    assert payload["mouth"]["health"] == "degraded"
+    assert payload["mouth"]["state"] == "degraded"
+    assert payload["mouth"]["tts_playback"] is None
 
 
 def test_realtime_vision_api_prefers_later_live_hook_over_earlier_placeholder() -> None:

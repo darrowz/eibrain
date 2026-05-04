@@ -39,6 +39,70 @@ class StaticVisionBodyRuntime(FakeBodyRuntime):
         return VisionObservation(ts=1.0, source="eye.compat", frame_id="still-1")
 
 
+class VoiceHookBodyRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        payload = super().snapshot()
+        payload["voice_dialogue"] = {"phase": "snapshot-idle"}
+        payload["organs"] = {
+            **payload["organs"],
+            "mouth": {"health": "unavailable", "status": "snapshot-mute"},
+        }
+        return payload
+
+    def voice_status(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "wired",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {"phase": "speaking", "last_status": "completed"},
+            "readiness_message": "native voice hook wired",
+        }
+
+
+class SnapshotVoiceBodyRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        payload = super().snapshot()
+        payload["voice_dialogue"] = {
+            "enabled": True,
+            "running": True,
+            "phase": "speaking",
+            "last_status": "completed",
+            "last_transcript": "你好 honjia",
+            "last_reply": "你好",
+            "last_stage_latency_ms": {"capture": 80.0, "llm": 420.0, "tts": 260.0},
+            "last_bottleneck_stage": "llm",
+            "last_bottleneck_ms": 420.0,
+            "last_completed_turn": {"transcript": "你好 honjia", "reply": "你好"},
+        }
+        payload["organs"] = {
+            **payload["organs"],
+            "ear": {
+                "organ": "ear",
+                "health": "healthy",
+                "subfunctions": {
+                    "capture": {"health": "healthy", "details": {"device": "default"}},
+                    "asr": {"health": "healthy", "details": {"provider": "faster_whisper"}},
+                },
+            },
+            "mouth": {
+                "organ": "mouth",
+                "health": "healthy",
+                "subfunctions": {
+                    "tts_playback": {
+                        "health": "healthy",
+                        "details": {
+                            "backend": "minimax",
+                            "model": "speech-2.8-hd",
+                            "voice_id": "female-shaonv",
+                        },
+                    }
+                },
+            },
+        }
+        return payload
+
+
 def make_fake_head_runtime(config_path: str) -> HeadRuntimeApp:
     return HeadRuntimeApp(body_runtime=FakeBodyRuntime(), config_path=config_path)
 
@@ -150,6 +214,33 @@ def test_head_runtime_realtime_vision_hook_rejects_static_compat_observation() -
     runtime = HeadRuntimeApp(body_runtime=StaticVisionBodyRuntime(), config_path="config/test.yaml")
 
     assert runtime.vision_realtime() is None
+
+
+def test_head_runtime_voice_status_prefers_native_hook_over_snapshot_fallback() -> None:
+    runtime = HeadRuntimeApp(body_runtime=VoiceHookBodyRuntime(), config_path="config/test.yaml")
+
+    payload = runtime.voice_status()
+
+    assert payload == {
+        "schema": "eihead.monitor.voice_realtime.v1",
+        "status": "wired",
+        "ear": {"status": "ok", "provider": "faster_whisper"},
+        "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+        "dialogue": {"phase": "speaking", "last_status": "completed"},
+        "readiness_message": "native voice hook wired",
+    }
+
+
+def test_head_runtime_voice_status_falls_back_to_snapshot_voice_dialogue_and_organs() -> None:
+    runtime = HeadRuntimeApp(body_runtime=SnapshotVoiceBodyRuntime(), config_path="config/test.yaml")
+
+    payload = runtime.voice_status()
+
+    assert payload["voice_dialogue"]["phase"] == "speaking"
+    assert payload["voice_dialogue"]["last_bottleneck_stage"] == "llm"
+    assert payload["ear"]["subfunctions"]["asr"]["details"]["provider"] == "faster_whisper"
+    assert payload["mouth"]["subfunctions"]["tts_playback"]["details"]["backend"] == "minimax"
+    assert runtime.voice_realtime() == payload
 
 
 def test_cli_status_uses_injected_runtime_without_hardware() -> None:

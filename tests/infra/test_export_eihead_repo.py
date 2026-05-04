@@ -34,6 +34,7 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "eihead/runtime/cli.py",
         "eihead/runtime/http_api.py",
         "eihead/services/capability_registry.py",
+        "eihead/runtime/app.py",
         "apps/head_runtime/__main__.py",
         "apps/body_runtime/app.py",
         "config/eibrain.honjia.yaml",
@@ -42,8 +43,15 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "deploy/systemd/eihead-monitor.service",
         "eibrain/body/runtime_linux.py",
         "eibrain/infra/config.py",
+        "eihead/ear/__init__.py",
+        "eihead/ear/realtime.py",
+        "eihead/mouth/__init__.py",
+        "eihead/mouth/playback.py",
+        "eihead/monitoring/voice.py",
+        "eihead/monitoring/web.py",
         "docs/eihead-implementation-plan.md",
         "docs/eihead-deployment-plan.md",
+        "docs/eihead-migration-audit.md",
         "EXPORT_MANIFEST.json",
         "pyproject.toml",
         "README.md",
@@ -58,6 +66,13 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "config/eihead.honjia.yaml" in result.copied
     assert "eibrain/body/runtime_linux.py" in result.copied
     assert "eibrain/infra/config.py" in result.copied
+    assert "eihead/runtime/app.py" in result.copied
+    assert "eihead/ear/__init__.py" in result.copied
+    assert "eihead/ear/realtime.py" in result.copied
+    assert "eihead/mouth/__init__.py" in result.copied
+    assert "eihead/mouth/playback.py" in result.copied
+    assert "eihead/monitoring/voice.py" in result.copied
+    assert "eihead/monitoring/web.py" in result.copied
     assert "pyproject.toml" in result.generated
     assert "README.md" in result.generated
     assert "eibrain/protocol/__init__.py" in result.generated
@@ -99,6 +114,42 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
             "area": "eye",
             "applies_to": ["transitional_packages", "runtime_entrypoints"],
             "note": "The production eye direction for /dev-project/eihead is realtime stream detection; static image detection is not a deployment target.",
+        },
+    ]
+    assert manifest["native_realtime_voice_files"] == [
+        {
+            "path": "eihead/ear/__init__.py",
+            "role": "Native eihead ear realtime package boundary and exports.",
+        },
+        {
+            "path": "eihead/ear/realtime.py",
+            "role": "Native realtime voice ingestion pipeline contracts and status shapes.",
+        },
+        {
+            "path": "eihead/mouth/__init__.py",
+            "role": "Native eihead mouth package boundary and exports.",
+        },
+        {
+            "path": "eihead/mouth/playback.py",
+            "role": "Native speech synthesis/playback service with stop and busy-state reporting.",
+        },
+        {
+            "path": "eihead/monitoring/voice.py",
+            "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+        },
+    ]
+    assert manifest["native_runtime_web_files"] == [
+        {
+            "path": "eihead/runtime/http_api.py",
+            "role": "Runtime HTTP API surface for native head status/action requests.",
+        },
+        {
+            "path": "eihead/monitoring/web.py",
+            "role": "Web monitor composition including /api/voice/realtime and /api/audio/realtime voice panels.",
+        },
+        {
+            "path": "eihead/runtime/app.py",
+            "role": "Runtime service facade that binds realtime vision/voice/mouth status into monitor payloads.",
         },
     ]
     assert manifest["transitional_packages"] == [
@@ -183,6 +234,11 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "/dev-project/eihead" in readme
     assert "transitional `eibrain.body`" in readme
     assert "realtime stream detection" in readme
+    assert "/api/voice/realtime" in readme
+    assert "/api/audio/realtime" in readme
+    assert "functional-not-complete" in readme
+    assert "Realtime Cognitive" in readme
+    assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
 
@@ -197,8 +253,14 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
 
     assert (target / "eihead/eye/realtime.py").is_file()
     assert (target / "eihead/monitoring/realtime_vision.py").is_file()
+    assert (target / "eihead/ear/realtime.py").is_file()
+    assert (target / "eihead/mouth/playback.py").is_file()
+    assert (target / "eihead/monitoring/voice.py").is_file()
     assert "eihead/eye/realtime.py" in result.copied
     assert "eihead/monitoring/realtime_vision.py" in result.copied
+    assert "eihead/ear/realtime.py" in result.copied
+    assert "eihead/mouth/playback.py" in result.copied
+    assert "eihead/monitoring/voice.py" in result.copied
     assert manifest["native_realtime_eye_files"] == [
         {
             "path": "eihead/eye/adapters.py",
@@ -221,6 +283,42 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
             "role": "Monitor payload normalizer for live realtime eye data and not-wired truthfulness.",
         },
     ]
+    assert manifest["native_realtime_voice_files"] == [
+        {
+            "path": "eihead/ear/__init__.py",
+            "role": "Native eihead ear realtime package boundary and exports.",
+        },
+        {
+            "path": "eihead/ear/realtime.py",
+            "role": "Native realtime voice ingestion pipeline contracts and status shapes.",
+        },
+        {
+            "path": "eihead/mouth/__init__.py",
+            "role": "Native eihead mouth package boundary and exports.",
+        },
+        {
+            "path": "eihead/mouth/playback.py",
+            "role": "Native speech synthesis/playback service with stop and busy-state reporting.",
+        },
+        {
+            "path": "eihead/monitoring/voice.py",
+            "role": "Monitor payload normalizer for realtime ear/mouth status and not-wired truthfulness.",
+        },
+    ]
+    assert manifest["native_runtime_web_files"] == [
+        {
+            "path": "eihead/runtime/http_api.py",
+            "role": "Runtime HTTP API surface for native head status/action requests.",
+        },
+        {
+            "path": "eihead/monitoring/web.py",
+            "role": "Web monitor composition including /api/voice/realtime and /api/audio/realtime voice panels.",
+        },
+        {
+            "path": "eihead/runtime/app.py",
+            "role": "Runtime service facade that binds realtime vision/voice/mouth status into monitor payloads.",
+        },
+    ]
     assert "eihead/eye/adapters.py" in result.copied
     assert "eihead/eye/adapters.py" in readme
     assert "eihead/eye/gstreamer.py" in result.copied
@@ -229,9 +327,20 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
     assert "eihead/eye/hailo_metadata.py" in readme
     assert "eihead/eye/realtime.py" in readme
     assert "eihead/monitoring/realtime_vision.py" in readme
+    assert "eihead/ear/realtime.py" in readme
+    assert "eihead/ear/__init__.py" in readme
+    assert "eihead/mouth/playback.py" in readme
+    assert "eihead/mouth/__init__.py" in readme
+    assert "eihead/monitoring/voice.py" in readme
+    assert "eihead/runtime/http_api.py" in readme
     assert "/dev/video0" in readme
     assert "/dev/hailo0" in readme
     assert "not wired" in readme
+    assert "/api/voice/realtime" in readme
+    assert "/api/audio/realtime" in readme
+    assert "functional-not-complete" in readme
+    assert "Realtime Cognitive" in readme
+    assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
 
 

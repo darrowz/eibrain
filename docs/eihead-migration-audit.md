@@ -28,7 +28,8 @@ the old body runtime copied into the export shape:
 
 Until the legacy body modules are renamed and made import-independent, the
 standalone eihead repository is an export shell around the proven honjia body
-runtime, not a fully native head runtime.
+runtime for part of the chain, while ear/mouth are already native but not yet
+fully complete.
 
 The formal Eye target for `/dev-project/eihead` is realtime stream detection:
 continuous `/dev/video0` camera frames and `/dev/hailo0` Hailo detections
@@ -39,6 +40,10 @@ The native eye split now treats `eihead/eye/gstreamer.py` as the realtime
 appsink reader boundary and `eihead/eye/hailo_metadata.py` as the Hailo ROI
 metadata parser boundary; `eihead/eye/adapters.py` composes those pieces and
 keeps missing hardware/plugins truthful as `not_wired`.
+The new native voice boundary is `eihead/ear`, `eihead/mouth`, and
+`eihead/monitoring/voice.py`, with endpoint hooks prepared in
+`/api/voice/realtime` and `/api/audio/realtime`. This chain currently remains
+functional-not-complete and is waiting for Realtime Cognitive Scheduler handoff.
 
 ## Audit Matrix
 
@@ -53,8 +58,8 @@ keeps missing hardware/plugins truthful as `not_wired`.
 | Shared protocol | Legacy source | Rich head contracts currently live under `eibrain.protocol`, and export keeps a compatibility subset. | Split to `/dev-project/eiprotocol` after organ behavior is stable enough to lock message names. | JSON round-trip tests pass for capability, observation, action, outcome, and feedback payloads. |
 | Eye | Native boundary emerging | Camera/Hailo/realtime stream state logic still has legacy consumers in `apps.body_runtime.vision_hailo_service`, `eibrain.body.runtime_linux`, `eibrain.body.vision_state`, and `eibrain.body.organs.eye`; native export now carries `eihead/eye/realtime.py`, `eihead/eye/adapters.py`, `eihead/eye/gstreamer.py`, `eihead/eye/hailo_metadata.py`, and `eihead/monitoring/realtime_vision.py`. | Finish wiring native `eihead.eye` as realtime stream detection while preserving `/tmp/eibrain-vision/latest.jpg` and `/tmp/eibrain-vision/state.json` until consumers are changed. | honjia still captures `/dev/video0`, runs `/dev/hailo0`, continuously publishes detections, and renders boxes/scores/parser readiness on `18080`; static-image detection is compatibility/test-only. |
 | Neck | Legacy | Pan/yaw control remains in `eibrain.body.neck_control`, `eibrain.body.raspbot_driver`, and `eibrain.body.organs.neck`. | Move to native `eihead.neck` with pan-only capability and explicit tilt rejection. | Manual pan command moves without oscillation; tilt requests fail as unsupported; `/dev/i2c-1` ownership is unchanged. |
-| Ear | Legacy | Mic capture, VAD, ASR, and transcript normalization remain in `eibrain.body.ear_stream`, ASR recognizers, and body runtime dialogue flow. | Move to native `eihead.ear` after eye/neck are stable, preserving VAD thresholds and transcript replacements. | Voice wake and one full ASR turn pass on honjia with measured stage latency and no self-listening during playback. |
-| Mouth | Legacy | TTS/playback remains in `eibrain.body.runtime_linux.speak_text`, `eibrain.body.organs.mouth`, and body dispatch. | Move to native `eihead.mouth`; keep `speak`, `stop_speech`, and playback busy state visible to ear. | TTS is audible on honjia, stop works, and monitor shows synthesis/playback state from real data. |
+| Ear | Partly native | Export now carries `eihead/ear/realtime.py`, `eihead/ear/__init__.py`, and `eihead/monitoring/voice.py`; runtime endpoints `/api/voice/realtime` and `/api/audio/realtime` are present in exports. | Move to native `eihead.ear` end-to-end and route stage telemetry through the Realtime Cognitive Scheduler handoff. | Voice wake and one full ASR turn pass on honjia with measured stage latency, and no fake healthy speech state before scheduler completion. |
+| Mouth | Partly native | TTS/playback contracts are now in `eihead/mouth/playback.py` and `eihead/mouth/__init__.py`, with monitor bridge at `eihead/monitoring/voice.py`. | Keep `speak`, `stop_speech`, and playback busy-state visibility while scheduler wiring finishes. | TTS is audible on honjia, stop works, and monitor shows synthesis/playback state from real data or explicit `not_wired/unknown`. |
 | Export script | Transitional | `scripts/export-eihead-repo.py` intentionally copies `apps/body_runtime`, `eibrain/body`, `eibrain/infra`, and `eibrain/protocol`. | Remove legacy copies only after each native replacement has parity; keep docs and config export. | Exported repo has no runtime dependency on `apps.body_runtime` or `eibrain.body` except named deprecation shims. |
 | Deployment | Native templates, legacy fallback | `eihead-runtime.service` uses port `18081`; `eihead-monitor.service` keeps operator port `18080`; old eibrain service templates still exist for rollback. | Do not enable eihead services permanently until parity checks pass. | After reboot, eihead services own `18080`/`18081`; rollback can restore old eibrain body services in one downtime window. |
 

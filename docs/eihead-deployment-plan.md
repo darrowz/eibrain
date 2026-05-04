@@ -33,6 +33,17 @@ and template set only; it does not perform deployment.
 - Static-image detection is compatibility/test-only. It can support fixtures,
   old callers, and no-hardware checks, but it is not the deployment direction
   and must not be used as the primary acceptance signal.
+- Voice runtime is native through `eihead/ear` and `eihead/mouth`. Exported native
+  voice files are `eihead/ear/realtime.py`, `eihead/ear/__init__.py`,
+  `eihead/mouth/playback.py`, `eihead/mouth/__init__.py`, and
+  `eihead/monitoring/voice.py`, with Web monitor endpoint wiring in
+  `eihead/monitoring/web.py` and runtime facade support in `eihead/runtime/app.py`.
+- Web runtime endpoints for native voice status are:
+  - `GET /api/voice/realtime`
+  - `GET /api/audio/realtime`
+- The voice chain is currently functional-not-complete and should be represented as
+  `not_wired/unknown/degraded` where scheduling or status dependencies are
+  missing.
 - If the camera, Hailo device, GStreamer runtime, or Hailo metadata parser is
   missing, the monitor must show `not_wired`, `unknown`, or explicit degraded
   state. A blank or fake-normal Eye panel is a deployment failure.
@@ -98,6 +109,9 @@ sudo systemctl enable eihead-runtime.service eihead-monitor.service
 - `/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, microphone, and speaker state
   appear in the Web monitor as real data, degraded data, explicit offline data,
   `unknown`, or `not wired`; blank "normal" placeholders are not acceptable.
+- Voice status appears via `/api/voice/realtime` and `/api/audio/realtime`; until
+  Realtime Cognitive Scheduler is connected, monitor values must remain explicit
+  about incomplete flow stages.
 - Realtime eye stream detection from `/dev/video0` and `/dev/hailo0` publishes
   frame age, FPS, detection boxes, scores, backend, and stale/error state to
   the monitor.
