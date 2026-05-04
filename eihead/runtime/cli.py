@@ -10,7 +10,9 @@ from typing import Any, Callable, Mapping, Sequence, TextIO
 from .app import DEFAULT_CONFIG_PATH, HeadRuntimeApp
 
 HeadRuntimeFactory = Callable[[str], HeadRuntimeApp]
-HttpServerRunner = Callable[..., Mapping[str, Any] | None]
+ServerRunner = Callable[..., Mapping[str, Any] | None]
+HttpServerRunner = ServerRunner
+MonitorServerRunner = ServerRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +25,9 @@ def build_parser() -> argparse.ArgumentParser:
     http_parser = subparsers.add_parser("http", help="Start the eihead HTTP API")
     http_parser.add_argument("--host", default="127.0.0.1")
     http_parser.add_argument("--port", default=18081, type=int)
+    monitor_parser = subparsers.add_parser("monitor", help="Start the eihead native monitoring Web")
+    monitor_parser.add_argument("--host", default="0.0.0.0")
+    monitor_parser.add_argument("--port", default=18080, type=int)
     parser.set_defaults(command="status")
     return parser
 
@@ -32,11 +37,14 @@ def dispatch(
     *,
     app_factory: HeadRuntimeFactory | None = None,
     http_server: HttpServerRunner | None = None,
+    monitor_server: MonitorServerRunner | None = None,
 ) -> dict[str, Any]:
     factory = app_factory or HeadRuntimeApp.from_config_path
     app = factory(str(args.config))
     if args.command == "http":
         return _run_http_command(app, host=str(args.host), port=int(args.port), http_server=http_server)
+    if args.command == "monitor":
+        return _run_monitor_command(app, host=str(args.host), port=int(args.port), monitor_server=monitor_server)
     if args.command == "serve":
         return app.serve()
     if args.command == "verify":
@@ -49,11 +57,17 @@ def main(
     *,
     app_factory: HeadRuntimeFactory | None = None,
     http_server: HttpServerRunner | None = None,
+    monitor_server: MonitorServerRunner | None = None,
     stdout: TextIO | None = None,
 ) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
-    payload = dispatch(args, app_factory=app_factory, http_server=http_server)
+    payload = dispatch(
+        args,
+        app_factory=app_factory,
+        http_server=http_server,
+        monitor_server=monitor_server,
+    )
     print(json.dumps(payload, ensure_ascii=False, indent=2), file=stdout or sys.stdout)
     return 0
 
@@ -108,3 +122,41 @@ def _load_http_server_runner() -> HttpServerRunner:
     raise RuntimeError(
         "eihead.runtime.http_api must expose one of: run_http_api, serve_http_api, serve, run."
     )
+
+
+def _run_monitor_command(
+    app: HeadRuntimeApp,
+    *,
+    host: str,
+    port: int,
+    monitor_server: MonitorServerRunner | None = None,
+) -> dict[str, Any]:
+    runner = monitor_server or _load_monitor_server_runner()
+    result = runner(app=app, host=host, port=port)
+    if result is None:
+        return {
+            "command": "monitor",
+            "runtime": "eihead",
+            "status": "stopped",
+            "host": host,
+            "port": port,
+        }
+    if not isinstance(result, Mapping):
+        raise TypeError("eihead monitor server runner must return a mapping or None")
+    return dict(result)
+
+
+def _load_monitor_server_runner() -> MonitorServerRunner:
+    try:
+        from eihead.monitoring import web
+    except ImportError as exc:
+        raise RuntimeError(
+            "eihead native monitor is not available yet; expected eihead.monitoring.web "
+            "to expose serve(app=..., host=..., port=...)."
+        ) from exc
+
+    for name in ("serve_monitor", "serve", "run"):
+        runner = getattr(web, name, None)
+        if callable(runner):
+            return runner
+    raise RuntimeError("eihead.monitoring.web must expose one of: serve_monitor, serve, run.")

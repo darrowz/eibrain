@@ -26,6 +26,43 @@ def make_fake_head_runtime(config_path: str) -> HeadRuntimeApp:
     return HeadRuntimeApp(body_runtime=FakeBodyRuntime(), config_path=config_path)
 
 
+def test_from_config_path_uses_legacy_body_config_for_eihead_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "eihead.honjia.yaml"
+    body_config_path = tmp_path / "eibrain.honjia.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "node_id: honjia-test",
+                "legacy:",
+                f"  body_runtime_config_path: {body_config_path.as_posix()}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    captured: dict[str, str] = {}
+
+    def fake_factory(path: str) -> FakeBodyRuntime:
+        captured["body_config_path"] = path
+        return FakeBodyRuntime()
+
+    runtime = HeadRuntimeApp.from_config_path(str(config_path), body_runtime_factory=fake_factory)
+
+    assert runtime.config_path == str(config_path)
+    assert captured["body_config_path"] == body_config_path.as_posix()
+
+
+def test_from_config_path_keeps_eibrain_config_path_for_legacy_runtime() -> None:
+    captured: dict[str, str] = {}
+
+    def fake_factory(path: str) -> FakeBodyRuntime:
+        captured["body_config_path"] = path
+        return FakeBodyRuntime()
+
+    HeadRuntimeApp.from_config_path("config/eibrain.honjia.yaml", body_runtime_factory=fake_factory)
+
+    assert captured["body_config_path"] == "config/eibrain.honjia.yaml"
+
+
 def test_head_runtime_imports_and_wraps_body_snapshot() -> None:
     runtime = make_fake_head_runtime("config/test.yaml")
 

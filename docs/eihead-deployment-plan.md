@@ -17,20 +17,21 @@ and template set only; it does not perform deployment.
 - honjia `/etc/eihead/eihead.env` is the optional environment override file.
 - honjia `18081` is reserved for the eihead runtime HTTP API.
 - honjia `18080` remains the operator Web monitoring URL through the
-  compatibility monitor.
+  eihead-native monitor.
 
 ## Service Templates
 
 - `deploy/systemd/eihead-runtime.service` starts the runtime API with
   `eihead-runtime --config /etc/eihead/eihead.honjia.yaml http --host 0.0.0.0 --port 18081`.
-- `deploy/systemd/eihead-monitor.service` starts the compatibility Web monitor
+- `deploy/systemd/eihead-monitor.service` starts the eihead-native Web monitor
   after `eihead-runtime.service` and keeps the user-facing Web port on `18080`.
 - The templates run as user `darrow` from `/opt/eihead/current`.
 - The templates do not edit, remove, or override existing eibrain service
   files.
-- The compatibility monitor still reads the monitor bind address from
-  `/etc/eihead/eihead.honjia.yaml`; keep `monitoring.port: 18080` there until
-  an eihead-native proxy replaces the wrapper.
+- The native monitor starts with
+  `eihead-runtime --config /etc/eihead/eihead.honjia.yaml monitor --host 0.0.0.0 --port 18080`;
+  keep `monitoring.port: 18080` in config for operators and future generated
+  service templates.
 - No safety or permission gating is introduced in this phase.
 
 ## Cutover Strategy

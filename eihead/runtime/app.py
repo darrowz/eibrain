@@ -8,11 +8,12 @@ without changing the proven honjia body runtime path.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass
+from pathlib import Path
 import time
 from typing import Any, Callable, Mapping
 
-from eibrain.protocol.actions import MoveHeadAction, PlaySpeechAction, StopSpeechAction
 from eihead.monitoring import build_status_snapshot
+from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction
 from eihead.services import CapabilityRegistry
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
@@ -23,6 +24,20 @@ def _default_body_runtime_factory(config_path: str) -> Any:
     from apps.body_runtime.app import BodyRuntimeApp
 
     return BodyRuntimeApp.from_config_path(config_path)
+
+
+def _body_runtime_config_path(config_path: str) -> str:
+    """Resolve the legacy body config when the user passes an eihead config."""
+
+    if not Path(config_path).name.startswith("eihead"):
+        return config_path
+    try:
+        from eihead.runtime.config import EiheadConfigError, load_eihead_config
+
+        config = load_eihead_config(config_path)
+    except (EiheadConfigError, OSError):
+        return config_path
+    return config.legacy.body_runtime_config_path or config_path
 
 
 @dataclass(slots=True)
@@ -41,7 +56,8 @@ class HeadRuntimeApp:
         body_runtime_factory: BodyRuntimeFactory | None = None,
     ) -> "HeadRuntimeApp":
         factory = body_runtime_factory or _default_body_runtime_factory
-        return cls(body_runtime=factory(str(path)), config_path=str(path))
+        body_config_path = _body_runtime_config_path(str(path))
+        return cls(body_runtime=factory(body_config_path), config_path=str(path))
 
     def snapshot(self) -> dict[str, Any]:
         body_snapshot = self._body_snapshot()
@@ -282,6 +298,27 @@ class HeadRuntimeApp:
             )
 
         serialized = [_serialize_outcome(outcome) for outcome in delegate_outcomes or []]
+        compat_action = None
+        if not serialized:
+            compat_action = _legacy_eibrain_action(protocol_action)
+            if compat_action is not None:
+                try:
+                    delegate_outcomes = dispatch_actions([compat_action])
+                except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
+                    return self._action_outcome(
+                        action_id=action_id,
+                        action_type=action_type,
+                        trace_id=trace_id,
+                        status="error",
+                        success=False,
+                        details={
+                            **dict(details or {}),
+                            "error": str(exc),
+                            "protocol_action": protocol_action.kind,
+                            "compat_protocol_action": getattr(compat_action, "kind", ""),
+                        },
+                    )
+                serialized = [_serialize_outcome(outcome) for outcome in delegate_outcomes or []]
         return self._action_outcome(
             action_id=action_id,
             action_type=action_type,
@@ -292,6 +329,7 @@ class HeadRuntimeApp:
             details={
                 **dict(details or {}),
                 "protocol_action": protocol_action.kind,
+                "compat_protocol_action": getattr(compat_action, "kind", "") if compat_action is not None else "",
                 "delegate_outcomes": serialized,
             },
         )
@@ -424,3 +462,51 @@ def _serialize_outcome(outcome: Any) -> dict[str, Any]:
     if is_dataclass(outcome):
         return asdict(outcome)
     return {"value": outcome}
+
+
+def _legacy_eibrain_action(action: Any) -> Any | None:
+    """Convert local eihead actions for the old in-repo body runtime.
+
+    The standalone eihead package must not require eibrain. During the
+    transitional split, however, the existing body organs still check action
+    classes with ``isinstance(eibrain.protocol.*)``. Keep this import optional
+    so standalone exports run without eibrain while the current monorepo
+    delegate remains compatible.
+    """
+
+    try:
+        from eibrain.protocol.actions import MoveHeadAction as LegacyMoveHeadAction
+        from eibrain.protocol.actions import PlaySpeechAction as LegacyPlaySpeechAction
+        from eibrain.protocol.actions import StopSpeechAction as LegacyStopSpeechAction
+    except ImportError:
+        return None
+
+    if isinstance(action, PlaySpeechAction):
+        return LegacyPlaySpeechAction(
+            ts=action.ts,
+            source=action.source,
+            text=action.text,
+            session_id=action.session_id,
+            actor_id=action.actor_id,
+            target_id=action.target_id,
+        )
+    if isinstance(action, MoveHeadAction):
+        return LegacyMoveHeadAction(
+            ts=action.ts,
+            source=action.source,
+            session_id=action.session_id,
+            actor_id=action.actor_id,
+            target_id=action.target_id,
+            target_name=action.target_name,
+            target_x=action.target_x,
+            target_angle=action.target_angle,
+        )
+    if isinstance(action, StopSpeechAction):
+        return LegacyStopSpeechAction(
+            ts=action.ts,
+            source=action.source,
+            session_id=action.session_id,
+            actor_id=action.actor_id,
+            target_id=action.target_id,
+        )
+    return None

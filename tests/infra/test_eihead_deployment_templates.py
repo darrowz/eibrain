@@ -37,9 +37,10 @@ def test_eihead_monitor_service_keeps_18080_compatibility_without_old_unit_edits
     assert "Environment=EIHEAD_MONITOR_PORT=18080" in text
     assert "EnvironmentFile=-/etc/eihead/eihead.env" in text
     assert "Requires=eihead-runtime.service" in text
-    assert "ExecStart=/opt/eihead/current/.venv/bin/python -m apps.operator_console" in text
+    assert "ExecStart=/opt/eihead/current/.venv/bin/eihead-runtime" in text
     assert "--config /etc/eihead/eihead.honjia.yaml" in text
-    assert "--visual-tracking-source state" in text
+    assert " monitor --host 0.0.0.0 --port 18080" in text
+    assert "apps.operator_console" not in text
     assert "Restart=always" in text
     assert "eibrain-monitor.service" not in text
 
@@ -75,7 +76,7 @@ def test_eihead_deployment_plan_documents_downtime_cutover_paths_and_ports() -> 
         "honjia `18081`",
         "honjia `18080`",
         "monitoring.port: 18080",
-        "eihead-native proxy",
+        "eihead-native monitor",
         "short downtime cutover",
         "stop the old eibrain head-side",
         "eibrain-monitor.service",

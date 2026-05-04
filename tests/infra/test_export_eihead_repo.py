@@ -1,0 +1,127 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = REPO_ROOT / "scripts" / "export-eihead-repo.py"
+
+
+def _load_export_module():
+    spec = importlib.util.spec_from_file_location("export_eihead_repo", SCRIPT_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    result = module.export_eihead_repo(target, repo_root=REPO_ROOT)
+
+    assert result.target == target.resolve()
+    required_paths = [
+        "eihead/runtime/cli.py",
+        "eihead/runtime/http_api.py",
+        "eihead/services/capability_registry.py",
+        "apps/head_runtime/__main__.py",
+        "apps/body_runtime/app.py",
+        "config/eibrain.honjia.yaml",
+        "config/eihead.honjia.yaml",
+        "deploy/systemd/eihead-runtime.service",
+        "deploy/systemd/eihead-monitor.service",
+        "eibrain/body/runtime_linux.py",
+        "eibrain/infra/config.py",
+        "docs/eihead-implementation-plan.md",
+        "docs/eihead-deployment-plan.md",
+        "pyproject.toml",
+        "README.md",
+    ]
+    for rel_path in required_paths:
+        assert (target / rel_path).is_file(), rel_path
+
+    assert "eihead/runtime/cli.py" in result.copied
+    assert "apps/head_runtime/__main__.py" in result.copied
+    assert "apps/body_runtime/app.py" in result.copied
+    assert "config/eibrain.honjia.yaml" in result.copied
+    assert "config/eihead.honjia.yaml" in result.copied
+    assert "eibrain/body/runtime_linux.py" in result.copied
+    assert "eibrain/infra/config.py" in result.copied
+    assert "pyproject.toml" in result.generated
+    assert "README.md" in result.generated
+    assert "eibrain/protocol/__init__.py" in result.generated
+
+
+def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+
+    pyproject = (target / "pyproject.toml").read_text(encoding="utf-8")
+    readme = (target / "README.md").read_text(encoding="utf-8")
+
+    assert 'name = "eihead"' in pyproject
+    assert 'eihead-runtime = "eihead.runtime.cli:main"' in pyproject
+    assert '"apps.body_runtime*"' in pyproject
+    assert '"eibrain.body*"' in pyproject
+    assert "eibrain-cognitive" not in pyproject
+    assert "faster-whisper" not in pyproject
+    assert "/dev-project/eihead" in readme
+    assert "transitional `eibrain.body`" in readme
+    assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
+
+
+def test_export_refuses_existing_target_without_force(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+    target.mkdir()
+
+    with pytest.raises(FileExistsError):
+        module.export_eihead_repo(target, repo_root=REPO_ROOT)
+
+
+def test_export_force_replaces_existing_target_after_validation(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+    target.mkdir()
+    marker = target / "old-file.txt"
+    marker.write_text("old", encoding="utf-8")
+
+    result = module.export_eihead_repo(target, repo_root=REPO_ROOT, force=True)
+
+    assert result.force is True
+    assert not marker.exists()
+    assert (target / "eihead/runtime/cli.py").is_file()
+
+
+def test_export_refuses_to_force_clean_source_repo_root(tmp_path: Path) -> None:
+    module = _load_export_module()
+    fake_repo = tmp_path / "fake-eibrain"
+    fake_repo.mkdir()
+    (fake_repo / "pyproject.toml").write_text('[project]\nname = "fake"\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="source repo root"):
+        module.export_eihead_repo(fake_repo, repo_root=fake_repo, force=True)
+
+
+def test_cli_prints_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    assert module.main([str(target), "--repo-root", str(REPO_ROOT)]) == 0
+    output = json.loads(capsys.readouterr().out)
+
+    assert output["target"] == str(target.resolve())
+    assert output["force"] is False
+    assert "eihead/runtime/cli.py" in output["copied"]
+    assert output["generated"] == ["pyproject.toml", "README.md", "eibrain/protocol/__init__.py"]

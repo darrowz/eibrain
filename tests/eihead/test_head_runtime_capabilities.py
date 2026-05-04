@@ -1,7 +1,12 @@
 from __future__ import annotations
 
-from eibrain.protocol.actions import MoveHeadAction, PlaySpeechAction, StopSpeechAction
-from eibrain.protocol.outcomes import ActionExecuted, SpeechPlaybackCompleted
+from eihead.protocol import (
+    ActionExecuted,
+    MoveHeadAction,
+    PlaySpeechAction,
+    SpeechPlaybackCompleted,
+    StopSpeechAction,
+)
 from eihead.runtime.app import HeadRuntimeApp
 
 
@@ -57,6 +62,32 @@ class _FrameOnlyRuntime:
 class _SnapshotOnlyRuntime:
     def snapshot(self) -> dict[str, object]:
         return {"node_id": "honjia-snapshot-only"}
+
+
+class _LegacyBodyRuntime:
+    def __init__(self) -> None:
+        self.dispatched: list[object] = []
+
+    def snapshot(self) -> dict[str, object]:
+        return {"node_id": "honjia-legacy-body"}
+
+    def dispatch_actions(self, actions: list[object]) -> list[object]:
+        from eibrain.protocol.actions import MoveHeadAction as LegacyMoveHeadAction
+        from eibrain.protocol.outcomes import ActionExecuted as LegacyActionExecuted
+
+        self.dispatched.extend(actions)
+        action = actions[0]
+        if isinstance(action, LegacyMoveHeadAction):
+            return [
+                LegacyActionExecuted(
+                    ts=action.ts,
+                    source="legacy.neck",
+                    status="ok",
+                    action_kind=action.kind,
+                    details={"target_angle": action.target_angle},
+                )
+            ]
+        return []
 
 
 def test_capabilities_returns_status_snapshot_shape_without_hardware() -> None:
@@ -146,3 +177,18 @@ def test_handle_action_without_dispatcher_returns_structured_skipped_outcome() -
     assert outcome["status"] == "skipped"
     assert outcome["success"] is False
     assert outcome["details"]["reason"] == "body_runtime_dispatch_unavailable"
+
+
+def test_handle_action_adapts_local_action_for_legacy_eibrain_body_delegate() -> None:
+    body_runtime = _LegacyBodyRuntime()
+    runtime = HeadRuntimeApp(body_runtime=body_runtime)
+
+    outcome = runtime.handle_action({"type": "move_head", "angle": 96})
+
+    assert outcome["status"] == "accepted"
+    assert outcome["success"] is True
+    assert body_runtime.dispatched[0].__module__ == "eihead.protocol.actions"
+    assert body_runtime.dispatched[1].__module__ == "eibrain.protocol.actions"
+    assert outcome["details"]["protocol_action"] == "move_head_action"
+    assert outcome["details"]["compat_protocol_action"] == "move_head_action"
+    assert outcome["details"]["delegate_outcomes"][0]["source"] == "legacy.neck"
