@@ -80,6 +80,12 @@ diagnostics，不是 hardware-verified real streaming。真实流式 LLM/TTS 尚
 
 目标：先统一数据形状，不急着改变传输方式。
 
+当前已落地一个顶层 `eiprotocol` MVP 包，并通过
+`docs/eiprotocol-v0.1-mvp.md` 固化 JoyInside 参考文档中进入第一版的
+Envelope、CapabilityManifest、AudioTurn、RealtimeVisionObservation、
+HeadAction、ExecutionOutcome、UserFeedback 和基础校验范围。第一版只保留
+`policy` 元数据，不引入安全权限层运行依赖。
+
 建议新建 `/dev-project/eiprotocol`，也可以先在 `eibrain/eiprotocol_compat`
 落一个兼容包，再抽成独立仓库。推荐直接独立仓库，因为后续 `eihead`,
 `eibrain`, `eimemory`, `eiskills`, `eidocs` 都会依赖它。

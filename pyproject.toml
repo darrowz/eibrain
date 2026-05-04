@@ -25,7 +25,7 @@ eihead-runtime = "eihead.runtime.cli:main"
 eihead-verify-hardware = "eihead.runtime.cli:verify_hardware_main"
 
 [tool.setuptools.packages.find]
-include = ["eibrain*", "apps*", "eihead*"]
+include = ["eibrain*", "apps*", "eihead*", "eiprotocol*"]
 exclude = ["config*", "tests*", "docs*", "scripts*"]
 
 [tool.pytest.ini_options]

@@ -23,6 +23,7 @@ COPY_DIRS = (
     "eibrain/body",
     "eibrain/cognition/realtime",
     "eibrain/infra",
+    "eiprotocol",
     # Temporary compatibility until eiprotocol is split into its own repo.
     "eibrain/protocol",
     "eibrain/verification",
@@ -64,6 +65,11 @@ TRANSITIONAL_PACKAGES = (
         "package": "eibrain.infra",
         "paths": ["eibrain/infra"],
         "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
+    },
+    {
+        "package": "eiprotocol",
+        "paths": ["eiprotocol"],
+        "reason": "Shared protocol MVP carried until /dev-project/eiprotocol becomes its own source repository.",
     },
     {
         "package": "eibrain.protocol",
@@ -214,6 +220,7 @@ include = [
     "eibrain.infra*",
     "eibrain.protocol*",
     "eibrain.verification*",
+    "eiprotocol*",
 ]
 exclude = ["config*", "tests*", "docs*", "scripts*", "deploy*"]
 

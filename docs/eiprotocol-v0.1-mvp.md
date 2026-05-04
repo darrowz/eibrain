@@ -1,0 +1,87 @@
+# eiprotocol v0.1 MVP
+
+Status date: 2026-05-04
+
+This MVP is the first shared protocol slice for `eihead`, `eibrain`,
+`eimemory`, `eiskills`, `eidocs`, and future `eibody` work. It is based on the
+JoyInside-inspired event specification in
+`C:/Users/Darrow/Documents/Codex/2026-05-04/joyinsdie-joyinside/docs/eiprotocol-v0.1.md`,
+but keeps the first implementation intentionally small and testable.
+
+## What Enters MVP
+
+- A versioned event envelope with `specVersion=eiprotocol/0.1`.
+- Round and trace fields: `requestId`, `sessionId`, `roundId`,
+  `correlationId`, `causationId`, and `traceId`.
+- Source and target identity fields for `eihead`, `eibrain`, `eimemory`,
+  `eiskills`, `eidocs`, `eitraining`, `user`, and future modules.
+- Capability reporting through `ei.capability.manifest.report`.
+- Device health/status shapes for camera, Hailo, microphone, speaker, and
+  pan-only neck.
+- Audio turn events using `ei.dialogue.asr.partial` and
+  `ei.dialogue.asr.final`.
+- Realtime vision frame observations using `ei.observation.vision.frame`.
+- Head actions using `ei.action.request`, including idempotency keys for
+  side-effecting operations.
+- Execution outcomes using `ei.outcome.execution`.
+- User feedback using `ei.outcome.user.feedback`.
+- Basic validation for required envelope fields, turn-scoped `roundId`, and
+  idempotency on side-effecting action events.
+
+## JoyInside Reference Points Adopted
+
+The JoyInside reference is strongest around realtime turn semantics. The MVP
+adopts these parts now:
+
+- Event-first naming: `ei.<plane>.<subject>.<verb>[.<detail>]`.
+- Stream/round readiness: all turn-scoped payloads carry `roundId`.
+- Interrupt-ready action model: actions and outcomes can be correlated without
+  relying on implicit local state.
+- Capability-driven brain behavior: the brain should read a manifest instead of
+  assuming hardware or backend availability.
+- Feedback loop readiness: execution outcomes and user feedback are explicit
+  protocol events, so `eimemory` and `eitraining` can consume them later.
+
+## Deferred From MVP
+
+These are useful but intentionally not implementation blockers for v0.1:
+
+- WebSocket transport, binary audio frames, replay, resume, and backpressure.
+- Full conversation state-machine enforcement.
+- Full policy and safety-gate runtime. The envelope has `policy`, but v0.1 does
+  not make safety decisions a runtime dependency because the current migration
+  scope explicitly excludes the safety layer.
+- Memory recall/write event models beyond the envelope conventions.
+- TTS audio chunk streaming and phoneme/action synchronization.
+- Signed policy decisions and tamper-evident audit records.
+- Multi-device linked sessions.
+
+## Current Code Shape
+
+The first implementation lives in top-level package `eiprotocol`:
+
+- `EventEnvelope`, `SourceRef`, `TargetRef`, `PolicyState`
+- `CapabilityManifest`, `Capability`, `DeviceStatus`
+- `AudioTurn`, `RealtimeVisionObservation`, `Detection`
+- `HeadAction`, `ExecutionOutcome`, `UserFeedback`
+- `validate_event`
+
+The package is included in `pyproject.toml` and exported into standalone
+`eihead` builds by `scripts/export-eihead-repo.py`. This keeps the current
+monorepo working while leaving a clean path to split `/dev-project/eiprotocol`
+into a standalone repository later.
+
+## Required Next Supplements
+
+The reference document is broad enough for v0.1, but the project still needs
+three follow-up supplements before real cutover:
+
+1. Transport binding: HTTP, SSE, or WebSocket routes that carry the envelope
+   between `eihead` and `eibrain`.
+2. Compatibility adapters: conversion between existing `eibrain.protocol` /
+   `eihead.protocol` classes and `eiprotocol` envelope events.
+3. Golden fixtures: stored JSON examples for voice barge-in, realtime vision,
+   pan-only neck action, execution outcome, and user feedback.
+
+Acceptance for this MVP is intentionally code-level: JSON round-trip tests,
+basic validation tests, and standalone `eihead` export import smoke must pass.

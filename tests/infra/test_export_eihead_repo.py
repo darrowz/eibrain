@@ -50,6 +50,8 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "eibrain/infra/config.py",
         "eibrain/verification/__init__.py",
         "eibrain/verification/body_checks.py",
+        "eiprotocol/__init__.py",
+        "eiprotocol/models.py",
         "eihead/ear/__init__.py",
         "eihead/ear/realtime.py",
         "eihead/mouth/__init__.py",
@@ -78,6 +80,8 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "eibrain/infra/config.py" in result.copied
     assert "eibrain/verification/__init__.py" in result.copied
     assert "eibrain/verification/body_checks.py" in result.copied
+    assert "eiprotocol/__init__.py" in result.copied
+    assert "eiprotocol/models.py" in result.copied
     assert "eihead/runtime/app.py" in result.copied
     assert "eihead/ear/__init__.py" in result.copied
     assert "eihead/ear/realtime.py" in result.copied
@@ -185,6 +189,11 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
             "package": "eibrain.infra",
             "paths": ["eibrain/infra"],
             "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
+        },
+        {
+            "package": "eiprotocol",
+            "paths": ["eiprotocol"],
+            "reason": "Shared protocol MVP carried until /dev-project/eiprotocol becomes its own source repository.",
         },
         {
             "package": "eibrain.protocol",
@@ -410,6 +419,7 @@ def test_exported_transitional_runtime_imports_without_brain_runtime(tmp_path: P
                 "import eibrain.body.sherpa_streaming; "
                 "import eibrain.verification; "
                 "import eibrain.cognition.realtime; "
+                "import eiprotocol; "
                 "import eihead.monitoring.web; "
                 "import eihead.runtime.app"
             ),
