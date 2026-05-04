@@ -27,7 +27,11 @@ service files.
 - Confirm `/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, and `/dev/snd` are visible or the missing devices are explicitly recorded.
 - Confirm honjia Web monitor on port `18080` shows real values for ear, eye, mouth, neck, cadence, and latest runtime errors.
 - Run one manual voice wake test and record ASR text, LLM latency, TTS playback, and whether the answer is conversational.
-- Run one manual vision test and record whether a face/person box appears on the monitor.
+- Run one manual realtime eye stream detection test and record whether the
+  camera/Hailo stream produces face/person boxes on the monitor.
+- Treat static-image detection as a compatibility/test placeholder only; do not
+  use it as cutover evidence unless realtime hardware is unavailable and the
+  gap is explicitly recorded.
 - Run one manual pan-only neck test and record whether the pan angle moves without oscillation.
 
 ## Phase 1: eiprotocol MVP
@@ -59,7 +63,7 @@ service files.
 ## Phase 4: eibrain to eihead runtime bridge
 
 - Route audio observations from eihead into the current eibrain dialogue loop.
-- Route vision observations from eihead into eye detection/identity diagnostics.
+- Route realtime eye stream observations from eihead into detection/identity diagnostics.
 - Route speak actions from eibrain back to eihead mouth playback.
 - Route move head actions from eibrain back to eihead neck control.
 - Preserve the old eibrain body runtime as fallback until parity is confirmed.
@@ -69,7 +73,12 @@ service files.
 
 - Confirm honjia port `18080` reads from the new eihead runtime or a clear proxy.
 - Remove placeholder "healthy" values that are not backed by runtime data.
-- Show real ear state, ASR text, VAD/recording state, LLM timing, TTS state, latest frame age, detections, detection scores, neck target angle, actual last command, and error tail.
+- Show real ear state, ASR text, VAD/recording state, LLM timing, TTS state,
+  realtime eye frame age, FPS, detections, detection scores, neck target angle,
+  actual last command, and error tail.
+- If static-image detection appears anywhere in the monitor or diagnostics,
+  label it compatibility/test-only; the accepted Eye direction is realtime
+  stream detection.
 - Keep layout stable while changing data sources.
 - Confirm refresh cadence and average latency values are populated from measured timestamps.
 - Compare the Phase 5 monitor with the Phase 0 baseline before accepting.
@@ -97,5 +106,5 @@ service files.
 ## Acceptance summary
 
 Cutover is accepted only when the Phase 0 baseline can be repeated after Phase 7
-with equal or better results for voice wake, conversational response, vision
-detections, pan-only neck behavior, and Web monitor truthfulness.
+with equal or better results for voice wake, conversational response, realtime
+eye stream detections, pan-only neck behavior, and Web monitor truthfulness.

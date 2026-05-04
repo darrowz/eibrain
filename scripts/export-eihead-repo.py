@@ -94,6 +94,24 @@ RUNTIME_ENTRYPOINTS = (
     },
 )
 
+FUTURE_CAPABILITIES = (
+    {
+        "area": "eye",
+        "name": "eye.realtime_stream_detection",
+        "status": "target",
+        "target": "Realtime camera/Hailo stream detection feeding live RealtimeVisionObservation and monitor status data.",
+        "compatibility_note": "Static image detection is retained only as a compatibility and test placeholder.",
+    },
+)
+
+MIGRATION_NOTES = (
+    {
+        "area": "eye",
+        "applies_to": ["transitional_packages", "runtime_entrypoints"],
+        "note": "The production eye direction for /dev-project/eihead is realtime stream detection; static image detection is not a deployment target.",
+    },
+)
+
 
 PYPROJECT_TEMPLATE = """[build-system]
 requires = ["setuptools>=68"]
@@ -144,6 +162,15 @@ docs.
 - Runtime deployment path on honjia: `/opt/eihead/current`
 - Runtime API: `eihead-runtime http --host 0.0.0.0 --port 18081`
 - Native Web monitor: `eihead-runtime monitor --host 0.0.0.0 --port 18080`
+
+## Eye direction
+
+The production eye target for `/dev-project/eihead` is realtime stream detection:
+continuous camera/Hailo detections feeding live RealtimeVisionObservation payloads,
+runtime status, and the operator monitor.
+
+Static image detection is compatibility/test-only. Keep it only for old callers,
+fixtures, and non-hardware tests; do not treat it as the deployment direction.
 
 ## Local commands
 
@@ -402,6 +429,8 @@ def _write_export_manifest(
         },
         "transitional_packages": list(TRANSITIONAL_PACKAGES),
         "runtime_entrypoints": list(RUNTIME_ENTRYPOINTS),
+        "future_capabilities": list(FUTURE_CAPABILITIES),
+        "migration_notes": list(MIGRATION_NOTES),
         "exported_paths": {
             "copied": list(copied),
             "generated": list(generated_with_manifest),

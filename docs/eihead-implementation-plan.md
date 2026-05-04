@@ -13,6 +13,10 @@
 - 让 `eibrain` 通过协议调用 `eihead`，不再直接依赖 honjia 硬件实现。
 - 把执行结果写回 `eimemory` / `eitraining`，形成可追踪的反馈闭环。
 
+Eye 方向单独明确：正式目标是 realtime stream detection，也就是从
+摄像头/Hailo 连续流产生 `RealtimeVisionObservation`、运行状态和监控检测框。
+静态图片检测只作为兼容/测试占位，不作为部署目标或验收主线。
+
 暂不做：
 
 - 不重构安全与权限层。
@@ -65,7 +69,7 @@
 - `CapabilityManifest`: 设备、模型、后端、健康、限制、版本。
 - `DeviceStatus`: 摄像头、麦克风、音箱、云台、Hailo、I2C、服务状态。
 - `AudioTurn`: 唤醒词、ASR 文本、置信度、音频时长、分段时间。
-- `VisionObservation`: 帧摘要、检测框、类别、分数、延迟、帧时间。
+- `RealtimeVisionObservation`: realtime stream frame 摘要、检测框、类别、分数、延迟、帧时间。
 - `HeadAction`: `speak`, `stop_speech`, `move_head`, `set_attention`, `capture_frame`
 - `ExecutionOutcome`: 动作、执行者、成功/失败、延迟、错误、观测结果。
 - `UserFeedback`: 用户显式纠正、满意/不满意、偏好信号。
@@ -138,7 +142,7 @@ eihead
 eihead -> eibrain：
 
 - `AudioTurn`: 语音识别结果进入对话链。
-- `VisionObservation`: 检测框、分数、画面摘要进入视觉链。
+- `RealtimeVisionObservation`: realtime stream detection 的检测框、分数、画面摘要进入视觉链。
 - `DeviceStatus`: 设备状态进入监控和健康评估。
 - `ExecutionOutcome`: 语音播放、云台动作、视觉处理结果写回。
 
@@ -165,14 +169,14 @@ eibrain -> eihead：
 - `Runtime`: 服务心跳、刷新频率、平均延迟、错误。
 - `Ear`: 输入设备、VAD、ASR、最近文本、分段耗时。
 - `Mouth`: TTS provider、合成耗时、播放状态、错误。
-- `Eye`: 摄像头、Hailo、FPS、检测框、分数、最近帧。
+- `Eye`: realtime stream detection 状态、摄像头、Hailo、FPS、检测框、分数、最近帧。
 - `Neck`: 当前水平角、目标角、动作频率、抖动抑制状态。
 - `Protocol`: 最近 `trace_id`、capability、observation、action、outcome。
 
 验收标准：
 
 - 每个面板字段都有真实来源；没有来源的字段显示 `unknown` 或 `not wired`，不能假正常。
-- 最近一轮对话和最近一轮视觉追踪可通过 `trace_id` 串起来。
+- 最近一轮对话和最近一轮 realtime eye stream detection 可通过 `trace_id` 串起来。
 - 刷新后布局和数据都保持稳定。
 
 ## Phase 6: Memory And Training Feedback
@@ -212,7 +216,7 @@ eibrain -> eihead：
 4. 保留旧 `eibrain-monitor.service` wrapper 一段时间，指向新服务或反向代理。
 5. Web 端确认 `18080` 指向 `eihead` monitor。
 6. eibrain 配置改为远程调用 `eihead`，不再加载 honjia 本地硬件 driver。
-7. 连续测试语音、视觉、云台、Web、记忆写回。
+7. 连续测试语音、realtime eye stream detection、云台、Web、记忆写回。
 8. 再移除旧服务或标记 deprecated。
 
 验收标准：
@@ -227,7 +231,7 @@ eibrain -> eihead：
 
 1. `eiprotocol` MVP：消息模型、JSON schema、trace_id。
 2. `eihead` scaffold：复制而不是大改，先让独立仓库能跑。
-3. capability + monitor：先让 honjia 的真实设备能力和状态稳定显示。
+3. capability + monitor：先让 honjia 的真实设备能力和 realtime eye stream detection 状态稳定显示。
 
-完成这三步后，再迁移语音、视觉、云台 action bridge。这样每一步都有回滚点，
+完成这三步后，再迁移语音、realtime eye stream detection、云台 action bridge。这样每一步都有回滚点，
 不会把已经打通的现场链路重新搅乱。

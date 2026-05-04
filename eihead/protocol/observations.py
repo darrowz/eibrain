@@ -8,6 +8,12 @@ from typing import Any
 from .base import ProtocolMessage
 
 
+VISION_STATIC_COMPAT_MODE = "compat/static"
+VISION_REALTIME_MODE = "realtime"
+EYE_REALTIME_CHANNEL = "eye.realtime"
+VISION_REALTIME_ALIAS = "vision.realtime"
+
+
 @dataclass(slots=True)
 class AudioTranscriptFinal(ProtocolMessage):
     kind: str = field(init=False, default="audio_transcript_final")
@@ -39,6 +45,8 @@ class VisionObservation(HeadObservation):
     height: int | None = None
     detections: list[dict[str, Any]] = field(default_factory=list)
     tracked_target: dict[str, Any] = field(default_factory=dict)
+    mode: str = VISION_STATIC_COMPAT_MODE
+    primary_mode: bool = False
     kind: str = field(init=False, default="vision_observation")
 
     @property
@@ -46,4 +54,38 @@ class VisionObservation(HeadObservation):
         return "vision"
 
 
-__all__ = ["AudioTranscriptFinal", "HeadObservation", "VisionObservation"]
+@dataclass(slots=True)
+class RealtimeVisionObservation(HeadObservation):
+    stream_id: str = ""
+    camera_id: str = ""
+    status: str = "unknown"
+    frame_id: str = ""
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+    latency_ms: float | None = None
+    detections: list[dict[str, Any]] = field(default_factory=list)
+    tracked_target: dict[str, Any] = field(default_factory=dict)
+    stream: dict[str, Any] = field(default_factory=dict)
+    health: dict[str, Any] = field(default_factory=dict)
+    channel: str = EYE_REALTIME_CHANNEL
+    aliases: list[str] = field(default_factory=lambda: [VISION_REALTIME_ALIAS])
+    mode: str = VISION_REALTIME_MODE
+    primary_mode: bool = True
+    kind: str = field(init=False, default="realtime_vision_observation")
+
+    @property
+    def modality(self) -> str:
+        return VISION_REALTIME_ALIAS
+
+
+__all__ = [
+    "AudioTranscriptFinal",
+    "EYE_REALTIME_CHANNEL",
+    "HeadObservation",
+    "RealtimeVisionObservation",
+    "VISION_REALTIME_ALIAS",
+    "VISION_REALTIME_MODE",
+    "VISION_STATIC_COMPAT_MODE",
+    "VisionObservation",
+]

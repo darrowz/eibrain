@@ -12,7 +12,7 @@ import time
 from typing import Any, Mapping
 
 from eihead.monitoring import build_status_snapshot
-from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction
+from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction, serialize_message
 from eihead.services import CapabilityRegistry
 from .legacy_body import (
     DEFAULT_BODY_RUNTIME_DELEGATE,
@@ -83,6 +83,32 @@ class HeadRuntimeApp:
             "body_runtime_capabilities": body_snapshot.get("capabilities", {}),
             **status_snapshot,
         }
+
+    def vision_realtime(self) -> Mapping[str, Any] | Any | None:
+        """Return explicit realtime eye payloads only.
+
+        Legacy body snapshots can contain static frame paths and image-derived
+        detections. Those are intentionally not promoted here; the monitor
+        should say not-wired until a realtime eye adapter exposes a live stream
+        hook.
+        """
+
+        for attr_name in (
+            "eye_realtime",
+            "vision_realtime",
+            "realtime_vision",
+            "latest_eye_realtime",
+            "latest_vision_realtime",
+            "latest_realtime_vision",
+        ):
+            if not hasattr(self.body_runtime, attr_name):
+                continue
+            source = getattr(self.body_runtime, attr_name)
+            payload = source() if callable(source) else source
+            if _is_realtime_vision_payload(payload):
+                return payload
+            return None
+        return None
 
     def handle_action(self, action: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
         normalized, effective_trace_id = self._normalize_action(action, trace_id=trace_id)
@@ -454,3 +480,20 @@ def _serialize_outcome(outcome: Any) -> dict[str, Any]:
     if is_dataclass(outcome):
         return asdict(outcome)
     return {"value": outcome}
+
+
+def _is_realtime_vision_payload(payload: Any) -> bool:
+    if payload is None:
+        return False
+    if isinstance(payload, Mapping):
+        data = dict(payload)
+    else:
+        try:
+            data = serialize_message(payload)
+        except TypeError:
+            return False
+    if data.get("kind") == "vision_observation" or data.get("primary_mode") is False:
+        return False
+    mode = str(data.get("mode", "") or "")
+    kind = str(data.get("kind", "") or "")
+    return kind == "realtime_vision_observation" or mode in {"realtime", "realtime_stream"}

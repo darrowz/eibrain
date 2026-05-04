@@ -15,6 +15,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .realtime_vision import realtime_vision_payload_from_app
+
 
 JsonObject = dict[str, Any]
 Clock = Callable[[], float]
@@ -158,6 +160,12 @@ def create_handler(
                 return
             if path == "/api/capabilities":
                 self._write_json(HTTPStatus.OK, _call_json_object(runtime_app, "capabilities"))
+                return
+            if path in {"/api/vision/realtime", "/api/eye/realtime"}:
+                self._write_json(
+                    HTTPStatus.OK,
+                    realtime_vision_payload_from_app(runtime_app, timestamp=now()),
+                )
                 return
             if path in {"/api/actions/recent", "/api/recent-actions"}:
                 self._write_json(HTTPStatus.OK, _recent_actions_payload(runtime_app, now()))
@@ -380,6 +388,7 @@ def _json_ready(value: Any) -> Any:
 def _render_index(app: Any, timestamp: float) -> str:
     status = _safe_payload(lambda: _call_json_object(app, "status"))
     capabilities = _safe_payload(lambda: _call_json_object(app, "capabilities"))
+    realtime = _safe_payload(lambda: realtime_vision_payload_from_app(app, timestamp=timestamp))
     recent = _safe_payload(lambda: _recent_actions_payload(app, timestamp))
 
     node_id = _display_value(status.get("node_id") or capabilities.get("node_id") or "honjia")
@@ -389,10 +398,12 @@ def _render_index(app: Any, timestamp: float) -> str:
         or capabilities.get("overall_status")
         or "unknown"
     )
+    realtime_state = _display_value(realtime.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
 
     status_json = _json_for_html(status)
     capabilities_json = _json_for_html(capabilities)
+    realtime_json = _json_for_html(realtime)
     recent_json = _json_for_html(recent)
 
     return f"""<!doctype html>
@@ -418,11 +429,12 @@ def _render_index(app: Any, timestamp: float) -> str:
   <main>
     <header>
       <h1>eihead native monitor</h1>
-      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · actions <strong>{recent_state}</strong></p>
+      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · actions <strong>{recent_state}</strong></p>
     </header>
     <section class="grid">
       <div class="card"><div class="label">Status API</div><a href="/api/status">/api/status</a></div>
       <div class="card"><div class="label">Capabilities API</div><a href="/api/capabilities">/api/capabilities</a></div>
+      <div class="card"><div class="label">Realtime Vision API</div><a href="/api/vision/realtime">/api/vision/realtime</a></div>
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
       <div class="card"><div class="label">Health API</div><a href="/health">/health</a></div>
     </section>
@@ -430,6 +442,8 @@ def _render_index(app: Any, timestamp: float) -> str:
     <pre>{status_json}</pre>
     <h2>Capabilities</h2>
     <pre>{capabilities_json}</pre>
+    <h2>Realtime Vision</h2>
+    <pre>{realtime_json}</pre>
     <h2>Recent Actions</h2>
     <pre>{recent_json}</pre>
   </main>

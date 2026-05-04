@@ -30,6 +30,11 @@ Until the legacy body modules are renamed and made import-independent, the
 standalone eihead repository is an export shell around the proven honjia body
 runtime, not a fully native head runtime.
 
+The formal Eye target for `/dev-project/eihead` is realtime stream detection:
+continuous camera/Hailo frames producing live detections, `RealtimeVisionObservation`
+payloads, runtime status, and monitor boxes. Static-image detection remains a
+compatibility/test placeholder only and is not the deployment direction.
+
 ## Audit Matrix
 
 | Area | State | Current evidence | Next migration action | Acceptance gate |
@@ -41,7 +46,7 @@ runtime, not a fully native head runtime.
 | Capability registry | Native | `eihead.services.capability_registry` declares honjia camera, Hailo, I2C, microphone, speaker, neck, ASR, TTS, and vision backend. | Feed it native per-organ probe results instead of only static path checks. | `/capabilities` shows online/degraded/offline with device paths and last-ok timestamps. |
 | Local eihead protocol | Partly native | `eihead.protocol` has local action/outcome classes so eihead does not import `eibrain.protocol` for basic actions. | Replace the local mirror and eibrain compatibility classes with shared `eiprotocol` models. | eihead and eibrain import the same protocol package without cyclic dependency. |
 | Shared protocol | Legacy source | Rich head contracts currently live under `eibrain.protocol`, and export keeps a compatibility subset. | Split to `/dev-project/eiprotocol` after organ behavior is stable enough to lock message names. | JSON round-trip tests pass for capability, observation, action, outcome, and feedback payloads. |
-| Eye | Legacy | Camera/Hailo/state logic remains in `apps.body_runtime.vision_hailo_service`, `eibrain.body.runtime_linux`, `eibrain.body.vision_state`, and `eibrain.body.organs.eye`. | Move to native `eihead.eye` while preserving `/tmp/eibrain-vision/latest.jpg` and `/tmp/eibrain-vision/state.json` until consumers are changed. | honjia still captures `/dev/video0`, runs `/dev/hailo0`, publishes detections, and renders boxes on `18080`. |
+| Eye | Legacy | Camera/Hailo/realtime stream state logic remains in `apps.body_runtime.vision_hailo_service`, `eibrain.body.runtime_linux`, `eibrain.body.vision_state`, and `eibrain.body.organs.eye`. | Move to native `eihead.eye` as realtime stream detection while preserving `/tmp/eibrain-vision/latest.jpg` and `/tmp/eibrain-vision/state.json` until consumers are changed. | honjia still captures `/dev/video0`, runs `/dev/hailo0`, continuously publishes detections, and renders boxes on `18080`; static-image detection is compatibility/test-only. |
 | Neck | Legacy | Pan/yaw control remains in `eibrain.body.neck_control`, `eibrain.body.raspbot_driver`, and `eibrain.body.organs.neck`. | Move to native `eihead.neck` with pan-only capability and explicit tilt rejection. | Manual pan command moves without oscillation; tilt requests fail as unsupported; `/dev/i2c-1` ownership is unchanged. |
 | Ear | Legacy | Mic capture, VAD, ASR, and transcript normalization remain in `eibrain.body.ear_stream`, ASR recognizers, and body runtime dialogue flow. | Move to native `eihead.ear` after eye/neck are stable, preserving VAD thresholds and transcript replacements. | Voice wake and one full ASR turn pass on honjia with measured stage latency and no self-listening during playback. |
 | Mouth | Legacy | TTS/playback remains in `eibrain.body.runtime_linux.speak_text`, `eibrain.body.organs.mouth`, and body dispatch. | Move to native `eihead.mouth`; keep `speak`, `stop_speech`, and playback busy state visible to ear. | TTS is audible on honjia, stop works, and monitor shows synthesis/playback state from real data. |
@@ -57,8 +62,8 @@ then shared contracts and packaging.
 
 ### 1. Eye
 
-Move the camera, Hailo, frame-state, and eye organ code into `eihead.eye`.
-Keep the current state file paths during this step:
+Move the camera, Hailo, frame-state, and eye organ code into `eihead.eye` as
+realtime stream detection. Keep the current state file paths during this step:
 
 - `/tmp/eibrain-vision/latest.jpg`
 - `/tmp/eibrain-vision/state.json`
@@ -69,6 +74,8 @@ Acceptance:
   backend, model, and stale/error state.
 - `http://honjia:18080` continues to show real camera/Hailo status and
   detection boxes.
+- Static-image detection, if kept, is labelled compatibility/test-only and is
+  not used as the native Eye acceptance path.
 - Only one service owns `/dev/video0` and `/dev/hailo0`.
 - The native eye module does not import `eibrain.body`; any temporary import is
   isolated behind an explicitly named compatibility adapter.

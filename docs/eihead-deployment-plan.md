@@ -19,6 +19,18 @@ and template set only; it does not perform deployment.
 - honjia `18080` remains the operator Web monitoring URL through the
   eihead-native monitor.
 
+## Eye Runtime Direction
+
+- The formal Eye runtime target is realtime stream detection from the live
+  camera/Hailo feed into `RealtimeVisionObservation` payloads, runtime status, and the
+  `18080` monitor.
+- Static-image detection is compatibility/test-only. It can support fixtures,
+  old callers, and no-hardware checks, but it is not the deployment direction
+  and must not be used as the primary acceptance signal.
+- `/dev-project/eihead` exports should make this direction visible in README,
+  manifest metadata, and migration docs while transitional body/runtime code is
+  still present.
+
 ## Service Templates
 
 - `deploy/systemd/eihead-runtime.service` starts the runtime API with
@@ -77,8 +89,13 @@ sudo systemctl enable eihead-runtime.service eihead-monitor.service
 - `/dev/video0`, `/dev/hailo0`, `/dev/i2c-1`, microphone, and speaker state
   appear in the Web monitor as real data, degraded data, or explicit offline
   data; blank "normal" placeholders are not acceptable.
-- Voice, vision frame capture, Hailo detection, and horizontal neck movement
-  are manually verified after service start.
+- Realtime eye stream detection from `/dev/video0` and `/dev/hailo0` publishes
+  frame age, FPS, detection boxes, scores, backend, and stale/error state to
+  the monitor.
+- Static-image detection may validate compatibility/test fixtures, but it does
+  not satisfy deployment acceptance by itself.
+- Voice, realtime eye stream detection, Hailo-backed boxes, and horizontal neck
+  movement are manually verified after service start.
 
 ## Rollback
 

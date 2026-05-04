@@ -9,6 +9,7 @@ from apps.head_runtime.app import HeadRuntimeApp as AppsHeadRuntimeApp
 from eihead.runtime.app import HeadRuntimeApp
 from eihead.runtime.legacy_body import LegacyBodyRuntimeAdapter
 from eihead.runtime import cli
+from eihead.protocol import VisionObservation
 
 
 class FakeBodyRuntime:
@@ -21,6 +22,21 @@ class FakeBodyRuntime:
                 "eye": {"status": "mock"},
             },
         }
+
+
+class RealtimeVisionBodyRuntime(FakeBodyRuntime):
+    def vision_realtime(self) -> dict[str, object]:
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime",
+            "stream_id": "front-main",
+            "status": "tracking",
+        }
+
+
+class StaticVisionBodyRuntime(FakeBodyRuntime):
+    def vision_realtime(self) -> VisionObservation:
+        return VisionObservation(ts=1.0, source="eye.compat", frame_id="still-1")
 
 
 def make_fake_head_runtime(config_path: str) -> HeadRuntimeApp:
@@ -111,6 +127,29 @@ def test_head_runtime_imports_and_wraps_body_snapshot() -> None:
     assert snapshot["delegate"] == "apps.body_runtime.BodyRuntimeApp"
     assert snapshot["body_runtime"]["node_id"] == "honjia-test"
     assert snapshot["body_runtime"]["organ_count"] == 4
+
+
+def test_head_runtime_realtime_vision_hook_is_explicit_and_does_not_fake_static_frames() -> None:
+    runtime = make_fake_head_runtime("config/test.yaml")
+
+    assert runtime.vision_realtime() is None
+
+
+def test_head_runtime_realtime_vision_hook_delegates_only_when_runtime_exposes_it() -> None:
+    runtime = HeadRuntimeApp(body_runtime=RealtimeVisionBodyRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime",
+        "stream_id": "front-main",
+        "status": "tracking",
+    }
+
+
+def test_head_runtime_realtime_vision_hook_rejects_static_compat_observation() -> None:
+    runtime = HeadRuntimeApp(body_runtime=StaticVisionBodyRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() is None
 
 
 def test_cli_status_uses_injected_runtime_without_hardware() -> None:

@@ -10,7 +10,9 @@ from urllib.error import HTTPError
 
 import pytest
 
+from eihead.monitoring import build_realtime_vision_payload
 from eihead.monitoring.web import create_handler, create_server
+from eihead.protocol import RealtimeVisionObservation, VisionObservation
 
 
 class FakeMonitorApp:
@@ -42,6 +44,61 @@ class FakeMonitorApp:
 
     def health(self) -> dict[str, Any]:
         return self.health_payload or {"ok": True, "status": "ok", "node_id": "honjia-test"}
+
+
+def _realtime_observation() -> RealtimeVisionObservation:
+    return RealtimeVisionObservation(
+        ts=12.0,
+        source="eihead.honjia.eye.realtime",
+        target="eibrain.honxin",
+        timestamp_ms=1_714_800_001_000,
+        trace_id="trace-eye-live",
+        stream_id="front-main",
+        camera_id="front",
+        status="tracking",
+        frame_id="frame-live-1",
+        width=1280,
+        height=720,
+        fps=30.0,
+        latency_ms=38.5,
+        payload={"simulated": True},
+        detections=[{"label": "person", "score": 0.95}],
+        tracked_target={"label": "person", "center_x": 0.51},
+        stream={"transport": "simulated", "connected": True},
+        health={"dropped_frames": 0},
+    )
+
+
+class RealtimeVisionMethodApp(FakeMonitorApp):
+    def vision_realtime(self) -> RealtimeVisionObservation:
+        return _realtime_observation()
+
+
+class EmptyRealtimeVisionMethodApp(FakeMonitorApp):
+    def vision_realtime(self) -> None:
+        return None
+
+
+class PlaceholderRealtimeVisionMethodApp(FakeMonitorApp):
+    def vision_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "mode": "realtime_stream",
+            "status": "not_wired",
+            "not_wired": True,
+            "placeholder": True,
+            "message": "detector not wired",
+        }
+
+
+class CompatStaticVisionMethodApp(FakeMonitorApp):
+    def vision_realtime(self) -> VisionObservation:
+        return VisionObservation(
+            ts=13.0,
+            source="eihead.honjia.eye.compat",
+            frame_id="still-1",
+            detections=[{"label": "person", "score": 0.8}],
+        )
 
 
 class RecentMethodApp(FakeMonitorApp):
@@ -112,6 +169,113 @@ def test_health_status_and_capabilities_return_json_objects() -> None:
     assert status_payload["runtime"] == "eihead"
     assert capabilities_code == 200
     assert capabilities_payload["capabilities"]["neck"]["limits"]["tilt_deg"] is None
+
+
+def test_realtime_vision_helper_standardizes_observation_payload() -> None:
+    payload = build_realtime_vision_payload(
+        _realtime_observation(),
+        timestamp=321.0,
+        source="vision_realtime",
+    )
+
+    assert payload["schema"] == "eihead.monitor.vision_realtime.v1"
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "vision_realtime"
+    assert payload["channel"] == "eye.realtime"
+    assert payload["aliases"] == ["vision.realtime"]
+    assert payload["primary_mode"] == "realtime"
+    assert payload["compat_static"] == {"mode": "compat/static", "primary": False}
+    assert payload["captured_at_ts"] == 321.0
+    assert payload["observation"]["kind"] == "realtime_vision_observation"
+    assert payload["observation"]["mode"] == "realtime"
+    assert payload["observation"]["primary_mode"] is True
+
+
+def test_realtime_vision_api_and_html_render_wired_payload() -> None:
+    app = RealtimeVisionMethodApp()
+
+    with running_server(app, clock=lambda: 654.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+        alias_code, _, alias_payload = read_json(f"{base_url}/api/eye/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.vision_realtime.v1"
+    assert payload["status"] == "wired"
+    assert payload["channel"] == "eye.realtime"
+    assert payload["aliases"] == ["vision.realtime"]
+    assert payload["primary_mode"] == "realtime"
+    assert payload["compat_static"]["mode"] == "compat/static"
+    assert payload["observation"]["stream_id"] == "front-main"
+    assert alias_code == 200
+    assert alias_payload["observation"] == payload["observation"]
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Realtime Vision" in body
+    assert "/api/vision/realtime" in body
+    assert "eye.realtime" in body
+
+
+def test_realtime_vision_api_reports_not_wired_without_runtime_hook() -> None:
+    app = FakeMonitorApp()
+
+    with running_server(app, clock=lambda: 987.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.vision_realtime.v1"
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["source"] is None
+    assert payload["captured_at_ts"] == 987.0
+    assert payload["primary_mode"] == "realtime"
+    assert payload["compat_static"] == {"mode": "compat/static", "primary": False}
+    assert payload["observation"] is None
+    assert "eye.realtime" in payload["message"]
+
+
+def test_realtime_vision_api_reports_not_wired_when_runtime_hook_has_no_payload() -> None:
+    app = EmptyRealtimeVisionMethodApp()
+
+    with running_server(app, clock=lambda: 988.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["source"] == "vision_realtime"
+    assert payload["observation"] is None
+
+
+def test_realtime_vision_api_does_not_promote_placeholder_payload_to_wired() -> None:
+    app = PlaceholderRealtimeVisionMethodApp()
+
+    with running_server(app, clock=lambda: 989.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["source"] == "vision_realtime"
+    assert payload["observation"]["status"] == "not_wired"
+    assert payload["observation"]["placeholder"] is True
+    assert "not ready" in payload["message"]
+
+
+def test_realtime_vision_api_does_not_promote_static_vision_observation_to_wired() -> None:
+    app = CompatStaticVisionMethodApp()
+
+    with running_server(app, clock=lambda: 990.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "compat_static"
+    assert payload["wired"] is False
+    assert payload["source"] == "vision_realtime"
+    assert payload["observation"]["kind"] == "vision_observation"
+    assert payload["observation"]["mode"] == "compat/static"
+    assert "compat/static" in payload["message"]
 
 
 def test_recent_actions_uses_runtime_recent_actions_method() -> None:

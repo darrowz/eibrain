@@ -85,6 +85,22 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
     assert isinstance(manifest["source"]["status_short"], list)
     assert manifest["standalone_repo"]["expected_honxin_path"] == "/dev-project/eihead"
     assert manifest["standalone_repo"]["runtime_path"] == "/opt/eihead/current"
+    assert manifest["future_capabilities"] == [
+        {
+            "area": "eye",
+            "name": "eye.realtime_stream_detection",
+            "status": "target",
+            "target": "Realtime camera/Hailo stream detection feeding live RealtimeVisionObservation and monitor status data.",
+            "compatibility_note": "Static image detection is retained only as a compatibility and test placeholder.",
+        },
+    ]
+    assert manifest["migration_notes"] == [
+        {
+            "area": "eye",
+            "applies_to": ["transitional_packages", "runtime_entrypoints"],
+            "note": "The production eye direction for /dev-project/eihead is realtime stream detection; static image detection is not a deployment target.",
+        },
+    ]
     assert manifest["transitional_packages"] == [
         {
             "package": "apps.body_runtime",
@@ -166,6 +182,8 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "faster-whisper" not in pyproject
     assert "/dev-project/eihead" in readme
     assert "transitional `eibrain.body`" in readme
+    assert "realtime stream detection" in readme
+    assert "Static image detection is compatibility/test-only" in readme
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
 
 
