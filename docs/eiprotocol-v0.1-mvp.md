@@ -8,6 +8,10 @@ JoyInside-inspired event specification in
 `C:/Users/Darrow/Documents/Codex/2026-05-04/joyinsdie-joyinside/docs/eiprotocol-v0.1.md`,
 but keeps the first implementation intentionally small and testable.
 
+Repository state after the split: `/dev-project/eibrain` remains the source
+repo, `/dev-project/eiprotocol` is the exported shared protocol repo, and
+`/dev-project/eihead` is the exported head repo.
+
 ## What Enters MVP
 
 - A versioned event envelope with `specVersion=eiprotocol/0.1`.
@@ -25,6 +29,8 @@ but keeps the first implementation intentionally small and testable.
   side-effecting operations.
 - Execution outcomes using `ei.outcome.execution`.
 - User feedback using `ei.outcome.user.feedback`.
+- Event transport binding for the next eihead/eibrain batch: HTTP JSON
+  `POST /events` carrying one envelope per request.
 - Basic validation for required envelope fields, turn-scoped `roundId`, and
   idempotency on side-effecting action events.
 
@@ -46,7 +52,8 @@ adopts these parts now:
 
 These are useful but intentionally not implementation blockers for v0.1:
 
-- WebSocket transport, binary audio frames, replay, resume, and backpressure.
+- Realtime transport streaming: SSE/WebSocket/MQTT, binary audio/video chunks,
+  replay, resume, and backpressure.
 - Full conversation state-machine enforcement.
 - Full policy and safety-gate runtime. The envelope has `policy`, but v0.1 does
   not make safety decisions a runtime dependency because the current migration
@@ -78,13 +85,23 @@ shared protocol repository. When the eihead export is given
 The reference document is broad enough for v0.1, but the project still needs
 three follow-up supplements before real cutover:
 
-1. Transport binding: HTTP, SSE, or WebSocket routes that carry the envelope
-   between `eihead` and `eibrain`.
+1. Transport binding: HTTP JSON `POST /events` routes that carry the envelope
+   between `eihead` and `eibrain`; realtime streaming transports stay deferred.
 2. Compatibility adapters: keep expanding conversion between existing
    `eibrain.protocol` / `eihead.protocol` classes and `eiprotocol` envelope
    events as more realtime surfaces move out of compatibility mode.
 3. Golden fixtures: stored JSON examples for voice barge-in, realtime vision,
    pan-only neck action, execution outcome, and user feedback.
 
+Transport acceptance for the next batch:
+
+- `POST /events` accepts JSON envelopes for capability, observation, action,
+  outcome, and feedback events.
+- Responses are JSON and report `processed`, `not_wired`, or `not_processed`
+  explicitly.
+- Missing handlers include a reason and never return blank payloads or
+  fake-normal success.
+
 Acceptance for this MVP is intentionally code-level: JSON round-trip tests,
-basic validation tests, and standalone `eihead` export import smoke must pass.
+basic validation tests, standalone `eihead` export import smoke, and the
+`/events` transport truthfulness checks must pass.

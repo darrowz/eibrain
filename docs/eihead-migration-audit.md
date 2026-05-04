@@ -14,6 +14,9 @@ new `eihead` package has native runtime, HTTP, monitoring, config, capability,
 and small local protocol pieces. The honjia hardware behavior is still owned by
 the old body runtime copied into the export shape:
 
+- Repository roles after the split are explicit: `/dev-project/eibrain`
+  remains the source repo, `/dev-project/eiprotocol` is the exported shared
+  protocol repo, and `/dev-project/eihead` is the exported head repo.
 - Native eihead: `eihead.runtime`, `eihead.monitoring`, `eihead.services`,
   `eihead.protocol`, `apps.head_runtime`, `config/eihead.honjia.yaml`, and
   `deploy/systemd/eihead-*.service`.
@@ -64,6 +67,7 @@ hardware-verified real streaming.
 | Capability registry | Native | `eihead.services.capability_registry` declares honjia camera, Hailo, I2C, microphone, speaker, neck, ASR, TTS, and vision backend. | Feed it native per-organ probe results instead of only static path checks. | `/capabilities` shows online/degraded/offline with device paths and last-ok timestamps. |
 | Local eihead protocol | Partly native | `eihead.protocol` has local action/outcome classes so eihead does not import `eibrain.protocol` for basic actions. | Replace the local mirror and eibrain compatibility classes with shared `eiprotocol` models. | eihead and eibrain import the same protocol package without cyclic dependency. |
 | Shared protocol | MVP split started | Top-level `eiprotocol` owns the v0.1 event envelope; `scripts/export-eiprotocol-repo.py` generates `/dev-project/eiprotocol`; `eibrain.protocol.eiprotocol_bridge` adapts legacy head messages. | Keep `eiprotocol` as the source-of-truth contract while reducing `eibrain.protocol` and `eihead.protocol` mirrors module by module. | JSON round-trip tests pass for capability, observation, action, outcome, and feedback payloads; eihead export manifests pin `protocol_sources.eiprotocol`. |
+| Event transport | MVP binding next | Shared envelopes exist, but the cross-repo event transport acceptance path is not yet the realtime streaming stack. | Add HTTP JSON `POST /events` between eihead and eibrain; defer SSE/WebSocket/MQTT, binary chunks, replay/resume, and backpressure. | Capability, observation, action, and outcome envelopes round-trip through `/events`; missing handlers return explicit `not_wired` or `not_processed` with reason, never blank or fake-normal data. |
 | Eye | Native boundary emerging | Camera/Hailo/realtime stream state logic still has legacy consumers in `apps.body_runtime.vision_hailo_service`, `eibrain.body.runtime_linux`, `eibrain.body.vision_state`, and `eibrain.body.organs.eye`; native export now carries `eihead/eye/realtime.py`, `eihead/eye/adapters.py`, `eihead/eye/gstreamer.py`, `eihead/eye/hailo_metadata.py`, and `eihead/monitoring/realtime_vision.py`. | Finish wiring native `eihead.eye` as realtime stream detection while preserving `/tmp/eibrain-vision/latest.jpg` and `/tmp/eibrain-vision/state.json` until consumers are changed. | honjia still captures `/dev/video0`, runs `/dev/hailo0`, continuously publishes detections, and renders boxes/scores/parser readiness on `18080`; static-image detection is compatibility/test-only. |
 | Neck | Native pan protocol started, hardware legacy | Pan/yaw hardware control remains in `eibrain.body.neck_control`, `eibrain.body.raspbot_driver`, and `eibrain.body.organs.neck`; hardware-free pan state/planning now lives in `eihead/neck/pan.py`. | Wire `eihead.neck.plan_pan_move` to the runtime action boundary, then add a narrow Raspbot/I2C adapter without changing the pure planner. | Unit pan planning clamps/suppresses without hardware; manual pan command moves without oscillation after adapter wiring; tilt requests fail as unsupported; `/dev/i2c-1` ownership is unchanged. |
 | Ear | Partly native | Export now carries `eihead/ear/realtime.py`, `eihead/ear/__init__.py`, and `eihead/monitoring/voice.py`; runtime endpoints `/api/voice/realtime` and `/api/audio/realtime` are present in exports. Current closed-loop diagnostics are functional offline/quasi-streaming diagnostics, not hardware-verified real streaming. | Move to native `eihead.ear` end-to-end and keep round/scheduler/interrupt telemetry visible while real streaming LLM/TTS remains unwired. | Voice wake and one full ASR turn pass on honjia with measured stage latency, and no fake healthy speech state before streaming LLM/TTS completion. |
@@ -74,7 +78,7 @@ hardware-verified real streaming.
 ## Next Migration Order
 
 The next round should run in this order: eye, neck, ear, mouth, protocol,
-export, deploy. The order minimizes risk by moving observable, mostly
+event transport, export, deploy. The order minimizes risk by moving observable, mostly
 head-local data first, then action control, then the higher-risk audio loop,
 then shared contracts and packaging.
 
@@ -161,6 +165,11 @@ cover only what eihead and eibrain both need:
   `traceId`, `time`, `sequence`, `requestId`, `sessionId`, `roundId`,
   `content`, and `policy`.
 
+Transport binding for this batch is intentionally narrow: HTTP JSON
+`POST /events` carries one eiprotocol envelope per request. Realtime transport
+streaming, SSE/WebSocket/MQTT, binary media chunks, replay/resume, and
+backpressure remain future work.
+
 Acceptance:
 
 - `/dev-project/eiprotocol` remains independently exportable and importable.
@@ -171,6 +180,10 @@ Acceptance:
 - Unknown fields are accepted and preserved or ignored safely.
 - JSON round-trip tests prove backward compatibility for current honjia
   payloads.
+- `/events` accepts and routes capability, observation, action, outcome, and
+  feedback events without requiring a streaming transport.
+- Unknown or unwired event names return explicit `not_wired` or
+  `not_processed` status with a reason.
 
 ### 6. Export
 
@@ -243,6 +256,8 @@ A module is considered native only when all of these are true:
   flow crosses eihead/eibrain.
 - The `18080` monitor displays real data or explicit offline/unknown/not-wired
   states.
+- Missing runtime or transport handlers return explicit not-wired/not-processed
+  status, never blank payloads or fake-normal success.
 - Unit tests pass without honjia hardware using fakes, and honjia manual checks
   pass on the real chain before deployment.
 

@@ -92,6 +92,66 @@ def test_post_action_wraps_action_and_trace_id(monkeypatch) -> None:
     }
 
 
+def test_post_event_wraps_mapping_event_and_trace_id(monkeypatch) -> None:
+    calls: list[object] = []
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        calls.append(req)
+        return FakeResponse({"accepted": True, "event_id": "evt-1"})
+
+    monkeypatch.setattr("eibrain.infra.head_client.request.urlopen", fake_urlopen)
+
+    client = HeadClient("http://honjia:18081", trace_id="trace-evt")
+    payload = client.post_event({"type": "speech.started", "source": "mouth"})
+
+    req = calls[0]
+    body = json.loads(req.data.decode("utf-8"))
+    assert payload == {"accepted": True, "event_id": "evt-1"}
+    assert req.full_url == "http://honjia:18081/events"
+    assert req.get_method() == "POST"
+    assert req.get_header("Content-type") == "application/json"
+    assert req.get_header("X-trace-id") == "trace-evt"
+    assert body == {
+        "event": {"type": "speech.started", "source": "mouth"},
+        "trace_id": "trace-evt",
+    }
+
+
+def test_post_event_accepts_to_dict_event_envelope(monkeypatch) -> None:
+    bodies: list[dict[str, Any]] = []
+
+    class EventEnvelope:
+        def to_dict(self) -> dict[str, Any]:
+            return {"type": "vision.frame", "payload": {"frame_id": "frame-1"}}
+
+    def fake_urlopen(req: object, timeout: float) -> FakeResponse:
+        bodies.append(json.loads(req.data.decode("utf-8")))
+        return FakeResponse({"ok": True})
+
+    monkeypatch.setattr("eibrain.infra.head_client.request.urlopen", fake_urlopen)
+
+    client = HeadClient("http://honjia:18081")
+
+    assert client.post_event(EventEnvelope()) == {"ok": True}
+    assert bodies == [
+        {"event": {"type": "vision.frame", "payload": {"frame_id": "frame-1"}}},
+    ]
+
+
+def test_post_event_rejects_non_mapping_event_inputs() -> None:
+    class InvalidEnvelope:
+        def to_dict(self) -> str:
+            return "not a mapping"
+
+    client = HeadClient("http://honjia:18081")
+
+    with pytest.raises(TypeError, match="event must be a mapping"):
+        client.post_event(["not", "a", "mapping"])
+
+    with pytest.raises(TypeError, match="event.to_dict\\(\\) must return a mapping"):
+        client.post_event(InvalidEnvelope())
+
+
 def test_action_helpers_build_expected_payloads(monkeypatch) -> None:
     bodies: list[dict[str, Any]] = []
 

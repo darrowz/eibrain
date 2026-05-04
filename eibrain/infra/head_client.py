@@ -76,6 +76,14 @@ class HeadClient:
             payload["trace_id"] = effective_trace_id
         return self._request_json("POST", "/actions", payload=payload, trace_id=trace_id)
 
+    def post_event(self, event: Any, *, trace_id: str | None = None) -> JsonObject:
+        event_payload = self._event_to_dict(event)
+        effective_trace_id = self._effective_trace_id(trace_id)
+        payload: JsonObject = {"event": event_payload}
+        if effective_trace_id:
+            payload["trace_id"] = effective_trace_id
+        return self._request_json("POST", "/events", payload=payload, trace_id=trace_id)
+
     def speak(self, text: str, *, trace_id: str | None = None, **params: Any) -> JsonObject:
         if not text.strip():
             raise ValueError("text must not be empty")
@@ -192,6 +200,17 @@ class HeadClient:
     @staticmethod
     def _compact(payload: Mapping[str, Any]) -> JsonObject:
         return {key: value for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _event_to_dict(event: Any) -> JsonObject:
+        to_dict = getattr(event, "to_dict", None)
+        if callable(to_dict):
+            event = to_dict()
+            if not isinstance(event, Mapping):
+                raise TypeError("event.to_dict() must return a mapping")
+        elif not isinstance(event, Mapping):
+            raise TypeError("event must be a mapping")
+        return dict(event)
 
     @staticmethod
     def _decode(raw: bytes) -> str:

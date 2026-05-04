@@ -141,17 +141,19 @@ def create_handler(
                     return HTTPStatus.OK, self._call_mapping("status")
                 if path == "/capabilities":
                     return HTTPStatus.OK, self._call_mapping("capabilities")
-                if path == "/actions":
+                if path in {"/actions", "/events"}:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
                         "method_not_allowed",
-                        "GET is not supported for /actions",
+                        f"GET is not supported for {path}",
                     )
                 raise HeadHttpApiError(HTTPStatus.NOT_FOUND, "not_found", f"unknown path: {path}")
 
             if method == "POST":
                 if path == "/actions":
                     return HTTPStatus.OK, self._handle_action()
+                if path == "/events":
+                    return HTTPStatus.OK, self._handle_event()
                 if path in {"/health", "/status", "/capabilities"}:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -197,6 +199,37 @@ def create_handler(
             if result is None:
                 return {"ok": True, "accepted": True}
             return _as_json_object(result, "app.handle_action()")
+
+        def _handle_event(self) -> JsonObject:
+            request_payload = self._read_json_body()
+            event = request_payload.get("event")
+            if not isinstance(event, Mapping):
+                raise HeadHttpApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_event",
+                    "POST /events requires object field 'event'",
+                )
+
+            trace_id = request_payload.get("trace_id")
+            if trace_id is not None and not isinstance(trace_id, str):
+                raise HeadHttpApiError(
+                    HTTPStatus.BAD_REQUEST,
+                    "invalid_trace_id",
+                    "trace_id must be a string when provided",
+                )
+
+            handle_event = getattr(runtime_app, "handle_event", None)
+            if not callable(handle_event):
+                return {
+                    "ok": True,
+                    "accepted": False,
+                    "status": "not_wired",
+                    "reason": "runtime_app_handle_event_unavailable",
+                    "trace_id": trace_id,
+                }
+
+            result = handle_event(dict(event), trace_id=trace_id)
+            return _as_json_object(result, "app.handle_event()")
 
         def _call_mapping(self, method_name: str) -> JsonObject:
             method = getattr(runtime_app, method_name)

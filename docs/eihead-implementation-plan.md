@@ -13,6 +13,13 @@
 - 让 `eibrain` 通过协议调用 `eihead`，不再直接依赖 honjia 硬件实现。
 - 把执行结果写回 `eimemory` / `eitraining`，形成可追踪的反馈闭环。
 
+当前拆分状态：`/dev-project/eibrain` 仍是 source repo；
+`/dev-project/eiprotocol` 是 exported shared protocol repo；
+`/dev-project/eihead` 是 exported head repo。下一批 transport
+binding 的 MVP 是 HTTP JSON `POST /events` 传递 eiprotocol envelope；
+SSE/WebSocket/MQTT、二进制音频/视频 chunk 和真正实时 transport
+streaming 仍是后续工作。
+
 Eye 方向单独明确：正式目标是 `/dev/video0` + `/dev/hailo0` 的 realtime stream detection，也就是从
 摄像头/Hailo 连续流产生 `RealtimeVisionObservation`、运行状态和监控检测框。
 静态图片检测只作为兼容/测试占位，不作为部署目标或验收主线。
@@ -34,6 +41,8 @@ functional-not-complete。当前闭环语音诊断是 functional offline/quasi-s
 diagnostics，不是 hardware-verified real streaming。真实流式 LLM/TTS 尚未接入，
 监控只能展示真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`，
 不能把未接入的 streaming LLM/TTS 阶段显示成完成。
+同一 truthfulness 规则也适用于 transport handler：未接线的 handler
+必须返回明确的 `not_wired` / `not_processed` 状态和原因，不能返回空数据或伪正常结果。
 
 暂不做：
 
@@ -86,9 +95,9 @@ Envelope、CapabilityManifest、AudioTurn、RealtimeVisionObservation、
 HeadAction、ExecutionOutcome、UserFeedback 和基础校验范围。第一版只保留
 `policy` 元数据，不引入安全权限层运行依赖。
 
-建议新建 `/dev-project/eiprotocol`，也可以先在 `eibrain/eiprotocol_compat`
-落一个兼容包，再抽成独立仓库。推荐直接独立仓库，因为后续 `eihead`,
-`eibrain`, `eimemory`, `eiskills`, `eidocs` 都会依赖它。
+`/dev-project/eiprotocol` 是当前 exported shared protocol repo。后续
+`eihead`, `eibrain`, `eimemory`, `eiskills`, `eidocs` 都应依赖这个共享协议，
+而不是继续扩展各自的本地镜像。
 
 核心协议：
 
@@ -168,6 +177,11 @@ eihead
 
 目标：让 eibrain 与 eihead 通过协议交互。
 
+下一批 transport binding 先只接受 event transport MVP：
+HTTP JSON `POST /events`，请求体为 `eiprotocol` envelope。实时 transport
+streaming、WebSocket/SSE/MQTT、二进制音频/视频 chunk、replay/resume 和
+backpressure 不作为本批验收要求。
+
 eihead -> eibrain：
 
 - `AudioTurn`: 语音识别结果进入对话链。
@@ -185,9 +199,13 @@ eibrain -> eihead：
 
 验收标准：
 
+- `eihead` 与 `eibrain` 至少能通过 HTTP JSON `POST /events` 交换
+  capability、observation、action、outcome envelope。
 - 语音对话仍能完成，且 trace 能看到 ASR -> LLM -> TTS -> 播放。
 - 视觉检测框和分数仍能显示在 honjia Web 监控。
 - 云台动作可以从 eibrain 通过 action 下发到 eihead。
+- 缺失或尚未接线的 event handler 返回明确 `not_wired` 或
+  `not_processed` 状态，包含原因，不返回 blank/fake-normal payload。
 
 ## Phase 5: Web Monitoring Split
 

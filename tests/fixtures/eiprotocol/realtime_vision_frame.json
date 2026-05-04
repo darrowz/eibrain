@@ -1,0 +1,78 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_vision_frame_001",
+  "type": "observation",
+  "name": "ei.observation.vision.frame",
+  "time": "2026-05-04T10:32:01.500+08:00",
+  "sequence": 4,
+  "requestId": "req_vision_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "",
+  "causationId": "",
+  "traceId": "trc_voice_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "camera.front",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 500,
+  "mode": {
+    "conversationState": "listening",
+    "interactionMode": "free"
+  },
+  "content": {
+    "frameId": "frame_000042",
+    "width": 1280,
+    "height": 720,
+    "frameAgeMs": 42.5,
+    "backend": "hailo",
+    "detections": [
+      {
+        "label": "person",
+        "score": 0.91,
+        "bbox": [
+          0.2,
+          0.1,
+          0.4,
+          0.6
+        ],
+        "trackId": "track_person_1",
+        "metadata": {}
+      }
+    ],
+    "latencyMs": {
+      "capture": 8.0,
+      "detect": 15.0,
+      "publish": 3.5
+    },
+    "imageUrl": "file:///var/lib/eihead/frames/frame_000042.jpg",
+    "status": "ok",
+    "metadata": {
+      "trackedTarget": {
+        "label": "person",
+        "centerX": 0.4,
+        "centerY": 0.4
+      }
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

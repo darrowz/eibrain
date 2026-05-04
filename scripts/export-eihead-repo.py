@@ -399,7 +399,12 @@ def export_eihead_repo(
 
     copied: list[str] = []
     for rel_dir in COPY_DIRS:
-        copied.extend(_copy_directory(source_root, target, rel_dir))
+        copy_root = (
+            protocol_root
+            if rel_dir == "eiprotocol" and protocol_root is not None
+            else source_root
+        )
+        copied.extend(_copy_directory(copy_root, target, rel_dir))
     for rel_file in OPTIONAL_FILES:
         source_file = source_root / rel_file
         if source_file.exists():

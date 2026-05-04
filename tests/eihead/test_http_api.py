@@ -56,6 +56,21 @@ class FallbackHealthApp(FakeHeadApp):
     health = None
 
 
+class EventHeadApp(FakeHeadApp):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[tuple[dict[str, Any], str | None]] = []
+
+    def handle_event(self, event: dict[str, Any], *, trace_id: str | None = None) -> dict[str, Any]:
+        self.events.append((dict(event), trace_id))
+        return {
+            "ok": True,
+            "accepted": True,
+            "trace_id": trace_id,
+            "event_type": event.get("type"),
+        }
+
+
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
@@ -107,6 +122,51 @@ def test_head_client_posts_actions_to_api_contract() -> None:
     ]
 
 
+def test_post_events_calls_runtime_event_handler() -> None:
+    app = EventHeadApp()
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(
+            f"{base_url}/events",
+            method="POST",
+            json_body={"event": {"type": "gesture.detected", "name": "wave"}, "trace_id": "trace-event-1"},
+        )
+
+    assert status_code == 200
+    assert payload == {
+        "ok": True,
+        "accepted": True,
+        "trace_id": "trace-event-1",
+        "event_type": "gesture.detected",
+    }
+    assert app.events == [
+        (
+            {"type": "gesture.detected", "name": "wave"},
+            "trace-event-1",
+        )
+    ]
+
+
+def test_post_events_returns_not_wired_success_when_handler_is_absent() -> None:
+    app = FakeHeadApp()
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(
+            f"{base_url}/events",
+            method="POST",
+            json_body={"event": {"type": "wakeword.detected"}, "trace_id": "trace-event-2"},
+        )
+
+    assert status_code == 200
+    assert payload == {
+        "ok": True,
+        "accepted": False,
+        "status": "not_wired",
+        "reason": "runtime_app_handle_event_unavailable",
+        "trace_id": "trace-event-2",
+    }
+
+
 def test_post_actions_rejects_invalid_request_body_with_json_error() -> None:
     app = FakeHeadApp()
 
@@ -133,6 +193,29 @@ def test_post_actions_rejects_missing_action_with_json_error() -> None:
     assert status_code == 400
     assert payload["error"]["code"] == "invalid_action"
     assert app.actions == []
+
+
+@pytest.mark.parametrize(
+    ("body", "error_code"),
+    [
+        ({"trace_id": "x"}, "invalid_event"),
+        ({"event": ["not", "an", "object"]}, "invalid_event"),
+        ({"event": {"type": "wakeword.detected"}, "trace_id": 123}, "invalid_trace_id"),
+    ],
+)
+def test_post_events_rejects_invalid_event_request_with_json_error(
+    body: dict[str, Any],
+    error_code: str,
+) -> None:
+    app = EventHeadApp()
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, payload = read_error_json(f"{base_url}/events", method="POST", json_body=body)
+
+    assert status_code == 400
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == error_code
+    assert app.events == []
 
 
 def test_unknown_path_and_wrong_method_return_json_errors() -> None:

@@ -12,6 +12,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "export-eihead-repo.py"
+INDEPENDENT_PROTOCOL_MARKER = "independent eiprotocol fixture source\n"
 
 
 def _load_export_module():
@@ -29,6 +30,10 @@ def _create_protocol_git_repo(tmp_path: Path) -> tuple[Path, str]:
     (repo / "eiprotocol").mkdir(parents=True)
     (repo / "eiprotocol" / "__init__.py").write_text(
         '"""fixture protocol package."""\n',
+        encoding="utf-8",
+    )
+    (repo / "eiprotocol" / "independent_source_marker.txt").write_text(
+        INDEPENDENT_PROTOCOL_MARKER,
         encoding="utf-8",
     )
     (repo / "pyproject.toml").write_text(
@@ -464,6 +469,26 @@ def test_export_manifest_can_pin_independent_eiprotocol_repo_revision(tmp_path: 
         "dirty": False,
         "status_short": [],
     }
+
+
+def test_export_copies_eiprotocol_from_independent_repo_when_supplied(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+    protocol_repo, _ = _create_protocol_git_repo(tmp_path)
+
+    result = module.export_eihead_repo(
+        target,
+        repo_root=REPO_ROOT,
+        eiprotocol_repo_root=protocol_repo,
+    )
+
+    assert (target / "eiprotocol" / "__init__.py").read_text(encoding="utf-8") == (
+        '"""fixture protocol package."""\n'
+    )
+    assert (
+        target / "eiprotocol" / "independent_source_marker.txt"
+    ).read_text(encoding="utf-8") == INDEPENDENT_PROTOCOL_MARKER
+    assert "eiprotocol/independent_source_marker.txt" in result.copied
 
 
 def test_export_rejects_eibrain_root_as_independent_eiprotocol_repo(tmp_path: Path) -> None:

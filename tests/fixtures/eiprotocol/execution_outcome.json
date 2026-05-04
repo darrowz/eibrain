@@ -1,0 +1,57 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_execution_outcome_001",
+  "type": "outcome",
+  "name": "ei.outcome.execution",
+  "time": "2026-05-04T10:32:01.950+08:00",
+  "sequence": 6,
+  "requestId": "req_action_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "evt_head_action_001",
+  "causationId": "evt_head_action_001",
+  "traceId": "trc_voice_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "honjia",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": null,
+  "mode": {},
+  "content": {
+    "outcomeId": "out_move_head_001",
+    "actionId": "act_move_head_001",
+    "actionType": "move_head",
+    "success": true,
+    "status": "completed",
+    "latencyMs": 238.5,
+    "didWhat": [
+      "moved neck.pan to 92 degrees",
+      "held position"
+    ],
+    "errors": [],
+    "details": {
+      "finalAngle": 92,
+      "driver": "raspbot"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}
