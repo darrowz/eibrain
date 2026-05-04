@@ -302,6 +302,13 @@ __all__ = [
 ]
 '''
 
+GITIGNORE_TEMPLATE = """__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+"""
+
 
 @dataclass(frozen=True)
 class ExportResult:
@@ -491,6 +498,7 @@ def _copy_file(source_path: Path, target_path: Path, *, target_root: Path) -> st
 
 def _write_templates(target_root: Path) -> tuple[str, ...]:
     templates = {
+        ".gitignore": GITIGNORE_TEMPLATE,
         "pyproject.toml": PYPROJECT_TEMPLATE,
         "README.md": README_TEMPLATE,
         "eibrain/protocol/__init__.py": PROTOCOL_INIT_TEMPLATE,

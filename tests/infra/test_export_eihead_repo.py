@@ -31,6 +31,7 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
 
     assert result.target == target.resolve()
     required_paths = [
+        ".gitignore",
         "eihead/runtime/cli.py",
         "eihead/runtime/http_api.py",
         "eihead/services/capability_registry.py",
@@ -75,6 +76,7 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "eihead/monitoring/web.py" in result.copied
     assert "pyproject.toml" in result.generated
     assert "README.md" in result.generated
+    assert ".gitignore" in result.generated
     assert "eibrain/protocol/__init__.py" in result.generated
 
 
@@ -224,6 +226,7 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
 
     pyproject = (target / "pyproject.toml").read_text(encoding="utf-8")
     readme = (target / "README.md").read_text(encoding="utf-8")
+    gitignore = (target / ".gitignore").read_text(encoding="utf-8")
 
     assert 'name = "eihead"' in pyproject
     assert 'eihead-runtime = "eihead.runtime.cli:main"' in pyproject
@@ -241,6 +244,8 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
+    assert "__pycache__/" in gitignore
+    assert "*.py[cod]" in gitignore
 
 
 def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path: Path) -> None:
@@ -388,6 +393,7 @@ def test_cli_prints_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert output["force"] is False
     assert "eihead/runtime/cli.py" in output["copied"]
     assert output["generated"] == [
+        ".gitignore",
         "pyproject.toml",
         "README.md",
         "eibrain/protocol/__init__.py",
