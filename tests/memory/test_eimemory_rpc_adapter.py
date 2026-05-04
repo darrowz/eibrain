@@ -267,6 +267,71 @@ def test_eimemory_rpc_adapter_passes_structured_episode_fields(monkeypatch) -> N
     assert params["links"] == [{"rel": "actor", "id": "user-1"}]
 
 
+def test_eimemory_rpc_adapter_posts_policy_candidate_trace_metadata(monkeypatch) -> None:
+    import json
+
+    from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_candidate"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured.append(json.loads(req.data.decode("utf-8")))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="action_outcome",
+        summary="MoveHeadAction failed with oscillation",
+        modality="multimodal_action",
+        organ="neck",
+        success=False,
+        status="failed",
+        action_count=1,
+        user_feedback="tracking looked unstable",
+        suggested_adjustment="increase yaw deadband before moving",
+        trace_id="trace-neck-3",
+        source_event_id="outcome-3",
+    )
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_episode(
+        session_id="head-session",
+        actor_id="user-1",
+        summary=str(candidate["summary"]),
+        title="Head feedback candidate",
+        memory_type=str(candidate["memory_type"]),
+        source=str(candidate["source"]),
+        modality=str(candidate["modality"]),
+        organ=str(candidate["organ"]),
+        outcome=dict(candidate["outcome"]),
+        content=dict(candidate["content"]),
+        meta=dict(candidate["meta"]),
+        tags=list(candidate["tags"]),
+    )
+
+    assert captured[0]["method"] == "memory.ingest"
+    params = captured[0]["params"]
+    assert params["memory_type"] == "procedural_adjustment_candidate"
+    assert params["source"] == "eibrain.procedural_feedback"
+    assert params["content"]["suggested_adjustment"] == "increase yaw deadband before moving"
+    assert params["meta"]["candidate_types"] == ["procedural", "training"]
+    assert params["meta"]["trace_id"] == "trace-neck-3"
+    assert params["meta"]["identity_memory"] is False
+    assert "training_candidate" in params["tags"]
+
+
 def test_eimemory_rpc_adapter_posts_world_observation(monkeypatch) -> None:
     import json
 
@@ -309,6 +374,41 @@ def test_eimemory_rpc_adapter_posts_world_observation(monkeypatch) -> None:
     assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
     assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91}
     assert params["tags"] == ["person", "world_observation", "vision"]
+
+
+def test_eimemory_rpc_adapter_keeps_classified_writeback_failure_graceful(monkeypatch) -> None:
+    from urllib.error import URLError
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    def _failing_urlopen(req, timeout=0):
+        raise URLError("down")
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _failing_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_episode(
+        session_id="head-session",
+        actor_id="user-1",
+        summary="MoveHeadAction failed with oscillation",
+        memory_type="procedural_adjustment_candidate",
+        source="eibrain.procedural_feedback",
+        modality="multimodal_action",
+        organ="neck",
+        meta={
+            "trace_id": "trace-neck-4",
+            "source_event_id": "outcome-4",
+            "candidate_types": ["procedural", "training"],
+            "identity_memory": False,
+        },
+    )
+
+    assert adapter.last_writeback_status["status"] == "error"
+    assert adapter.last_writeback_status["source"] == "eibrain.procedural_feedback"
+    assert adapter.last_writeback_status["memory_type"] == "procedural_adjustment_candidate"
+    assert adapter.last_writeback_status["trace_id"] == "trace-neck-4"
+    assert adapter.last_writeback_status["candidate_types"] == ["procedural", "training"]
 
 
 def test_eimemory_rpc_adapter_observes_failed_episode_as_incident(monkeypatch) -> None:

@@ -66,6 +66,29 @@ def test_diagnostic_recall_uses_policy_sources() -> None:
     assert set(context["organs"]) >= {"ear", "eye", "mouth", "neck"}
 
 
+def test_action_feedback_recall_excludes_identity_memory_sources() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="head.execute",
+        modality="multimodal_action",
+        organ="neck",
+        phase="acting",
+        salience_score=0.86,
+        body_capabilities={"can_move_head": True},
+        query="上次转头失败，下次应该怎么调整",
+        trace_id="trace-neck-1",
+        source_event_id="evt-outcome-1",
+    )
+
+    assert "eibrain.head_feedback" in context["allowed_sources"]
+    assert "eibrain.outcome_feedback" in context["allowed_sources"]
+    assert "eibrain.identity" in context["blocked_sources"]
+    assert "identity" not in context["allowed_memory_types"]
+    assert "procedural_adjustment_candidate" in context["allowed_memory_types"]
+    assert context["trace_id"] == "trace-neck-1"
+    assert context["source_event_id"] == "evt-outcome-1"
+    assert context["recall_filters"]["memory_types"] == context["allowed_memory_types"]
+
+
 def test_writeback_outcome_tags_subject_modality_and_organ() -> None:
     outcome = MultimodalMemoryPolicy().writeback_outcome(
         modality="audio_text",
@@ -84,6 +107,156 @@ def test_writeback_outcome_tags_subject_modality_and_organ() -> None:
     assert outcome["channel_id"] == "voice.honjia"
     assert outcome["agent_id"] == "eibrain.voice"
     assert outcome["memory_contract_version"] == "multimodal-memory.v1"
+
+
+def test_dialogue_without_explicit_memory_is_working_candidate_not_identity() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="dialogue",
+        summary="user:hello | reply:hi",
+        modality="audio_text",
+        organ="ear",
+        success=True,
+        status="planned",
+        action_count=1,
+        reply_present=True,
+        trace_id="s1",
+        source_event_id="asr-1",
+    )
+
+    assert candidate["candidate_types"] == ["working"]
+    assert candidate["memory_type"] == "conversation"
+    assert candidate["source"] == "eibrain.audio_dialogue"
+    assert candidate["retention"] == "short_lived"
+    assert candidate["meta"]["trace_id"] == "s1"
+    assert candidate["meta"]["source_event_id"] == "asr-1"
+    assert candidate["meta"]["identity_memory"] is False
+    assert candidate["meta"]["persona_memory"] is False
+    assert "eibrain.identity" not in candidate["source"]
+
+
+def test_explicit_preference_dialogue_is_semantic_candidate_not_identity() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="dialogue",
+        summary="user:记住我喜欢简短回复 | reply:好的",
+        modality="audio_text",
+        organ="ear",
+        explicit_memory_request=True,
+        success=True,
+        status="planned",
+        action_count=1,
+        reply_present=True,
+        trace_id="s2",
+        source_event_id="asr-2",
+    )
+
+    assert candidate["candidate_types"] == ["semantic"]
+    assert candidate["memory_type"] == "semantic_candidate"
+    assert candidate["source"] == "eibrain.semantic_candidate"
+    assert candidate["promotion_status"] == "candidate"
+    assert candidate["meta"]["identity_memory"] is False
+    assert candidate["meta"]["durable_identity_allowed"] is False
+    assert "semantic_candidate" in candidate["tags"]
+
+
+def test_visual_observation_is_episodic_candidate_with_source_trace_metadata() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="vision_observation",
+        summary="person standing near desk",
+        modality="vision",
+        organ="eye",
+        source="eibrain.visual_frame",
+        visual_context={"target_x": 0.7, "summary": "person standing near desk"},
+        trace_id="vision:user-1",
+        source_event_id="frame-1",
+    )
+
+    assert candidate["candidate_types"] == ["episodic"]
+    assert candidate["memory_type"] == "world_observation"
+    assert candidate["source"] == "eibrain.visual_frame"
+    assert candidate["meta"]["trace_id"] == "vision:user-1"
+    assert candidate["content"]["visual_context"] == {"target_x": 0.7, "summary": "person standing near desk"}
+    assert candidate["meta"]["identity_memory"] is False
+    assert "vision" in candidate["tags"]
+
+
+def test_action_outcome_feedback_is_procedural_and_training_candidate() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="action_outcome",
+        summary="MoveHeadAction failed with oscillation",
+        modality="multimodal_action",
+        organ="neck",
+        success=False,
+        status="failed",
+        action_count=1,
+        user_feedback="tracking looked unstable",
+        suggested_adjustment="increase yaw deadband before moving",
+        trace_id="trace-neck-2",
+        source_event_id="outcome-2",
+    )
+
+    assert candidate["candidate_types"] == ["procedural", "training"]
+    assert candidate["memory_type"] == "procedural_adjustment_candidate"
+    assert candidate["source"] == "eibrain.procedural_feedback"
+    assert candidate["retention"] == "adjustment_candidate"
+    assert candidate["promotion_status"] == "candidate"
+    assert candidate["training_candidate"] is True
+    assert candidate["meta"]["trace_id"] == "trace-neck-2"
+    assert candidate["content"]["suggested_adjustment"] == "increase yaw deadband before moving"
+    assert candidate["meta"]["identity_memory"] is False
+
+
+def test_user_feedback_without_adjustment_is_training_candidate_not_identity() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="user_feedback",
+        summary="reply was too long",
+        modality="audio_text",
+        organ="ear",
+        user_feedback="reply was too long",
+        trace_id="feedback-1",
+        source_event_id="thumbs-down-1",
+    )
+
+    assert candidate["candidate_types"] == ["training"]
+    assert candidate["memory_type"] == "training_candidate"
+    assert candidate["source"] == "eibrain.training_candidate"
+    assert candidate["retention"] == "training_candidate"
+    assert candidate["training_candidate"] is True
+    assert candidate["meta"]["identity_memory"] is False
+    assert candidate["content"]["user_feedback"] == "reply was too long"
+
+
+def test_cognitive_runtime_audio_writeback_attaches_candidate_metadata() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.remembered: list[dict[str, object]] = []
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="")
+
+        def remember_episode(self, **kwargs):
+            self.remembered.append(dict(kwargs))
+            self.last_writeback_status = {"status": "ok", "source": kwargs.get("source")}
+
+    runtime = CognitiveRuntimeApp()
+    runtime.memory = _MemoryAdapter()
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="记住我喜欢简短回复", session_id="s1", actor_id="user-1")
+    )
+
+    payload = runtime.memory.remembered[0]
+    assert payload["memory_type"] == "semantic_candidate"
+    assert payload["source"] == "eibrain.audio_dialogue"
+    assert payload["meta"]["candidate_types"] == ["semantic"]
+    assert payload["meta"]["identity_memory"] is False
+    assert payload["meta"]["trace_id"] == "s1"
+    assert payload["content"]["event_type"] == "dialogue"
+    assert "semantic_candidate" in payload["tags"]
 
 
 def test_cognitive_runtime_builds_world_observation_payload_from_visual_state() -> None:

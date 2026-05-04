@@ -631,6 +631,47 @@ class FallbackMouthVoiceApp(FakeMonitorApp):
         }
 
 
+class RichNativeVoiceDiagnosticsApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {
+                "status": "ok",
+                "provider": "sherpa_onnx",
+                "stage_latency_ms": {"vad": 8.25, "asr": 23.5},
+            },
+            "mouth": build_mouth_status(
+                config=MouthTtsConfig(provider="minimax", model="speech-2.5-hd", voice_id="voice-a"),
+                status="playing",
+                details={
+                    "text_preview": "streaming reply",
+                    "text_char_count": 15,
+                    "synthesis_elapsed_ms": 120,
+                    "playback_elapsed_ms": 980,
+                    "total_elapsed_ms": 1100,
+                    "busy": True,
+                    "stop": {
+                        "status": "unsupported",
+                        "success": False,
+                        "busy_before": True,
+                        "busy_cleared": False,
+                        "busy_retained": True,
+                        "details": {"reason": "stop handler not wired"},
+                    },
+                },
+            ).to_dict(),
+            "dialogue": {
+                "phase": "speaking",
+                "last_status": "speaking",
+                "current_round_id": "round-rich-1",
+                "current_cancellation_token": "cancel-rich-1",
+                "interrupt_active": False,
+                "interrupted_round_count": 0,
+            },
+        }
+
+
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
@@ -716,6 +757,26 @@ def test_voice_helper_reports_not_wired_without_runtime_hook() -> None:
     assert payload["not_wired"] is True
     assert payload["source"] is None
     assert "not wired" in payload["readiness_message"] or "not_wired" in payload["readiness_message"]
+
+
+def test_voice_helper_surfaces_rich_native_voice_diagnostics_without_fake_streaming_health() -> None:
+    payload = build_voice_diagnostics_from_app(RichNativeVoiceDiagnosticsApp(), timestamp=435.0)
+
+    assert payload["round"]["current_round_id"] == "round-rich-1"
+    assert payload["round"]["phase"] == "speaking"
+    assert payload["round"]["lifecycle"] == "active"
+    assert payload["latency"]["stage_latency_ms"]["vad"] == 8.25
+    assert payload["latency"]["stage_latency_ms"]["asr"] == 23.5
+    assert payload["latency"]["stage_latency_ms"]["tts_synthesis"] == 120.0
+    assert payload["latency"]["stage_latency_ms"]["tts_playback"] == 980.0
+    assert payload["mouth"]["busy"] is True
+    assert payload["mouth"]["playback_state"] == "busy"
+    assert payload["mouth"]["stop"]["busy_retained"] is True
+    assert payload["interruption"]["state"] == "clear"
+    assert payload["streaming"]["llm"]["state"] == "unknown"
+    assert payload["streaming"]["tts"]["state"] == "unknown"
+    assert payload["streaming"]["llm"]["readiness_message"] == "streaming llm status is unknown"
+    assert payload["streaming"]["tts"]["readiness_message"] == "streaming tts status is unknown"
 
 
 def test_realtime_vision_helper_standardizes_observation_payload() -> None:

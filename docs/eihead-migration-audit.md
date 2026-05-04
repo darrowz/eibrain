@@ -273,3 +273,14 @@ A module is considered native only when all of these are true:
 The final split is accepted only when the Phase 0 baseline can be repeated
 after deploy with equal or better results for voice wake, conversation, vision
 detection, pan-only neck movement, and monitor truthfulness.
+
+## Machine-Readable Completion Gates
+
+`scripts/export-eihead-repo.py` writes `native_completion_gates` into
+`EXPORT_MANIFEST.json`. This is the machine-readable companion to this audit
+matrix. It intentionally keeps `eye`, `neck`, `ear`, `mouth`, `runtime`,
+`export`, and `deploy` out of a completed state until their blockers and
+acceptance checks are verified. Operator UI and status payloads should reflect
+the same truthfulness rule: report `not_wired`, `unknown`, `degraded`, or
+`blocked` instead of presenting transitional or hardware-unverified paths as
+healthy.

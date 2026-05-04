@@ -293,6 +293,34 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
     ]
 
 
+def test_export_manifest_records_native_completion_gates(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+
+    gates = manifest["native_completion_gates"]
+    assert [gate["module"] for gate in gates] == ["eye", "neck", "ear", "mouth", "runtime", "export", "deploy"]
+    for gate in gates:
+        assert gate["state"] in {"native_boundary", "transitional", "blocked_by_hardware_validation"}
+        assert gate["owner_repo"] == "eihead"
+        assert gate["blockers"]
+        assert gate["next_acceptance"]
+        assert gate["fake_completion_guard"] == (
+            "Report not_wired, unknown, degraded, or blocked until the acceptance gate is verified."
+        )
+
+    eye_gate = next(gate for gate in gates if gate["module"] == "eye")
+    assert "/dev/video0" in eye_gate["blockers"]
+    assert "/dev/hailo0" in eye_gate["blockers"]
+    assert "static image" in eye_gate["fake_completion_guard_note"]
+
+    deploy_gate = next(gate for gate in gates if gate["module"] == "deploy")
+    assert deploy_gate["state"] == "blocked_by_hardware_validation"
+    assert "honjia Phase 0 baseline" in deploy_gate["next_acceptance"]
+
+
 def test_export_manifest_paths_stay_relative_when_target_is_named_eihead(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead"

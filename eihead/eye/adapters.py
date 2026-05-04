@@ -52,6 +52,7 @@ class GStreamerHailoRealtimeConfig:
     source_name: str = "gstreamer_hailo"
     mode: str = REALTIME_STREAM_MODE
     appsink_name: str = "eihead_realtime_sink"
+    max_frame_age_s: float | None = 2.0
 
     @property
     def device_paths(self) -> tuple[str, str]:
@@ -276,6 +277,7 @@ class GStreamerHailoRealtimeAdapter:
             backend=self.config.backend,
             mode=self.config.mode,
             clock=clock,
+            max_frame_age_s=self.config.max_frame_age_s,
         )
         self._last_status = self._initial_status()
 
@@ -411,12 +413,21 @@ class GStreamerHailoRealtimeAdapter:
         try:
             payload = self._pipeline.process_next()
         except AdapterRuntimeError as exc:
-            self._last_status = _not_wired_status(self.config, str(exc))
+            self._last_status = _degraded_status(
+                self.config,
+                str(exc),
+                status_reason=_adapter_error_reason(str(exc)),
+                readiness_message=readiness.message,
+                parser_state=self._parser_state,
+            )
             return self._last_status
         except Exception as exc:  # pragma: no cover - defensive guard for hardware backends.
-            self._last_status = _not_wired_status(
+            self._last_status = _degraded_status(
                 self.config,
                 f"realtime adapter poll failed: {exc.__class__.__name__}: {exc}",
+                status_reason="adapter_poll_failed",
+                readiness_message=readiness.message,
+                parser_state=self._parser_state,
             )
             return self._last_status
         if isinstance(payload, Mapping):
@@ -453,6 +464,8 @@ class GStreamerHailoRealtimeAdapter:
             source="eihead.eye.adapters",
             placeholder=False,
             not_wired=False,
+            stream_ready=False,
+            status_reason="waiting_for_frame",
             message="realtime adapter is wired; waiting for frames",
             **_adapter_diagnostics(
                 self.config,
@@ -566,8 +579,35 @@ def _not_wired_status(
         source="eihead.eye.adapters",
         placeholder=True,
         not_wired=True,
+        stream_ready=False,
+        status_reason="not_wired",
+        not_wired_reason=message,
         message=message,
         **_adapter_diagnostics(config, readiness_message=message, parser_state=parser_state),
+    )
+
+
+def _degraded_status(
+    config: GStreamerHailoRealtimeConfig,
+    message: str,
+    *,
+    status_reason: str,
+    readiness_message: str,
+    parser_state: Mapping[str, Any] | None = None,
+) -> RealtimeEyeStatus:
+    return RealtimeEyeStatus(
+        mode=config.mode,
+        status="degraded",
+        backend=config.backend,
+        source="eihead.eye.adapters",
+        placeholder=False,
+        not_wired=False,
+        stream_ready=False,
+        degraded=True,
+        status_reason=status_reason,
+        degraded_reason=message,
+        message=message,
+        **_adapter_diagnostics(config, readiness_message=readiness_message, parser_state=parser_state),
     )
 
 
@@ -637,10 +677,37 @@ def _status_from_payload(payload: Mapping[str, Any]) -> RealtimeEyeStatus:
         if isinstance(top_detection_payload, Mapping)
         else (detections[0] if detections else None)
     )
+    status = str(payload.get("status", "waiting_for_frame"))
+    compatibility_mode = _coerce_bool(payload.get("compatibility_mode"), default=False)
+    stale = _coerce_bool(payload.get("stale"), default=status == "stale")
+    degraded = _coerce_bool(payload.get("degraded"), default=status == "degraded")
+    not_wired = _coerce_bool(payload.get("not_wired"), default=False)
+    placeholder = _coerce_bool(payload.get("placeholder"), default=False)
+    stream_ready = _coerce_bool(
+        payload.get("stream_ready"),
+        default=(
+            status in {"ok", "tracking"}
+            and not compatibility_mode
+            and not stale
+            and not degraded
+            and not not_wired
+            and not placeholder
+        ),
+    )
+    status_reason = str(payload.get("status_reason", "") or "")
+    if not status_reason:
+        status_reason = _status_reason_from_payload(
+            status=status,
+            stream_ready=stream_ready,
+            stale=stale,
+            degraded=degraded,
+            not_wired=not_wired or placeholder,
+            compatibility_mode=compatibility_mode,
+        )
     return RealtimeEyeStatus(
         schema=str(payload.get("schema", "eihead.eye.realtime_status.v1")),
         mode=str(payload.get("mode", REALTIME_STREAM_MODE)),
-        status=str(payload.get("status", "waiting_for_frame")),
+        status=status,
         backend=str(payload.get("backend", "gstreamer_hailo")),
         frame_count=int(payload.get("frame_count", 0) or 0),
         detection_count=int(payload.get("detection_count", 0) or 0),
@@ -651,16 +718,99 @@ def _status_from_payload(payload: Mapping[str, Any]) -> RealtimeEyeStatus:
         top_detection=top_detection,
         detections=detections,
         source=str(payload.get("source", "eihead.eye.adapters")),
-        placeholder=bool(payload.get("placeholder", False)),
-        not_wired=bool(payload.get("not_wired", False)),
-        compatibility_mode=bool(payload.get("compatibility_mode", False)),
+        placeholder=placeholder,
+        not_wired=not_wired,
+        stream_ready=stream_ready,
+        stale=stale,
+        degraded=degraded,
+        compatibility_mode=compatibility_mode,
+        status_reason=status_reason,
+        not_wired_reason=str(payload.get("not_wired_reason", "") or ""),
+        stale_reason=str(payload.get("stale_reason", "") or ""),
+        degraded_reason=str(payload.get("degraded_reason", "") or ""),
         message=str(payload.get("message", "") or ""),
+        detection_boxes=_boxes_from_payload(payload.get("detection_boxes"), detections),
+        detection_scores=_scores_from_payload(payload.get("detection_scores"), detections),
+        readiness=_mapping_or_empty(payload.get("readiness")),
+        compatibility_static_image=_mapping_or_empty(payload.get("compatibility_static_image")),
         pipeline=dict(payload["pipeline"]) if isinstance(payload.get("pipeline"), Mapping) else None,
         devices=dict(payload["devices"]) if isinstance(payload.get("devices"), Mapping) else None,
         readiness_message=str(payload.get("readiness_message", "") or ""),
         parse_error_count=_safe_int(payload.get("parse_error_count")),
         parse_errors=list(payload.get("parse_errors", [])) if isinstance(payload.get("parse_errors"), list) else [],
     )
+
+
+def _adapter_error_reason(message: str) -> str:
+    if "detection reader" in message or "sample buffer unavailable" in message:
+        return "detection_reader_failed"
+    if "frame reader" in message or "frame conversion" in message or "frame read" in message:
+        return "frame_reader_failed"
+    return "adapter_runtime_failed"
+
+
+def _status_reason_from_payload(
+    *,
+    status: str,
+    stream_ready: bool,
+    stale: bool,
+    degraded: bool,
+    not_wired: bool,
+    compatibility_mode: bool,
+) -> str:
+    if compatibility_mode:
+        return "compat_static_frame_test_only"
+    if stale:
+        return "last_frame_stale"
+    if degraded:
+        return "degraded"
+    if not_wired:
+        return "not_wired"
+    if stream_ready:
+        return "realtime_stream_ready"
+    return status
+
+
+def _boxes_from_payload(raw_boxes: Any, detections: list[RealtimeDetection]) -> list[dict[str, float]]:
+    if isinstance(raw_boxes, list):
+        boxes = [_box_from_mapping(item) for item in raw_boxes]
+        return [box for box in boxes if box is not None]
+    boxes = [_box_from_mapping(detection.bbox) for detection in detections]
+    return [box for box in boxes if box is not None]
+
+
+def _scores_from_payload(raw_scores: Any, detections: list[RealtimeDetection]) -> list[float]:
+    if isinstance(raw_scores, list):
+        scores = [_safe_float(item, default=None) for item in raw_scores]
+        return [round(float(score), 6) for score in scores if score is not None]
+    return [round(float(detection.score), 6) for detection in detections]
+
+
+def _box_from_mapping(value: Any) -> dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    return {
+        "x_min": _safe_float(value.get("x_min"), default=0.0),
+        "y_min": _safe_float(value.get("y_min"), default=0.0),
+        "x_max": _safe_float(value.get("x_max"), default=0.0),
+        "y_max": _safe_float(value.get("y_max"), default=0.0),
+    }
+
+
+def _mapping_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _coerce_bool(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"", "0", "false", "no", "off", "none", "null"}:
+            return False
+    return bool(value)
 
 
 def _detection_from_payload(payload: Any) -> RealtimeDetection:
@@ -753,7 +903,7 @@ def _first_value(mapping: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _safe_float(value: Any, *, default: float) -> float:
+def _safe_float(value: Any, *, default: float | None) -> float | None:
     try:
         return float(value)
     except (TypeError, ValueError):

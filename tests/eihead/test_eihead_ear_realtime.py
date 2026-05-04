@@ -94,6 +94,39 @@ def test_legacy_capture_asr_details_map_to_realtime_status_fields() -> None:
     assert status.config.model == "/models/zipformer"
 
 
+def test_vad_capture_and_asr_stage_latencies_are_reported_without_live_audio() -> None:
+    status = build_ear_realtime_status(
+        capture_details={
+            "capture_device": "hw:0,0",
+            "sample_rate": 48000,
+            "channels": 1,
+            "status": "captured",
+            "vad_triggered": True,
+            "vad_elapsed_ms": 8.25,
+            "capture_elapsed_ms": 42.0,
+        },
+        asr_details={
+            "provider": "sherpa_onnx",
+            "model_dir": "/models/zipformer",
+            "status": "transcribed",
+            "transcript": "hello honjia",
+            "asr_decode_elapsed_ms": 23.5,
+        },
+        config=EarDeviceConfig(device="hw:0,0", provider="sherpa_onnx", model="/models/zipformer"),
+    )
+
+    assert status.not_wired is False
+    assert status.capture.vad_elapsed_ms == 8.25
+    assert status.asr.decode_elapsed_ms == 23.5
+    assert status.stage_latency_ms == {
+        "vad": 8.25,
+        "capture": 42.0,
+        "asr": 23.5,
+        "total": 73.75,
+    }
+    assert status.to_dict()["stage_latency_ms"]["vad"] == 8.25
+
+
 def test_not_wired_when_missing_device_or_asr_model() -> None:
     status = build_ear_realtime_status(
         capture_details={"capture_device": "", "status": "ok", "sample_rate": 16000, "channels": 1},

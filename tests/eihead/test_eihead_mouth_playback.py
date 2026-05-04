@@ -69,6 +69,45 @@ def test_build_mouth_status_maps_last_playback_details_and_busy_state() -> None:
     assert status.total_elapsed_ms == 1100
 
 
+def test_build_mouth_status_reports_tts_stage_latency_and_stop_state() -> None:
+    config = playback.MouthTtsConfig(provider="minimax", model="speech-2.5-hd", voice_id="voice-a")
+
+    status = playback.build_mouth_status(
+        config=config,
+        status="stopped",
+        details={
+            "text": "stop after this sentence",
+            "synthesis_elapsed_ms": 120,
+            "playback_elapsed_ms": 980,
+            "total_elapsed_ms": 1100,
+            "stop": {
+                "status": "accepted",
+                "success": True,
+                "busy_before": True,
+                "busy_cleared": True,
+                "busy_retained": False,
+                "details": {"reason": "user_interrupt"},
+            },
+        },
+    )
+
+    assert status.busy is False
+    assert status.playback_state == "stopped"
+    assert status.stage_latency_ms == {
+        "tts_synthesis": 120.0,
+        "tts_playback": 980.0,
+        "tts_total": 1100.0,
+    }
+    assert status.stop is not None
+    assert status.stop.status == "stopped"
+    assert status.stop.success is True
+    assert status.stop.busy_before is True
+    assert status.stop.busy_cleared is True
+    assert status.stop.busy_retained is False
+    assert status.stop.reason == "user_interrupt"
+    assert status.to_dict()["stop"]["busy_cleared"] is True
+
+
 def test_summarize_speak_action_extracts_text_voice_and_session_from_mapping_or_dataclass() -> None:
     from_mapping = playback.summarize_speak_action(
         {

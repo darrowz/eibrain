@@ -263,10 +263,13 @@ def _normalized_limits(state: PanNeckState) -> dict[str, float]:
 
 def _resolve_target_angle(command: PanMoveCommand, limits: Mapping[str, float]) -> dict[str, Any]:
     if command.target_angle is not None:
+        target_angle = _optional_float(command.target_angle)
+        if target_angle is None:
+            return {"status": "invalid", "reason": "invalid_target_angle"}
         return {
             "status": "ok",
             "source": "target_angle",
-            "target_angle": command.target_angle,
+            "target_angle": target_angle,
             "normalized_target_x": None,
         }
 
@@ -399,8 +402,10 @@ def _json_number(value: Any) -> int | float | None:
 
 
 def _json_safe(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, (str, bool)):
         return value
+    if isinstance(value, (int, float)):
+        return _json_number(value)
     if isinstance(value, Mapping):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):

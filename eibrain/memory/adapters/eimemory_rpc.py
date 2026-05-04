@@ -91,14 +91,15 @@ class EIMemoryRPCAdapter:
             params["links"] = [dict(item) for item in links]
         try:
             self._post_json(payload)
-            self.last_writeback_status = {
-                "status": "ok",
-                "source": source,
-                "memory_type": memory_type,
-                "modality": modality,
-                "organ": organ,
-                "title": title or "Embodied episode",
-            }
+            self.last_writeback_status = self._writeback_status(
+                status="ok",
+                source=source,
+                memory_type=memory_type,
+                modality=modality,
+                organ=organ,
+                title=title or "Embodied episode",
+                meta=meta,
+            )
             self._observe_failed_outcome(
                 outcome=outcome,
                 session_id=session_id,
@@ -108,7 +109,16 @@ class EIMemoryRPCAdapter:
                 organ=organ,
             )
         except (URLError, OSError, ValueError, TypeError, KeyError) as exc:
-            self.last_writeback_status = {"status": "error", "error": f"{type(exc).__name__}: {exc}", "source": source}
+            self.last_writeback_status = self._writeback_status(
+                status="error",
+                source=source,
+                memory_type=memory_type,
+                modality=modality,
+                organ=organ,
+                title=title or "Embodied episode",
+                meta=meta,
+                error=f"{type(exc).__name__}: {exc}",
+            )
             return
 
     def remember_world_observation(
@@ -298,6 +308,43 @@ class EIMemoryRPCAdapter:
             session_id=session_id,
             actor_id=actor_id,
         )
+
+    def _writeback_status(
+        self,
+        *,
+        status: str,
+        source: str,
+        memory_type: str,
+        modality: str,
+        organ: str,
+        title: str,
+        meta: dict[str, object] | None,
+        error: str = "",
+    ) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "status": status,
+            "source": source,
+            "memory_type": memory_type,
+            "modality": modality,
+            "organ": organ,
+            "title": title,
+        }
+        if error:
+            payload["error"] = error
+        metadata = dict(meta or {})
+        for key in (
+            "trace_id",
+            "source_event_id",
+            "candidate_types",
+            "identity_memory",
+            "persona_memory",
+            "retention",
+            "promotion_status",
+            "training_candidate",
+        ):
+            if key in metadata:
+                payload[key] = metadata[key]
+        return payload
 
     def _scope(self, query: MemoryQuery) -> dict[str, str]:
         return self._scope_from_ids(session_id=query.session_id, actor_id=query.actor_id)

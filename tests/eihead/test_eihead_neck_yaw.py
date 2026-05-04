@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
+
+from eihead.runtime.app import HeadRuntimeApp
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -143,6 +146,100 @@ def test_servo_command_adapter_invokes_injected_driver_only_for_commanded_decisi
     assert driver.calls == [(97, 1)]
 
 
+def test_servo_command_adapter_applies_native_pan_plans_without_jittering() -> None:
+    driver = RecordingServoDriver()
+    adapter = NeckServoCommandAdapter(driver, servo_id=1)
+
+    sent = adapter.apply_plan(_pan_plan(status="planned", will_move=True, angle=97))
+    skipped = adapter.apply_plan(_pan_plan(status="suppressed", will_move=False, angle=98, reason="deadband"))
+
+    assert sent == {"status": "ok", "servo_id": 1, "angle": 97, "payload": [1, 97]}
+    assert skipped == {"status": "suppressed", "reason": "deadband", "angle": 98}
+    assert driver.calls == [(97, 1)]
+    assert json.loads(json.dumps({"sent": sent, "skipped": skipped}, allow_nan=False)) == {
+        "sent": sent,
+        "skipped": skipped,
+    }
+
+
+def test_build_neck_servo_adapter_is_safely_unavailable_off_honjia() -> None:
+    assert hasattr(neck_servo, "build_neck_servo_adapter")
+    adapter = neck_servo.build_neck_servo_adapter(node_id="developer-laptop")
+
+    outcome = adapter.apply_plan(_pan_plan(status="planned", will_move=True, angle=97))
+
+    assert outcome == {
+        "status": "unavailable",
+        "success": False,
+        "reason": "neck_servo_unavailable_off_honjia",
+        "node_id": "developer-laptop",
+        "angle": 97,
+    }
+    assert json.loads(json.dumps(outcome, allow_nan=False)) == outcome
+
+
+def test_runtime_routes_move_head_through_native_pan_servo_boundary_and_reports_suppression() -> None:
+    body_runtime = RecordingBodyRuntime()
+    driver = RecordingServoDriver()
+    runtime = HeadRuntimeApp(
+        body_runtime=body_runtime,
+        neck_servo_adapter=NeckServoCommandAdapter(driver, servo_id=1),
+    )
+
+    first = runtime.handle_action(
+        {
+            "type": "move_head",
+            "axis": "pan",
+            "angle": 112,
+            "metadata": {"unsafe": float("inf")},
+        },
+        trace_id="trace-pan-1",
+    )
+    second = runtime.handle_action(
+        {"type": "move_head", "axis": "pan", "angle": 113},
+        trace_id="trace-pan-2",
+    )
+
+    assert first["status"] == "accepted"
+    assert first["success"] is True
+    assert first["delegated"] is True
+    assert first["details"]["axis"] == "pan"
+    assert first["details"]["neck_plan"]["status"] == "planned"
+    assert first["details"]["neck_plan"]["action"]["metadata"] == {"unsafe": None}
+    assert first["details"]["neck_servo"]["status"] == "ok"
+
+    assert second["status"] == "skipped"
+    assert second["success"] is True
+    assert second["details"]["neck_plan"]["status"] == "suppressed"
+    assert second["details"]["neck_plan"]["state"]["suppression_reason"] == "deadband"
+
+    assert driver.calls == [(112, 1)]
+    assert body_runtime.dispatched == []
+    assert json.loads(json.dumps({"first": first, "second": second}, allow_nan=False)) == {
+        "first": first,
+        "second": second,
+    }
+
+
+def test_runtime_reports_tilt_unsupported_through_native_pan_planner_without_servo_call() -> None:
+    body_runtime = RecordingBodyRuntime()
+    driver = RecordingServoDriver()
+    runtime = HeadRuntimeApp(
+        body_runtime=body_runtime,
+        neck_servo_adapter=NeckServoCommandAdapter(driver, servo_id=1),
+    )
+
+    outcome = runtime.handle_action({"type": "move_head", "axis": "tilt", "angle": 30})
+
+    assert outcome["status"] == "unsupported"
+    assert outcome["success"] is False
+    assert outcome["details"]["reason"] == "tilt_not_supported"
+    assert outcome["details"]["neck_plan"]["status"] == "unsupported"
+    assert driver.calls == []
+    assert body_runtime.dispatched == []
+    assert json.loads(json.dumps(outcome, allow_nan=False)) == outcome
+
+
 class RecordingServoDriver:
     def __init__(self) -> None:
         self.calls: list[tuple[int, int | None]] = []
@@ -152,8 +249,29 @@ class RecordingServoDriver:
         return [servo_id or 0, angle]
 
 
+class RecordingBodyRuntime:
+    def __init__(self) -> None:
+        self.dispatched: list[object] = []
+
+    def snapshot(self) -> dict[str, object]:
+        return {"node_id": "honjia-test"}
+
+    def dispatch_actions(self, actions: list[object]) -> list[object]:
+        self.dispatched.extend(actions)
+        return []
+
+
 class _Decision:
     def __init__(self, should_command: bool, angle: int, reason: str) -> None:
         self.should_command = should_command
         self.angle = angle
         self.reason = reason
+
+
+def _pan_plan(*, status: str, will_move: bool, angle: int, reason: str = "") -> dict[str, object]:
+    return {
+        "status": status,
+        "will_move": will_move,
+        "reason": reason,
+        "action": {"target_angle": angle},
+    }

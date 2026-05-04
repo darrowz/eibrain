@@ -108,7 +108,9 @@ class EarCaptureStatus:
     audio_level: float | None = None
     rms: float | None = None
     vad_triggered: bool = False
+    vad_elapsed_ms: float | None = None
     capture_elapsed_ms: float | None = None
+    stage_latency_ms: dict[str, float] = field(default_factory=dict)
     last_error: str | None = None
     not_wired: bool = True
     readiness_message: str = "capture path is not wired"
@@ -121,7 +123,9 @@ class EarCaptureStatus:
             "audio_level": self.audio_level,
             "rms": self.rms,
             "vad_triggered": self.vad_triggered,
+            "vad_elapsed_ms": self.vad_elapsed_ms,
             "capture_elapsed_ms": self.capture_elapsed_ms,
+            "stage_latency_ms": dict(self.stage_latency_ms),
             "last_error": self.last_error,
             "not_wired": self.not_wired,
             "readiness_message": self.readiness_message,
@@ -137,6 +141,7 @@ class AsrStatus:
     partial: bool = False
     final: bool = False
     decode_elapsed_ms: float | None = None
+    stage_latency_ms: dict[str, float] = field(default_factory=dict)
     last_error: str | None = None
     not_wired: bool = True
     readiness_message: str = "asr path is not wired"
@@ -150,6 +155,7 @@ class AsrStatus:
             "partial": self.partial,
             "final": self.final,
             "decode_elapsed_ms": self.decode_elapsed_ms,
+            "stage_latency_ms": dict(self.stage_latency_ms),
             "last_error": self.last_error,
             "not_wired": self.not_wired,
             "readiness_message": self.readiness_message,
@@ -172,6 +178,7 @@ class EarRealtimeStatus:
     capture_elapsed_ms: float | None = None
     decode_elapsed_ms: float | None = None
     total_elapsed_ms: float | None = None
+    stage_latency_ms: dict[str, float] = field(default_factory=dict)
     last_error: str | None = None
     not_wired: bool = True
     readiness_message: str = "ear realtime status is not wired"
@@ -194,6 +201,7 @@ class EarRealtimeStatus:
             "capture_elapsed_ms": self.capture_elapsed_ms,
             "decode_elapsed_ms": self.decode_elapsed_ms,
             "total_elapsed_ms": self.total_elapsed_ms,
+            "stage_latency_ms": dict(self.stage_latency_ms),
             "last_error": self.last_error,
             "not_wired": self.not_wired,
             "readiness_message": self.readiness_message,
@@ -259,7 +267,11 @@ def build_ear_realtime_status(
     overall_status = _overall_status(not_wired, capture_status, asr_status)
     overall_phase = _overall_phase(capture_status, asr_status)
 
-    total_elapsed_ms = _total_elapsed_ms(capture_status.capture_elapsed_ms, asr_status.decode_elapsed_ms)
+    stage_latency_ms = _ear_stage_latency_ms(capture_status, asr_status)
+    total_elapsed_ms = stage_latency_ms.get(
+        "total",
+        _total_elapsed_ms(capture_status.capture_elapsed_ms, asr_status.decode_elapsed_ms),
+    )
     transcript = asr_status.transcript
     audio_level = capture_status.audio_level
     rms = capture_status.rms
@@ -277,6 +289,7 @@ def build_ear_realtime_status(
         capture_elapsed_ms=capture_status.capture_elapsed_ms,
         decode_elapsed_ms=asr_status.decode_elapsed_ms,
         total_elapsed_ms=total_elapsed_ms,
+        stage_latency_ms=stage_latency_ms,
         last_error=_first_error(capture_status.last_error, asr_status.last_error),
         not_wired=not_wired,
         readiness_message=readiness_message,
@@ -369,6 +382,10 @@ def _build_capture_status(details: dict[str, Any]) -> EarCaptureStatus:
     elapsed_ms = _coerce_float(details.get("elapsed_ms"), default=None)
     if elapsed_ms is None:
         elapsed_ms = _coerce_float(details.get("capture_elapsed_ms"), default=None)
+    vad_elapsed_ms = _first_float(details, "vad_elapsed_ms", "vad_latency_ms", "vad_ms")
+    stage_latency_ms = _stage_latency_ms_mapping(details.get("stage_latency_ms"))
+    _set_stage_latency(stage_latency_ms, "vad", vad_elapsed_ms)
+    _set_stage_latency(stage_latency_ms, "capture", elapsed_ms)
 
     error = _truthy_text(details.get("error"))
     if not error:
@@ -387,7 +404,9 @@ def _build_capture_status(details: dict[str, Any]) -> EarCaptureStatus:
         audio_level=audio_level,
         rms=rms,
         vad_triggered=vad_triggered,
+        vad_elapsed_ms=vad_elapsed_ms,
         capture_elapsed_ms=elapsed_ms,
+        stage_latency_ms=stage_latency_ms,
         last_error=error or None,
         readiness_message=readiness,
         details=details,
@@ -401,6 +420,10 @@ def _build_asr_status(details: dict[str, Any]) -> AsrStatus:
     decode_elapsed_ms = _coerce_float(details.get("elapsed_ms"), default=None)
     if decode_elapsed_ms is None:
         decode_elapsed_ms = _coerce_float(details.get("decode_elapsed_ms"), default=None)
+    if decode_elapsed_ms is None:
+        decode_elapsed_ms = _first_float(details, "asr_decode_elapsed_ms", "asr_elapsed_ms", "latency_ms")
+    stage_latency_ms = _stage_latency_ms_mapping(details.get("stage_latency_ms"))
+    _set_stage_latency(stage_latency_ms, "asr", decode_elapsed_ms)
     partial = _coerce_bool(details.get("partial"), default=False)
     final = _coerce_bool(details.get("final"), default=(bool(transcript) and status_text in {"transcribed", "final", "ok"}))
 
@@ -422,6 +445,7 @@ def _build_asr_status(details: dict[str, Any]) -> AsrStatus:
         partial=partial,
         final=final,
         decode_elapsed_ms=decode_elapsed_ms,
+        stage_latency_ms=stage_latency_ms,
         last_error=error or None,
         readiness_message=readiness,
         details=details,
@@ -528,6 +552,42 @@ def _total_elapsed_ms(capture_elapsed_ms: float | None, decode_elapsed_ms: float
     capture_value = capture_elapsed_ms or 0.0
     decode_value = decode_elapsed_ms or 0.0
     return round(capture_value + decode_value, 3)
+
+
+def _ear_stage_latency_ms(capture_status: EarCaptureStatus, asr_status: AsrStatus) -> dict[str, float]:
+    stage_latency_ms: dict[str, float] = {}
+    stage_latency_ms.update(capture_status.stage_latency_ms)
+    stage_latency_ms.update(asr_status.stage_latency_ms)
+    if stage_latency_ms and "total" not in stage_latency_ms:
+        stage_latency_ms["total"] = round(
+            sum(value for key, value in stage_latency_ms.items() if key not in {"total", "overhead"}),
+            3,
+        )
+    return stage_latency_ms
+
+
+def _stage_latency_ms_mapping(value: Any) -> dict[str, float]:
+    if not isinstance(value, Mapping):
+        return {}
+    latencies: dict[str, float] = {}
+    for key, raw in value.items():
+        number = _coerce_float(raw, default=None)
+        if number is not None:
+            latencies[str(key)] = number
+    return latencies
+
+
+def _set_stage_latency(latencies: dict[str, float], key: str, value: float | None) -> None:
+    if value is not None:
+        latencies.setdefault(key, value)
+
+
+def _first_float(mapping: Mapping[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        number = _coerce_float(mapping.get(key), default=None)
+        if number is not None:
+            return number
+    return None
 
 
 __all__ = [

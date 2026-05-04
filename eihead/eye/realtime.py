@@ -172,8 +172,19 @@ class RealtimeEyeStatus:
     source: str = "eihead.eye"
     placeholder: bool = True
     not_wired: bool = True
+    stream_ready: bool = False
+    stale: bool = False
+    degraded: bool = False
     compatibility_mode: bool = False
+    status_reason: str = ""
+    not_wired_reason: str = ""
+    stale_reason: str = ""
+    degraded_reason: str = ""
     message: str = "realtime eye pipeline is not wired"
+    detection_boxes: list[dict[str, float]] = field(default_factory=list)
+    detection_scores: list[float] = field(default_factory=list)
+    readiness: dict[str, Any] = field(default_factory=dict)
+    compatibility_static_image: dict[str, Any] = field(default_factory=dict)
     pipeline: dict[str, Any] | None = None
     devices: dict[str, Any] | None = None
     readiness_message: str = ""
@@ -202,13 +213,41 @@ class RealtimeEyeStatus:
             "source": self.source,
             "placeholder": self.placeholder,
             "not_wired": self.not_wired,
+            "stream_ready": self.stream_ready,
+            "stale": self.stale,
+            "degraded": self.degraded,
             "compatibility_mode": self.compatibility_mode,
+            "status_reason": self.status_reason,
+            "not_wired_reason": self.not_wired_reason,
+            "stale_reason": self.stale_reason,
+            "degraded_reason": self.degraded_reason,
             "message": self.message,
+            "detection_boxes": [dict(item) for item in self.detection_boxes],
+            "detection_scores": list(self.detection_scores),
+            "readiness": dict(self.readiness) if self.readiness else self._readiness_payload(),
+            "compatibility_static_image": (
+                dict(self.compatibility_static_image)
+                if self.compatibility_static_image
+                else self._compat_static_payload()
+            ),
             "pipeline": dict(self.pipeline) if isinstance(self.pipeline, Mapping) else self.pipeline,
             "devices": dict(self.devices) if isinstance(self.devices, Mapping) else self.devices,
             "readiness_message": self.readiness_message,
             "parse_error_count": self.parse_error_count,
             "parse_errors": list(self.parse_errors),
+        }
+
+    def _readiness_payload(self) -> dict[str, Any]:
+        return {
+            "ready": self.stream_ready,
+            "reason": self.status_reason,
+        }
+
+    def _compat_static_payload(self) -> dict[str, Any]:
+        return {
+            "active": self.compatibility_mode,
+            "mode": COMPAT_STATIC_FRAME_MODE if self.compatibility_mode else "",
+            "test_only": self.compatibility_mode,
         }
 
 
@@ -260,12 +299,14 @@ class RealtimeEyePipeline:
         backend: str = "not_wired",
         mode: str = REALTIME_STREAM_MODE,
         clock: Callable[[], float] = time.time,
+        max_frame_age_s: float | None = None,
     ) -> None:
         self.frame_source = frame_source
         self.detector = detector
         self.backend = getattr(detector, "backend", None) or backend or "not_wired"
         self.mode = mode
         self.clock = clock
+        self.max_frame_age_s = max_frame_age_s
         self._frame_count = 0
         self._detection_count = 0
         self._first_frame_ts: float | None = None
@@ -291,6 +332,8 @@ class RealtimeEyePipeline:
                 source="eihead.eye.realtime",
                 placeholder=True,
                 not_wired=True,
+                status_reason="not_wired",
+                not_wired_reason="realtime frame source or detector is not wired",
                 message="realtime frame source or detector is not wired",
             )
             return self._last_status
@@ -323,6 +366,8 @@ class RealtimeEyePipeline:
                 source="eihead.eye.realtime",
                 placeholder=True,
                 not_wired=True,
+                status_reason="not_wired",
+                not_wired_reason="realtime frame source or detector is not wired",
                 message="realtime frame source or detector is not wired",
             )
             return self.status()
@@ -339,13 +384,20 @@ class RealtimeEyePipeline:
                 source="eihead.eye.realtime",
                 placeholder=self._placeholder(),
                 not_wired=self._not_wired(),
+                stream_ready=False,
+                status_reason="waiting_for_frame",
                 compatibility_mode=self._compatibility_mode(),
                 message="no realtime frame available",
             )
             return self.status()
 
         self._process_frame(frame)
-        self._last_status = self._build_status(now_ts=now_ts, fps_ts=now_ts, started_at_ts=self._first_frame_ts or now_ts)
+        observed_at_ts = float(self.clock())
+        self._last_status = self._build_status(
+            now_ts=observed_at_ts,
+            fps_ts=observed_at_ts,
+            started_at_ts=self._first_frame_ts or observed_at_ts,
+        )
         return self.status()
 
     def _iter_frames(self) -> Iterator[RealtimeVisionFrame]:
@@ -385,7 +437,31 @@ class RealtimeEyePipeline:
     ) -> RealtimeEyeStatus:
         frame = self._last_frame
         compatibility_mode = bool(frame and frame.is_compat_static)
-        effective_status = "compat_static" if compatibility_mode and status == "ok" else status
+        last_frame_age = round(max(0.0, now_ts - frame.timestamp), 4) if frame else None
+        stale, stale_reason = self._stale_state(last_frame_age, compatibility_mode=compatibility_mode)
+        placeholder = self._placeholder()
+        not_wired = self._not_wired()
+        effective_status = self._effective_status(
+            requested_status=status,
+            compatibility_mode=compatibility_mode,
+            stale=stale,
+            not_wired=not_wired,
+            placeholder=placeholder,
+        )
+        status_reason = self._status_reason(
+            effective_status=effective_status,
+            stale=stale,
+            compatibility_mode=compatibility_mode,
+            not_wired=not_wired or placeholder,
+        )
+        stream_ready = (
+            effective_status == "ok"
+            and not stale
+            and not compatibility_mode
+            and not not_wired
+            and not placeholder
+        )
+        not_wired_reason = "realtime detector is not wired" if not_wired or placeholder else ""
         return RealtimeEyeStatus(
             mode=frame.mode if frame else self._effective_mode(),
             status=effective_status,
@@ -394,20 +470,94 @@ class RealtimeEyePipeline:
             detection_count=self._detection_count,
             fps=self._fps(fps_ts, started_at_ts),
             last_frame_id=frame.frame_id if frame else "",
-            last_frame_age=round(max(0.0, now_ts - frame.timestamp), 4) if frame else None,
+            last_frame_age=last_frame_age,
             last_frame_captured_at_ts=frame.timestamp if frame else None,
             top_detection=self._last_detections[0] if self._last_detections else None,
             detections=list(self._last_detections),
             source="eihead.eye.realtime",
-            placeholder=self._placeholder(),
-            not_wired=self._not_wired(),
+            placeholder=placeholder,
+            not_wired=not_wired,
+            stream_ready=stream_ready,
+            stale=stale,
+            degraded=False,
             compatibility_mode=compatibility_mode,
-            message=(
-                "compat static frame processed; realtime stream remains primary"
-                if compatibility_mode
-                else "realtime frame processed"
+            status_reason=status_reason,
+            not_wired_reason=not_wired_reason,
+            stale_reason=stale_reason,
+            detection_boxes=_detection_boxes(self._last_detections),
+            detection_scores=_detection_scores(self._last_detections),
+            readiness={"ready": stream_ready, "reason": status_reason},
+            compatibility_static_image={
+                "active": compatibility_mode,
+                "mode": COMPAT_STATIC_FRAME_MODE if compatibility_mode else "",
+                "test_only": compatibility_mode,
+            },
+            message=self._status_message(
+                compatibility_mode=compatibility_mode,
+                stale_reason=stale_reason,
+                not_wired_reason=not_wired_reason,
             ),
         )
+
+    def _stale_state(self, last_frame_age: float | None, *, compatibility_mode: bool) -> tuple[bool, str]:
+        if compatibility_mode or last_frame_age is None or self.max_frame_age_s is None:
+            return False, ""
+        max_age = float(self.max_frame_age_s)
+        if max_age <= 0 or last_frame_age <= max_age:
+            return False, ""
+        return True, f"last frame age {_format_seconds(last_frame_age)} exceeds {_format_seconds(max_age)}"
+
+    def _effective_status(
+        self,
+        *,
+        requested_status: str,
+        compatibility_mode: bool,
+        stale: bool,
+        not_wired: bool,
+        placeholder: bool,
+    ) -> str:
+        if compatibility_mode and requested_status == "ok":
+            return "compat_static"
+        if stale and requested_status == "ok":
+            return "stale"
+        if (not_wired or placeholder) and requested_status == "ok":
+            return "not_wired"
+        return requested_status
+
+    def _status_reason(
+        self,
+        *,
+        effective_status: str,
+        stale: bool,
+        compatibility_mode: bool,
+        not_wired: bool,
+    ) -> str:
+        if compatibility_mode:
+            return "compat_static_frame_test_only"
+        if stale:
+            return "last_frame_stale"
+        if not_wired:
+            return "not_wired"
+        if effective_status == "waiting_for_frame":
+            return "waiting_for_frame"
+        if effective_status == "ok":
+            return "realtime_stream_ready"
+        return effective_status
+
+    def _status_message(
+        self,
+        *,
+        compatibility_mode: bool,
+        stale_reason: str,
+        not_wired_reason: str,
+    ) -> str:
+        if compatibility_mode:
+            return "compat static frame processed; realtime stream remains primary"
+        if stale_reason:
+            return stale_reason
+        if not_wired_reason:
+            return not_wired_reason
+        return "realtime frame processed"
 
     def _effective_mode(self) -> str:
         return getattr(self.frame_source, "mode", self.mode)
@@ -479,6 +629,26 @@ def _bbox_to_dict(bbox: tuple[float, float, float, float] | dict[str, float] | N
         "x_max": round(float(x_max), 6),
         "y_max": round(float(y_max), 6),
     }
+
+
+def _detection_boxes(detections: Iterable[RealtimeDetection]) -> list[dict[str, float]]:
+    boxes: list[dict[str, float]] = []
+    for detection in detections:
+        box = _bbox_to_dict(detection.bbox)
+        if box is not None:
+            boxes.append(box)
+    return boxes
+
+
+def _detection_scores(detections: Iterable[RealtimeDetection]) -> list[float]:
+    return [round(float(detection.score), 6) for detection in detections]
+
+
+def _format_seconds(value: float) -> str:
+    rounded = round(float(value), 4)
+    if rounded == int(rounded):
+        return f"{rounded:.1f}s"
+    return f"{rounded:g}s"
 
 
 __all__ = [

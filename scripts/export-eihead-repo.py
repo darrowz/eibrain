@@ -192,6 +192,76 @@ MIGRATION_NOTES = (
     },
 )
 
+FAKE_COMPLETION_GUARD = (
+    "Report not_wired, unknown, degraded, or blocked until the acceptance gate is verified."
+)
+
+NATIVE_COMPLETION_GATES = (
+    {
+        "module": "eye",
+        "owner_repo": "eihead",
+        "state": "native_boundary",
+        "blockers": "/dev/video0 and /dev/hailo0 realtime stream validation on honjia.",
+        "next_acceptance": "Realtime boxes, scores, frame age, parser readiness, and stale/error state are visible on port 18080.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "static image detection remains compatibility-only and must not satisfy native realtime eye completion.",
+    },
+    {
+        "module": "neck",
+        "owner_repo": "eihead",
+        "state": "transitional",
+        "blockers": "/dev/i2c-1 Raspbot adapter validation and pan-only settle/no-oscillation test on honjia.",
+        "next_acceptance": "move_head pan/yaw reaches the native adapter, tilt returns unsupported, and monitor shows target angle plus suppression reason.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Do not advertise tilt support unless real tilt hardware is installed and accepted.",
+    },
+    {
+        "module": "ear",
+        "owner_repo": "eihead",
+        "state": "transitional",
+        "blockers": "U4K microphone, VAD, ASR model, and mouth-busy suppression validation on honjia.",
+        "next_acceptance": "Voice wake emits a traceable ASR turn with stage latency and no fake healthy state for missing streaming stages.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Closed-loop diagnostics are not hardware-verified realtime streaming until live audio proves them.",
+    },
+    {
+        "module": "mouth",
+        "owner_repo": "eihead",
+        "state": "transitional",
+        "blockers": "MiniMax TTS synthesis, local playback device, stop_speech, and busy-state validation on honjia.",
+        "next_acceptance": "speak is audible, stop_speech interrupts or reports a real unsupported reason, and monitor shows real provider/playback state.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Synthesis configuration without audible playback is not completion.",
+    },
+    {
+        "module": "runtime",
+        "owner_repo": "eihead",
+        "state": "transitional",
+        "blockers": "HeadRuntimeApp still depends on delegated legacy body runtime for part of the snapshot/action path.",
+        "next_acceptance": "snapshot/actions use native eye, neck, ear, and mouth providers without requiring apps.body_runtime.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Delegated compatibility must remain visible in status until native providers own the path.",
+    },
+    {
+        "module": "export",
+        "owner_repo": "eihead",
+        "state": "transitional",
+        "blockers": "Legacy package copies are still required until native runtime parity removes imports.",
+        "next_acceptance": "Generated /dev-project/eihead installs and starts without apps.body_runtime or eibrain.body except named shims.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "The export manifest must name every transitional package until its removal gate passes.",
+    },
+    {
+        "module": "deploy",
+        "owner_repo": "eihead",
+        "state": "blocked_by_hardware_validation",
+        "blockers": "honjia Phase 0 baseline, service cutover, reboot persistence, and rollback checks.",
+        "next_acceptance": "honjia Phase 0 baseline repeats with equal or better voice, vision, neck, monitor, and rollback results.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Do not enable permanent eihead services until real-device parity is recorded.",
+    },
+)
+
 
 PYPROJECT_TEMPLATE = """[build-system]
 requires = ["setuptools>=68"]
@@ -316,6 +386,13 @@ subset, transitional `eibrain.body` hardware code, and the minimal
 helpers. The shared protocol package is also exported as `/dev-project/eiprotocol`;
 when this exporter is given `--eiprotocol-repo-root`, `EXPORT_MANIFEST.json`
 pins the independent protocol repository revision used by this eihead build.
+
+`EXPORT_MANIFEST.json` also contains `native_completion_gates`. Treat those
+gates as the source of truth for whether eye, neck, ear, mouth, runtime,
+export, and deploy are complete. A module remains transitional or blocked until
+its gate is verified on honjia; status and monitor payloads must say
+`not_wired`, `unknown`, `degraded`, or `blocked` rather than implying fake
+completion.
 """
 
 
@@ -621,6 +698,7 @@ def _write_export_manifest(
         "native_realtime_eye_files": list(NATIVE_REALTIME_EYE_FILES),
         "native_realtime_voice_files": list(NATIVE_REALTIME_VOICE_FILES),
         "native_runtime_web_files": list(NATIVE_RUNTIME_WEB_FILES),
+        "native_completion_gates": list(NATIVE_COMPLETION_GATES),
         "future_capabilities": list(FUTURE_CAPABILITIES),
         "migration_notes": list(MIGRATION_NOTES),
         "exported_paths": {

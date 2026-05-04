@@ -151,7 +151,7 @@ def test_ready_adapter_without_frame_reports_waiting_not_ok() -> None:
     assert "no realtime frame available" in status.message
 
 
-def test_frame_reader_exception_reports_not_wired_without_raising() -> None:
+def test_frame_reader_exception_reports_degraded_without_raising() -> None:
     def failing_frame_reader():
         raise RuntimeError("camera appsink failed")
 
@@ -165,13 +165,17 @@ def test_frame_reader_exception_reports_not_wired_without_raising() -> None:
 
     status = adapter.poll()
 
-    assert status.status == "not_wired"
-    assert status.not_wired is True
+    assert status.status == "degraded"
+    assert status.not_wired is False
+    assert status.degraded is True
+    assert status.stream_ready is False
+    assert status.status_reason == "frame_reader_failed"
+    assert "frame reader failed" in status.degraded_reason
     assert "frame reader failed" in status.message
     assert "RuntimeError" in status.message
 
 
-def test_detection_reader_exception_reports_not_wired_without_raising() -> None:
+def test_detection_reader_exception_reports_degraded_without_raising() -> None:
     def failing_detection_reader(_frame):
         raise RuntimeError("hailo parser failed")
 
@@ -185,8 +189,12 @@ def test_detection_reader_exception_reports_not_wired_without_raising() -> None:
 
     status = adapter.poll()
 
-    assert status.status == "not_wired"
-    assert status.not_wired is True
+    assert status.status == "degraded"
+    assert status.not_wired is False
+    assert status.degraded is True
+    assert status.stream_ready is False
+    assert status.status_reason == "detection_reader_failed"
+    assert "detection reader failed" in status.degraded_reason
     assert "detection reader failed" in status.message
     assert "RuntimeError" in status.message
 
@@ -394,6 +402,11 @@ def test_native_gstreamer_adapter_wires_reader_and_hailo_metadata_parser() -> No
     assert payload["parse_errors"] == []
     assert payload["detections"][0]["label"] == "face"
     assert payload["detections"][0]["score"] == 0.88
+    assert payload["stream_ready"] is True
+    assert payload["stale"] is False
+    assert payload["degraded"] is False
+    assert payload["detection_boxes"] == [{"x_min": 0.2, "y_min": 0.1, "x_max": 0.6, "y_max": 0.9}]
+    assert payload["detection_scores"] == [0.88]
 
 
 class _FakeNativeFrameReader:

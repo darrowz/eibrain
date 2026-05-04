@@ -70,12 +70,14 @@ def _build_voice_payload(
     mouth = _normalize_mouth(_mapping_from_keys(data, "mouth"))
     dialogue_source = _dialogue_mapping(data)
     dialogue = _normalize_dialogue(dialogue_source, root=data)
-    round_info = _round_payload(data, dialogue_source)
+    realtime_session = _realtime_session_payload(data, dialogue_source)
+    round_info = _round_payload(data, dialogue_source, realtime_session)
     scheduler = _scheduler_payload(data, dialogue_source)
     interruption = _interruption_payload(data, dialogue_source)
     microfeedback = _microfeedback_payload(data, dialogue_source)
     latency = _latency_payload(data, dialogue_source)
-    realtime_session = _realtime_session_payload(data, dialogue_source)
+    _merge_component_latency(latency, ear=ear, mouth=mouth)
+    streaming = _streaming_payload(data, dialogue_source, realtime_session)
     realtime_events = _realtime_events_payload(data, dialogue_source, realtime_session)
     event_count = _event_count_payload(data, dialogue_source, realtime_session, realtime_events)
     closed_loop_state = _closed_loop_state_payload(data, dialogue_source, realtime_session)
@@ -89,6 +91,7 @@ def _build_voice_payload(
         dialogue=dialogue,
         scheduler=scheduler,
         interruption=interruption,
+        streaming=streaming,
         last_turn=last_turn,
         latency=latency,
     )
@@ -101,6 +104,7 @@ def _build_voice_payload(
         dialogue=dialogue,
         scheduler=scheduler,
         interruption=interruption,
+        streaming=streaming,
         status=status,
     )
     payload: dict[str, Any] = {
@@ -119,6 +123,7 @@ def _build_voice_payload(
         "round": round_info,
         "scheduler": scheduler,
         "interruption": interruption,
+        "streaming": streaming,
         "microfeedback": microfeedback,
         "latency": latency,
         "realtime_session": realtime_session,
@@ -208,6 +213,7 @@ def _normalize_ear(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "provider": provider,
         "live_probe_skipped": _truthy(raw.get("live_probe_skipped")) or _details_truthy(asr, "live_probe_skipped"),
         "readiness_message": readiness,
+        "stage_latency_ms": _ear_stage_latency_ms(raw, capture=capture, asr=asr),
         "capture": capture,
         "asr": asr,
     }
@@ -248,6 +254,10 @@ def _normalize_mouth(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
         ),
         "text_preview": _first_text(raw.get("text_preview"), _details_value(playback, "text_preview")),
         "readiness_message": readiness,
+        "busy": _truthy(_first_value(raw, "busy")) or _details_truthy(playback, "busy"),
+        "playback_state": _playback_state(raw, playback=playback, status=status),
+        "stage_latency_ms": _mouth_stage_latency_ms(raw, playback=playback),
+        "stop": _stop_payload(raw, playback=playback),
         "tts_playback": playback,
         "tts_plan": plan,
     }
@@ -278,19 +288,62 @@ def _normalize_dialogue(raw: Mapping[str, Any] | None, *, root: Mapping[str, Any
     }
 
 
-def _round_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any]:
+def _round_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     round_id = _first_value(dialogue, "current_round_id", "round_id")
     if round_id is None:
         round_id = _first_value(data, "current_round_id", "round_id")
+    if round_id is None:
+        round_id = _first_value(realtime_session, "current_round_id", "round_id", "roundId")
     cancellation_token = _first_value(dialogue, "current_cancellation_token", "cancellation_token")
     if cancellation_token is None:
         cancellation_token = _first_value(data, "current_cancellation_token", "cancellation_token")
+    if cancellation_token is None:
+        cancellation_token = _first_value(realtime_session, "current_cancellation_token", "cancellation_token", "cancellationToken")
+    phase = _first_text(
+        _first_value(dialogue, "phase"),
+        _first_value(data, "phase"),
+        _first_value(realtime_session, "phase"),
+    )
+    last_status = _first_text(
+        _first_value(dialogue, "last_status", "status"),
+        _first_value(data, "last_status", "status"),
+        _first_value(realtime_session, "last_status", "status"),
+    )
     has_round = round_id not in (None, "")
     has_token = cancellation_token not in (None, "")
+    normalized_status = _normalized_text(last_status)
+    interrupted = normalized_status in {"interrupted", "interrupt", "cancelled", "canceled"} or _truthy(
+        _first_value(dialogue, "interrupted")
+    )
+    complete = _truthy(_first_value(realtime_session, "complete")) or normalized_status in {
+        "completed",
+        "complete",
+        "done",
+        "finished",
+    }
+    lifecycle = (
+        "interrupted"
+        if interrupted
+        else "completed"
+        if complete
+        else "active"
+        if has_round
+        else "unknown"
+    )
     return {
         "current_round_id": _json_ready(round_id) if has_round else None,
         "current_cancellation_token": _json_ready(cancellation_token) if has_token else None,
         "has_cancellation_token": bool(has_token),
+        "phase": phase,
+        "last_status": last_status,
+        "active": lifecycle == "active",
+        "complete": bool(complete),
+        "interrupted": bool(interrupted),
+        "lifecycle": lifecycle,
         "state": "active" if has_round else "unknown",
     }
 
@@ -403,10 +456,13 @@ def _interruption_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str,
     component_state = "degraded" if stale or interrupted else "wired" if state == "clear" else "unknown"
     return {
         "state": state,
+        "status": state,
         "component_state": component_state,
         "active": bool(interrupt_active),
         "interrupted": bool(interrupted),
         "stale": bool(stale),
+        "clear": state == "clear",
+        "has_history": bool(has_history),
         "interrupt_count": interrupt_count,
         "interrupted_round_count": interrupted_round_count,
         "last_interrupt": last_interrupt,
@@ -453,6 +509,87 @@ def _latency_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any]
         "stage_latency_ms": stage_latency_ms,
         "stage_latency_s": latency_s,
     }
+
+
+def _merge_component_latency(
+    latency: dict[str, Any],
+    *,
+    ear: Mapping[str, Any] | None,
+    mouth: Mapping[str, Any] | None,
+) -> None:
+    stage_latency_ms = latency.setdefault("stage_latency_ms", {})
+    if not isinstance(stage_latency_ms, dict):
+        return
+    for component in (ear, mouth):
+        component_latency = _mapping_from_keys(component, "stage_latency_ms")
+        if component_latency is None:
+            continue
+        for key, value in component_latency.items():
+            number = _float_or_none(value)
+            if number is not None:
+                stage_latency_ms.setdefault(str(key), number)
+    if latency.get("total_ms") is None and stage_latency_ms:
+        total_ms = _float_or_none(stage_latency_ms.get("total"))
+        if total_ms is None:
+            total_ms = round(
+                sum(
+                    value
+                    for key, value in stage_latency_ms.items()
+                    if key not in {"total", "overhead", "tts_total"}
+                ),
+                3,
+            )
+        latency["total_ms"] = total_ms
+
+
+def _ear_stage_latency_ms(
+    raw: Mapping[str, Any],
+    *,
+    capture: Mapping[str, Any] | None,
+    asr: Mapping[str, Any] | None,
+) -> dict[str, float]:
+    latencies = _stage_latency_ms_from(raw)
+    _set_latency(latencies, "vad", _first_float(raw, "vad_elapsed_ms", "vad_latency_ms"))
+    _set_latency(latencies, "capture", _first_float(raw, "capture_elapsed_ms"))
+    _set_latency(latencies, "asr", _first_float(raw, "decode_elapsed_ms", "asr_decode_elapsed_ms", "asr_elapsed_ms"))
+    _set_latency(latencies, "vad", _first_details_float(capture, "vad_elapsed_ms", "vad_latency_ms"))
+    _set_latency(latencies, "capture", _first_details_float(capture, "capture_elapsed_ms", "elapsed_ms"))
+    _set_latency(latencies, "asr", _first_details_float(asr, "decode_elapsed_ms", "asr_decode_elapsed_ms", "asr_elapsed_ms", "elapsed_ms"))
+    return latencies
+
+
+def _mouth_stage_latency_ms(raw: Mapping[str, Any], *, playback: Mapping[str, Any] | None) -> dict[str, float]:
+    latencies = _stage_latency_ms_from(raw)
+    _set_latency(latencies, "tts_synthesis", _first_float(raw, "synthesis_elapsed_ms"))
+    _set_latency(latencies, "tts_playback", _first_float(raw, "playback_elapsed_ms"))
+    _set_latency(latencies, "tts_total", _first_float(raw, "total_elapsed_ms"))
+    _set_latency(latencies, "tts_synthesis", _first_details_float(playback, "synthesis_elapsed_ms"))
+    _set_latency(latencies, "tts_playback", _first_details_float(playback, "playback_elapsed_ms"))
+    _set_latency(latencies, "tts_total", _first_details_float(playback, "total_elapsed_ms"))
+    return latencies
+
+
+def _stage_latency_ms_from(raw: Mapping[str, Any]) -> dict[str, float]:
+    latencies: dict[str, float] = {}
+    explicit = _mapping_from_keys(raw, "stage_latency_ms")
+    if explicit is not None:
+        for key, value in explicit.items():
+            number = _float_or_none(value)
+            if number is not None:
+                latencies[str(key)] = number
+    latency = _mapping_from_keys(raw, "latency")
+    nested = _mapping_from_keys(latency, "stage_latency_ms") if latency is not None else None
+    if nested is not None:
+        for key, value in nested.items():
+            number = _float_or_none(value)
+            if number is not None:
+                latencies.setdefault(str(key), number)
+    return latencies
+
+
+def _set_latency(latencies: dict[str, float], key: str, value: float | None) -> None:
+    if value is not None:
+        latencies.setdefault(key, value)
 
 
 def _realtime_session_payload(
@@ -507,6 +644,72 @@ def _event_count_payload(
     if count is not None:
         return count
     return len(realtime_events)
+
+
+def _streaming_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    llm = _normalize_streaming_component(
+        _first_mapping(data, dialogue, realtime_session, keys=("streaming_llm", "llm_stream", "llm")),
+        role="llm",
+    )
+    tts = _normalize_streaming_component(
+        _first_mapping(data, dialogue, realtime_session, keys=("streaming_tts", "tts_stream", "tts")),
+        role="tts",
+    )
+    states = [llm["component_state"], tts["component_state"]]
+    if any(state == "not_wired" for state in states):
+        component_state = "not_wired"
+    elif any(state == "degraded" for state in states):
+        component_state = "degraded"
+    elif states and all(state == "wired" for state in states):
+        component_state = "wired"
+    else:
+        component_state = "unknown"
+    return {
+        "llm": llm,
+        "tts": tts,
+        "component_state": component_state,
+        "wired": component_state == "wired",
+        "not_wired": component_state == "not_wired",
+    }
+
+
+def _normalize_streaming_component(raw: Mapping[str, Any] | None, *, role: str) -> dict[str, Any]:
+    if raw is None:
+        return {
+            "status": "unknown",
+            "state": "unknown",
+            "component_state": "unknown",
+            "wired": False,
+            "not_wired": False,
+            "readiness_message": f"streaming {role} status is unknown",
+        }
+    status = _first_text(raw.get("status"), raw.get("state"), raw.get("phase"), "unknown")
+    component_state = _classify_component_state(raw, fallback_status=status, role=f"streaming_{role}")
+    return {
+        **_json_mapping(raw),
+        "status": status,
+        "state": component_state,
+        "component_state": component_state,
+        "wired": component_state == "wired",
+        "not_wired": component_state == "not_wired",
+        "readiness_message": _first_text(
+            raw.get("readiness_message"),
+            raw.get("message"),
+            f"streaming {role} status is {component_state}",
+        ),
+    }
+
+
+def _first_mapping(*sources: Mapping[str, Any] | None, keys: tuple[str, ...]) -> dict[str, Any] | None:
+    for source in sources:
+        mapping = _mapping_from_keys(source, *keys)
+        if mapping is not None:
+            return mapping
+    return None
 
 
 def _closed_loop_state_payload(
@@ -612,12 +815,13 @@ def _voice_overall_status(
     dialogue: Mapping[str, Any] | None,
     scheduler: Mapping[str, Any] | None,
     interruption: Mapping[str, Any] | None,
+    streaming: Mapping[str, Any] | None,
     last_turn: Mapping[str, Any] | None,
     latency: Mapping[str, Any] | None,
 ) -> tuple[str, bool, bool]:
     states = [
         str(component.get("component_state") or component.get("state", "") or "")
-        for component in (ear, mouth, dialogue, scheduler, interruption)
+        for component in (ear, mouth, dialogue, scheduler, interruption, streaming)
         if isinstance(component, Mapping)
     ]
     has_signal = bool(
@@ -646,6 +850,7 @@ def _voice_readiness_message(
     dialogue: Mapping[str, Any] | None,
     scheduler: Mapping[str, Any] | None,
     interruption: Mapping[str, Any] | None,
+    streaming: Mapping[str, Any] | None,
     status: str,
 ) -> str:
     explicit = _first_text(
@@ -659,14 +864,18 @@ def _voice_readiness_message(
         ("dialogue", dialogue),
         ("scheduler", scheduler),
         ("interruption", interruption),
+        ("streaming", streaming),
     ):
         if not isinstance(component, Mapping):
             continue
+        component_status = component.get("status")
+        if _normalized_text(component_status) == "unknown":
+            component_status = None
         text = _first_text(
             component.get("readiness_message"),
             component.get("message"),
-            component.get("status"),
             _state_readiness_text(component),
+            component_status,
         )
         if text and text not in messages:
             messages.append(f"{name}: {text}")
@@ -843,6 +1052,42 @@ def _details_truthy(subfunction: Mapping[str, Any] | None, key: str) -> bool:
     return _truthy(value)
 
 
+def _playback_state(raw: Mapping[str, Any], *, playback: Mapping[str, Any] | None, status: str) -> str:
+    explicit = _first_text(raw.get("playback_state"), _details_value(playback, "playback_state"))
+    if explicit:
+        return explicit
+    busy = _truthy(_first_value(raw, "busy")) or _details_truthy(playback, "busy")
+    if busy:
+        return "busy"
+    stop = _stop_payload(raw, playback=playback)
+    if isinstance(stop, Mapping) and _truthy(stop.get("success")):
+        return "stopped"
+    normalized = _normalized_text(status)
+    if normalized in {"stopped", "cancelled", "canceled"}:
+        return "stopped"
+    if normalized in {"completed", "done", "finished"}:
+        return "completed"
+    if normalized in {"error", "failed"}:
+        return "error"
+    return "idle"
+
+
+def _stop_payload(raw: Mapping[str, Any], *, playback: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    for source in (raw, _details_mapping(playback)):
+        for key in ("stop", "last_stop", "stop_speech"):
+            value = source.get(key)
+            if isinstance(value, Mapping):
+                return _json_mapping(value)
+    return None
+
+
+def _details_mapping(subfunction: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(subfunction, Mapping):
+        return {}
+    details = subfunction.get("details")
+    return _json_mapping(details) if isinstance(details, Mapping) else {}
+
+
 def _status_text(raw: Mapping[str, Any], *, fallback: Mapping[str, Any] | None = None) -> str:
     return _first_text(
         raw.get("status"),
@@ -867,6 +1112,8 @@ def _classify_component_state(raw: Mapping[str, Any], *, fallback_status: str, r
         return "not_wired"
     if health in {"degraded", "error", "failed", "unhealthy"} or data_status in {"compat", "fallback"}:
         return "degraded"
+    if health in {"online", "live"} or data_status == "live":
+        return "wired"
     if _truthy(raw.get("live_probe_skipped")) or status in {
         "waiting",
         "waiting_for_data",
@@ -879,6 +1126,8 @@ def _classify_component_state(raw: Mapping[str, Any], *, fallback_status: str, r
         return "degraded"
     if role == "dialogue" and status in {"idle", "waiting_for_voice", "sleeping", "dormant"}:
         return "unknown"
+    if role == "mouth" and status in {"idle", "playing", "synthesizing", "completed", "stopped"} and backend:
+        return "wired"
     if status in {"ok", "healthy", "ready", "running", "active", "listening", "thinking", "speaking", "completed"}:
         return "wired"
     return "unknown"
@@ -926,6 +1175,21 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_float(mapping: Mapping[str, Any] | None, *keys: str) -> float | None:
+    if not isinstance(mapping, Mapping):
+        return None
+    for key in keys:
+        number = _float_or_none(mapping.get(key))
+        if number is not None:
+            return number
+    return None
+
+
+def _first_details_float(subfunction: Mapping[str, Any] | None, *keys: str) -> float | None:
+    details = _details_mapping(subfunction)
+    return _first_float(details, *keys)
 
 
 def _int_or_none(value: Any) -> int | None:

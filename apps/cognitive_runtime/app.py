@@ -151,7 +151,26 @@ class CognitiveRuntimeApp:
         actions = self.compiler.compile(intents)
         self.last_reply = next((action.text for action in actions if hasattr(action, "text")), "")
         audio_write_filter = self._classify_audio_memory_event(state.world.last_transcript or query_text)
+        audio_candidate: dict[str, object] | None = None
         if audio_write_filter["allowed"]:
+            audio_summary = f"user:{state.world.last_transcript} | reply:{self.last_reply}"
+            signals = audio_write_filter.get("signals", [])
+            explicit_memory_request = isinstance(signals, list) and "user_explicit_memory_intent" in signals
+            audio_candidate = self.memory_policy.classify_writeback_candidate(
+                event_type="dialogue",
+                summary=audio_summary,
+                modality="audio_text",
+                organ="ear",
+                source="eibrain.audio_dialogue",
+                success=bool(actions),
+                status="planned",
+                action_count=len(actions),
+                reply_present=bool(self.last_reply),
+                learning_decision=self.last_learning_decision,
+                explicit_memory_request=explicit_memory_request,
+                trace_id=state.session.active_session_id or "unknown-session",
+                source_event_id=f"{observation.kind}:{observation.ts}",
+            )
             self._record_skill_trace(
                 trace_id=state.session.active_session_id or "unknown-session",
                 task_type="brain.respond",
@@ -173,33 +192,39 @@ class CognitiveRuntimeApp:
                     "write_policy_version": "meaningful_event_v1",
                     "trace_reason": audio_write_filter["reason"],
                     "write_filter": audio_write_filter,
+                    "candidate_types": list(audio_candidate["candidate_types"]),
+                    "memory_type": audio_candidate["memory_type"],
+                    "identity_memory": False,
                 },
             )
         if decision.should_writeback and audio_write_filter["allowed"]:
+            candidate = audio_candidate or self.memory_policy.classify_writeback_candidate(
+                event_type="dialogue",
+                summary=f"user:{state.world.last_transcript} | reply:{self.last_reply}",
+                modality="audio_text",
+                organ="ear",
+                source="eibrain.audio_dialogue",
+                success=bool(actions),
+                status="planned",
+                action_count=len(actions),
+                reply_present=bool(self.last_reply),
+                learning_decision=self.last_learning_decision,
+                trace_id=state.session.active_session_id or "unknown-session",
+                source_event_id=f"{observation.kind}:{observation.ts}",
+            )
             self.memory.remember_episode(
                 session_id=state.session.active_session_id or "unknown-session",
                 actor_id=state.world.current_speaker_id,
-                summary=f"user:{state.world.last_transcript} | reply:{self.last_reply}",
+                summary=str(candidate["summary"]),
                 title="Audio dialogue turn",
-                memory_type="conversation",
-                source="eibrain.audio_dialogue",
-                modality="audio_text",
-                organ="ear",
-                outcome={
-                    "success": bool(actions),
-                    "status": "planned",
-                    "action_count": len(actions),
-                    "reply_present": bool(self.last_reply),
-                    **self.memory_policy.writeback_outcome(
-                        modality="audio_text",
-                        organ="ear",
-                        success=bool(actions),
-                        status="planned",
-                        action_count=len(actions),
-                        reply_present=bool(self.last_reply),
-                        learning_decision=self.last_learning_decision,
-                    ),
-                },
+                memory_type=str(candidate["memory_type"]),
+                source=str(candidate["source"]),
+                modality=str(candidate["modality"]),
+                organ=str(candidate["organ"]),
+                outcome=dict(candidate["outcome"]),
+                content=dict(candidate["content"]),
+                meta=dict(candidate["meta"]),
+                tags=[str(tag) for tag in candidate["tags"]],
             )
             self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         stage_latency_ms["compile_writeback"] = self._elapsed_ms(stage_started)
@@ -334,7 +359,23 @@ class CognitiveRuntimeApp:
         )
         actions = self.compiler.compile(intents)
         visual_write_filter = self._classify_visual_memory_event(understanding, target_x=target_x)
+        visual_candidate: dict[str, object] | None = None
         if visual_write_filter["allowed"]:
+            visual_candidate = self.memory_policy.classify_writeback_candidate(
+                event_type="vision_observation",
+                summary=understanding.summary,
+                modality="vision",
+                organ="eye",
+                source="eibrain.visual_frame",
+                success=bool(actions),
+                status="planned",
+                action_count=len(actions),
+                reply_present=False,
+                learning_decision=self.last_learning_decision,
+                visual_context={"summary": understanding.summary, "target_x": target_x},
+                trace_id=visual_session_id,
+                source_event_id=f"vision_frame:{image_url}",
+            )
             self._record_skill_trace(
                 trace_id=visual_session_id,
                 task_type="brain.orient",
@@ -357,34 +398,40 @@ class CognitiveRuntimeApp:
                     "write_policy_version": "meaningful_event_v1",
                     "trace_reason": visual_write_filter["reason"],
                     "write_filter": visual_write_filter,
+                    "candidate_types": list(visual_candidate["candidate_types"]),
+                    "memory_type": visual_candidate["memory_type"],
+                    "identity_memory": False,
                 },
             )
         if decision.should_writeback and visual_write_filter["allowed"]:
+            candidate = visual_candidate or self.memory_policy.classify_writeback_candidate(
+                event_type="vision_observation",
+                summary=understanding.summary,
+                modality="vision",
+                organ="eye",
+                source="eibrain.visual_frame",
+                success=bool(actions),
+                status="planned",
+                action_count=len(actions),
+                reply_present=False,
+                learning_decision=self.last_learning_decision,
+                visual_context={"summary": understanding.summary, "target_x": target_x},
+                trace_id=visual_session_id,
+                source_event_id=f"vision_frame:{image_url}",
+            )
             self.memory.remember_episode(
                 session_id=visual_session_id,
                 actor_id=actor_id or "visual-target",
-                summary=understanding.summary,
+                summary=str(candidate["summary"]),
                 title="Visual frame understanding",
-                memory_type="fact",
-                source="eibrain.visual_frame",
-                modality="vision",
-                organ="eye",
-                outcome={
-                    "success": bool(actions),
-                    "status": "planned",
-                    "action_count": len(actions),
-                    "reply_present": False,
-                    **self.memory_policy.writeback_outcome(
-                        modality="vision",
-                        organ="eye",
-                        success=bool(actions),
-                        status="planned",
-                        action_count=len(actions),
-                        reply_present=False,
-                        learning_decision=self.last_learning_decision,
-                        visual_context={"summary": understanding.summary, "target_x": target_x},
-                    ),
-                },
+                memory_type=str(candidate["memory_type"]),
+                source=str(candidate["source"]),
+                modality=str(candidate["modality"]),
+                organ=str(candidate["organ"]),
+                outcome=dict(candidate["outcome"]),
+                content=dict(candidate["content"]),
+                meta=dict(candidate["meta"]),
+                tags=[str(tag) for tag in candidate["tags"]],
             )
             self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         self.trace_recorder.record(

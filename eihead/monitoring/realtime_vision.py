@@ -102,8 +102,16 @@ def build_realtime_vision_payload(
         "top_detection": diagnostic["top_detection"],
         "not_wired": diagnostic["not_wired"],
         "placeholder": diagnostic["placeholder"],
+        "stream_ready": diagnostic["stream_ready"],
         "stale": diagnostic["stale"],
+        "degraded": diagnostic["degraded"],
+        "status_reason": diagnostic["status_reason"],
+        "not_wired_reason": diagnostic["not_wired_reason"],
+        "stale_reason": diagnostic["stale_reason"],
+        "degraded_reason": diagnostic["degraded_reason"],
+        "readiness": diagnostic["readiness"],
         "compat_static_active": diagnostic["compat_static"],
+        "compatibility_static_image": diagnostic["compatibility_static_image"],
         "frame_interval_ms": diagnostic["frame_interval_ms"],
         "jitter_guard": diagnostic["jitter_guard"],
         "hooks_used": diagnostic["hooks_used"],
@@ -133,12 +141,15 @@ def _derive_realtime_status(observation: Mapping[str, Any] | None) -> tuple[str,
     placeholder = _truthy(observation.get("placeholder", False))
     not_wired = _truthy(observation.get("not_wired", False))
     compatibility_mode = _truthy(observation.get("compatibility_mode", False))
+    degraded = _truthy(observation.get("degraded", False)) or status == "degraded"
     stale = _is_stale_observation(observation, status=status)
 
     if not_wired or placeholder or _status_is_not_wired(status):
         return "not_wired", False, "eye.realtime payload is present but not ready"
     if kind == "vision_observation" or mode == VISION_STATIC_COMPAT_MODE or primary_mode is False or compatibility_mode:
         return "compat_static", False, "compat/static vision payload is not accepted as realtime eye data"
+    if degraded and (kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"}):
+        return "degraded", True, ""
     if stale and (kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"}):
         return "stale", True, ""
     if kind == "realtime_vision_observation" or mode in {VISION_REALTIME_MODE, "realtime_stream"}:
@@ -177,7 +188,36 @@ def _build_realtime_diagnostic(
         observation and _truthy(_first_present(observation, "not_wired"))
     )
     compat_static = status == "compat_static" or _is_compat_static_observation(observation)
+    degraded = status == "degraded" or bool(observation and _truthy(_first_present(observation, "degraded")))
     stale = status == "stale" or _is_stale_observation(observation, status=pipeline_status or "")
+    stream_ready = _stream_ready(
+        observation,
+        wired=wired,
+        not_wired=not_wired,
+        compat_static=compat_static,
+        stale=stale,
+        degraded=degraded,
+    )
+    status_reason = _string_or_none(_first_nested_present(observation, "status_reason")) or _default_status_reason(
+        status=status,
+        stream_ready=stream_ready,
+        not_wired=not_wired,
+        compat_static=compat_static,
+        stale=stale,
+        degraded=degraded,
+    )
+    not_wired_reason = _string_or_none(_first_nested_present(observation, "not_wired_reason"))
+    stale_reason = _string_or_none(_first_nested_present(observation, "stale_reason"))
+    degraded_reason = _string_or_none(_first_nested_present(observation, "degraded_reason"))
+    readiness = _readiness_payload(
+        _first_nested_present(observation, "readiness"),
+        ready=stream_ready,
+        reason=status_reason,
+    )
+    compatibility_static_image = _compat_static_payload(
+        _first_nested_present(observation, "compatibility_static_image"),
+        active=compat_static,
+    )
     frame_interval_ms = _number_or_none(_first_nested_present(observation, "frame_interval_ms", "frame_interval"))
     jitter_guard = _first_nested_present(observation, "jitter_guard", "jitter")
     hooks_used = _hooks_used(_first_nested_present(observation, "hooks_used", "hooks"))
@@ -193,8 +233,16 @@ def _build_realtime_diagnostic(
         "wired": bool(wired),
         "not_wired": bool(not_wired),
         "placeholder": bool(placeholder),
+        "stream_ready": stream_ready,
         "compat_static": bool(compat_static),
         "stale": bool(stale),
+        "degraded": bool(degraded),
+        "status_reason": status_reason,
+        "not_wired_reason": not_wired_reason,
+        "stale_reason": stale_reason,
+        "degraded_reason": degraded_reason,
+        "readiness": readiness,
+        "compatibility_static_image": compatibility_static_image,
         "backend": _backend(observation),
         "frame_id": _frame_id(observation),
         "fps": _number_or_none(_first_nested_present(observation, "fps")),
@@ -247,6 +295,65 @@ def _is_stale_observation(observation: Mapping[str, Any] | None, *, status: str 
         if isinstance(nested, Mapping) and _truthy(nested.get("stale")):
             return True
     return False
+
+
+def _stream_ready(
+    observation: Mapping[str, Any] | None,
+    *,
+    wired: bool,
+    not_wired: bool,
+    compat_static: bool,
+    stale: bool,
+    degraded: bool,
+) -> bool:
+    explicit = _first_nested_present(observation, "stream_ready")
+    if explicit is not None:
+        return _truthy(explicit)
+    return bool(wired and not not_wired and not compat_static and not stale and not degraded)
+
+
+def _default_status_reason(
+    *,
+    status: str,
+    stream_ready: bool,
+    not_wired: bool,
+    compat_static: bool,
+    stale: bool,
+    degraded: bool,
+) -> str:
+    if compat_static:
+        return "compat_static_frame_test_only"
+    if stale:
+        return "last_frame_stale"
+    if degraded:
+        return "degraded"
+    if not_wired:
+        return "not_wired"
+    if stream_ready:
+        return "realtime_stream_ready"
+    return status or "unknown"
+
+
+def _readiness_payload(value: Any, *, ready: bool, reason: str) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        payload = {str(k): _json_ready(v) for k, v in value.items()}
+        payload.setdefault("ready", ready)
+        payload.setdefault("reason", reason)
+        return payload
+    return {"ready": ready, "reason": reason}
+
+
+def _compat_static_payload(value: Any, *, active: bool) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        payload = {str(k): _json_ready(v) for k, v in value.items()}
+        payload.setdefault("active", active)
+        payload.setdefault("test_only", active)
+        return payload
+    return {
+        "active": active,
+        "mode": VISION_STATIC_COMPAT_MODE if active else "",
+        "test_only": active,
+    }
 
 
 def _normalized_detections(raw_detections: Any) -> list[dict[str, Any]]:

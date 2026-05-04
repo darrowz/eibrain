@@ -7,12 +7,13 @@ without changing the proven honjia body runtime path.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, is_dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass, replace
 import time
 from typing import Any, Mapping
 
 from eiprotocol.event_routing import classify_event
 from eihead.monitoring import build_status_snapshot
+from eihead.neck import PanMoveCommand, PanNeckState, plan_pan_move
 from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction, serialize_message
 from eihead.services import CapabilityRegistry
 from .event_journal import EventJournal
@@ -38,6 +39,8 @@ class HeadRuntimeApp:
     realtime_vision_max_age_seconds: float = DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS
     ptz_min_angle_delta: float = DEFAULT_PTZ_MIN_ANGLE_DELTA
     event_journal: EventJournal = field(default_factory=EventJournal, repr=False)
+    neck_servo_adapter: Any | None = field(default=None, repr=False)
+    neck_pan_state: PanNeckState = field(default_factory=PanNeckState, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -272,6 +275,13 @@ class HeadRuntimeApp:
             )
 
         if action_type == "move_head":
+            if self.neck_servo_adapter is not None:
+                return self._handle_native_neck_action(
+                    normalized,
+                    action_id=action_id,
+                    trace_id=effective_trace_id,
+                )
+
             axis = _string_or_default(_action_value(normalized, "axis"), "yaw").strip().lower() or "yaw"
             if axis != "yaw":
                 return self._action_outcome(
@@ -347,6 +357,120 @@ class HeadRuntimeApp:
             status="unsupported",
             success=False,
             details={"reason": "unsupported_action_type"},
+        )
+
+    def _handle_native_neck_action(
+        self,
+        action: Mapping[str, Any],
+        *,
+        action_id: str,
+        trace_id: str | None,
+    ) -> dict[str, Any]:
+        axis = _string_or_default(_action_value(action, "axis"), "pan").strip().lower() or "pan"
+        target_angle = _action_value(action, "target_angle")
+        if target_angle is None:
+            target_angle = _action_value(action, "angle")
+
+        plan = plan_pan_move(
+            PanMoveCommand(
+                axis=axis,
+                target_angle=_optional_float(target_angle),
+                target_x=_optional_float(_action_value(action, "target_x")),
+                source="eihead.runtime",
+                action_id=action_id,
+                trace_id=trace_id or "",
+                metadata=_action_metadata(action),
+            ),
+            self.neck_pan_state,
+        )
+        self.neck_pan_state = PanNeckState.from_dict(plan.get("state", {}))
+
+        if not bool(plan.get("success")):
+            reason = _string_or_default(plan.get("reason"), _string_or_default(plan.get("status"), "invalid"))
+            return self._action_outcome(
+                action_id=action_id,
+                action_type="move_head",
+                trace_id=trace_id,
+                status=_string_or_default(plan.get("status"), "invalid"),
+                success=False,
+                details={
+                    "axis": axis,
+                    "reason": reason,
+                    "neck_plan": plan,
+                },
+            )
+
+        apply_plan = getattr(self.neck_servo_adapter, "apply_plan", None)
+        if not callable(apply_plan):
+            return self._action_outcome(
+                action_id=action_id,
+                action_type="move_head",
+                trace_id=trace_id,
+                status="skipped",
+                success=False,
+                details={
+                    "axis": "pan",
+                    "reason": "neck_servo_adapter_unavailable",
+                    "neck_plan": plan,
+                },
+            )
+
+        try:
+            servo_outcome = apply_plan(plan)
+        except Exception as exc:  # pragma: no cover - exercised by integration when hardware fails.
+            return self._action_outcome(
+                action_id=action_id,
+                action_type="move_head",
+                trace_id=trace_id,
+                status="error",
+                success=False,
+                details={
+                    "axis": "pan",
+                    "reason": "neck_servo_adapter_error",
+                    "error": str(exc),
+                    "neck_plan": plan,
+                },
+            )
+
+        if isinstance(servo_outcome, Mapping):
+            servo_details = dict(servo_outcome)
+        else:
+            servo_details = _serialize_outcome(servo_outcome)
+        servo_status = _string_or_default(servo_details.get("status"), "")
+
+        if servo_status == "ok":
+            target_angle_value = _optional_float(plan.get("action", {}).get("target_angle"))
+            if target_angle_value is not None:
+                self.neck_pan_state = replace(
+                    self.neck_pan_state,
+                    current_angle=target_angle_value,
+                    target_angle=target_angle_value,
+                )
+            status = "accepted"
+            success = True
+        elif servo_status == "suppressed":
+            status = "skipped"
+            success = True
+        elif servo_status == "unavailable":
+            status = "skipped"
+            success = False
+        else:
+            status = servo_status or _string_or_default(plan.get("status"), "skipped")
+            success = False
+
+        return self._action_outcome(
+            action_id=action_id,
+            action_type="move_head",
+            trace_id=trace_id,
+            status=status,
+            success=success,
+            delegated=True,
+            details={
+                "axis": "pan",
+                "reason": _native_neck_reason(plan, servo_details),
+                "neck_plan": plan,
+                "neck_servo": servo_details,
+            },
         )
 
     def _maybe_suppress_ptz_jitter(self, target_angle: int | None) -> dict[str, Any] | None:
@@ -678,6 +802,23 @@ def _action_value(action: Mapping[str, Any], key: str, default: Any = None) -> A
     if isinstance(params, Mapping) and key in params:
         return params[key]
     return default
+
+
+def _action_metadata(action: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = action.get("metadata")
+    if isinstance(metadata, Mapping):
+        return dict(metadata)
+    params = action.get("params")
+    if isinstance(params, Mapping) and isinstance(params.get("metadata"), Mapping):
+        return dict(params["metadata"])
+    return {}
+
+
+def _native_neck_reason(plan: Mapping[str, Any], servo_details: Mapping[str, Any]) -> str:
+    servo_reason = _string_or_default(servo_details.get("reason"), "")
+    if servo_reason:
+        return servo_reason
+    return _string_or_default(plan.get("reason"), "")
 
 
 def _optional_float(value: Any) -> float | None:

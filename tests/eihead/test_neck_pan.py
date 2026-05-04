@@ -91,3 +91,21 @@ def test_pan_plan_dict_is_json_serializable() -> None:
     result = plan_pan_move(PanMoveCommand(action_id="manual-1", trace_id="trace-1", target_x=0.75), state)
 
     assert json.loads(json.dumps(result)) == result
+
+
+def test_nonfinite_pan_targets_are_invalid_and_metadata_stays_strict_json() -> None:
+    state = PanNeckState(current_angle=90, target_angle=90)
+
+    result = plan_pan_move(
+        PanMoveCommand(
+            action_id="manual-nan",
+            target_angle=float("nan"),
+            metadata={"unsafe": float("inf"), "nested": [float("-inf")]},
+        ),
+        state,
+    )
+
+    assert result["status"] == "invalid"
+    assert result["reason"] == "invalid_target_angle"
+    assert result["action"]["metadata"] == {"unsafe": None, "nested": [None]}
+    assert json.loads(json.dumps(result, allow_nan=False)) == result
