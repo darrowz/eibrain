@@ -28,6 +28,24 @@ ACTION_LOG_ATTRS = (
     "recent_action_log",
     "execution_log",
 )
+EVENT_LOG_ATTRS = (
+    "recent_events",
+)
+EVENT_PAYLOAD_KEYS = frozenset(
+    {
+        "schema",
+        "runtime",
+        "status",
+        "wired",
+        "source",
+        "captured_at_ts",
+        "count",
+        "events",
+        "recent_events",
+        "items",
+        "actions",
+    }
+)
 
 
 class EiheadMonitorError(RuntimeError):
@@ -176,6 +194,9 @@ def create_handler(
                 return
             if path in {"/api/actions/recent", "/api/recent-actions"}:
                 self._write_json(HTTPStatus.OK, _recent_actions_payload(runtime_app, now()))
+                return
+            if path in {"/api/events/recent", "/api/recent-events"}:
+                self._write_json(HTTPStatus.OK, _recent_events_payload(runtime_app, now()))
                 return
             raise EiheadMonitorError(HTTPStatus.NOT_FOUND, "not_found", f"unknown path: {path}")
 
@@ -340,6 +361,73 @@ def _recent_actions_payload(app: Any, timestamp: float) -> JsonObject:
     }
 
 
+def _recent_events_payload(app: Any, timestamp: float) -> JsonObject:
+    for attr_name in EVENT_LOG_ATTRS:
+        if not hasattr(app, attr_name):
+            continue
+        source = getattr(app, attr_name)
+        try:
+            raw_log = source() if callable(source) else source
+        except Exception as exc:
+            raise EiheadMonitorError(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "recent_events_failed",
+                f"failed to read event log from app.{attr_name}",
+                details={"exception": exc.__class__.__name__, "source": attr_name},
+            ) from exc
+
+        events, extra = _coerce_event_log(raw_log)
+        return {
+            "schema": "eihead.monitor.recent_events.v1",
+            "runtime": "eihead",
+            "status": "wired",
+            "wired": True,
+            "source": attr_name,
+            "captured_at_ts": timestamp,
+            "count": len(events),
+            "events": events,
+            **extra,
+        }
+
+    event_journal = getattr(app, "event_journal", None)
+    recent = getattr(event_journal, "recent", None)
+    if callable(recent):
+        try:
+            raw_log = recent()
+        except Exception as exc:
+            raise EiheadMonitorError(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "recent_events_failed",
+                "failed to read event log from app.event_journal.recent",
+                details={"exception": exc.__class__.__name__, "source": "event_journal.recent"},
+            ) from exc
+
+        events, extra = _coerce_event_log(raw_log)
+        return {
+            "schema": "eihead.monitor.recent_events.v1",
+            "runtime": "eihead",
+            "status": "wired",
+            "wired": True,
+            "source": "event_journal.recent",
+            "captured_at_ts": timestamp,
+            "count": len(events),
+            "events": events,
+            **extra,
+        }
+
+    return {
+        "schema": "eihead.monitor.recent_events.v1",
+        "runtime": "eihead",
+        "status": "not_wired",
+        "wired": False,
+        "source": None,
+        "captured_at_ts": timestamp,
+        "count": 0,
+        "events": [],
+        "message": "runtime app does not expose recent_events or event_journal.recent",
+    }
+
+
 def _coerce_action_log(raw_log: Any) -> tuple[list[JsonObject], JsonObject]:
     extra: JsonObject = {}
     if raw_log is None:
@@ -351,6 +439,22 @@ def _coerce_action_log(raw_log: Any) -> tuple[list[JsonObject], JsonObject]:
                 actions = _coerce_action_items(raw_log[key])
                 extra = {str(k): _json_ready(v) for k, v in raw_log.items() if k != key}
                 return actions, extra
+        return [_serialize_item(raw_log)], extra
+
+    return _coerce_action_items(raw_log), extra
+
+
+def _coerce_event_log(raw_log: Any) -> tuple[list[JsonObject], JsonObject]:
+    extra: JsonObject = {}
+    if raw_log is None:
+        return [], extra
+
+    if isinstance(raw_log, Mapping):
+        for key in ("events", "recent_events", "items", "actions"):
+            if key in raw_log:
+                events = _coerce_action_items(raw_log[key])
+                extra = {str(k): _json_ready(v) for k, v in raw_log.items() if str(k) not in EVENT_PAYLOAD_KEYS}
+                return events, extra
         return [_serialize_item(raw_log)], extra
 
     return _coerce_action_items(raw_log), extra
@@ -398,6 +502,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     realtime = _safe_payload(lambda: realtime_vision_payload_from_app(app, timestamp=timestamp))
     voice = _safe_payload(lambda: build_voice_diagnostics_from_app(app, timestamp=timestamp))
     recent = _safe_payload(lambda: _recent_actions_payload(app, timestamp))
+    recent_events = _safe_payload(lambda: _recent_events_payload(app, timestamp))
 
     node_id = _display_value(status.get("node_id") or capabilities.get("node_id") or "honjia")
     overall = _display_value(
@@ -409,6 +514,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     realtime_state = _display_value(realtime.get("status", "unknown"))
     voice_state = _display_value(voice.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
+    recent_events_state = _display_value(recent_events.get("status", "unknown"))
     realtime_diagnostic = realtime.get("diagnostic") if isinstance(realtime.get("diagnostic"), Mapping) else {}
     vision_status = _display_value(realtime_diagnostic.get("status") or realtime.get("status", "unknown"))
     vision_fps = _display_value(_metric_value(realtime_diagnostic.get("fps")))
@@ -451,6 +557,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     realtime_json = _json_for_html(realtime)
     voice_json = _json_for_html(voice)
     recent_json = _json_for_html(recent)
+    recent_events_json = _json_for_html(recent_events)
 
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -477,7 +584,7 @@ def _render_index(app: Any, timestamp: float) -> str:
   <main>
     <header>
       <h1>eihead native monitor</h1>
-      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · actions <strong>{recent_state}</strong></p>
+      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · actions <strong>{recent_state}</strong> · events <strong>{recent_events_state}</strong></p>
     </header>
     <section class="grid">
       <div class="card"><div class="label">Status API</div><a href="/api/status">/api/status</a></div>
@@ -485,6 +592,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Realtime Vision API</div><a href="/api/vision/realtime">/api/vision/realtime</a></div>
       <div class="card"><div class="label">Voice Diagnostics API</div><a href="/api/voice/realtime">/api/voice/realtime</a></div>
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
+      <div class="card"><div class="label">Recent Events API</div><a href="/api/events/recent">/api/events/recent</a></div>
       <div class="card"><div class="label">Health API</div><a href="/health">/health</a></div>
     </section>
     <h2>Realtime Vision Diagnostic</h2>
@@ -536,6 +644,8 @@ def _render_index(app: Any, timestamp: float) -> str:
     <pre>{voice_json}</pre>
     <h2>Recent Actions</h2>
     <pre>{recent_json}</pre>
+    <h2>Recent Events</h2>
+    <pre>{recent_events_json}</pre>
   </main>
 </body>
 </html>

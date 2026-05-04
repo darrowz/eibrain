@@ -62,10 +62,20 @@ service files.
 
 ## Phase 4: eibrain to eihead runtime bridge
 
+- Treat this batch as HTTP JSON event routing after the `POST /events`
+  scaffold: one eiprotocol envelope per request. Realtime streaming remains
+  future work.
 - Route audio observations from eihead into the current eibrain dialogue loop.
 - Route realtime eye stream observations from eihead into detection/identity diagnostics.
+- Route action request events through the `handle_action` bridge before they
+  reach mouth, neck, attention, or diagnostic capture handlers.
 - Route speak actions from eibrain back to eihead mouth playback.
 - Route move head actions from eibrain back to eihead neck control.
+- Record observation, outcome, and feedback envelopes in the recent event
+  journal/diagnostics for the monitor/API.
+- Return clear JSON error responses and `not_processed` outcomes for invalid
+  envelopes; return explicit `not_wired`/`not_processed` for unwired handlers.
+- Confirm the monitor or runtime API can inspect recent routed events.
 - Preserve the old eibrain body runtime as fallback until parity is confirmed.
 - Verify bridge logs include request id, turn id, action id, latency, and outcome.
 

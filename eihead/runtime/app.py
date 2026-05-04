@@ -11,9 +11,11 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 import time
 from typing import Any, Mapping
 
+from eiprotocol.event_routing import classify_event
 from eihead.monitoring import build_status_snapshot
 from eihead.protocol import MoveHeadAction, PlaySpeechAction, StopSpeechAction, serialize_message
 from eihead.services import CapabilityRegistry
+from .event_journal import EventJournal
 from .legacy_body import (
     DEFAULT_BODY_RUNTIME_DELEGATE,
     BodyRuntimeFactory,
@@ -35,6 +37,7 @@ class HeadRuntimeApp:
     legacy_body_adapter: LegacyBodyRuntimeAdapter = field(default_factory=LegacyBodyRuntimeAdapter, repr=False)
     realtime_vision_max_age_seconds: float = DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS
     ptz_min_angle_delta: float = DEFAULT_PTZ_MIN_ANGLE_DELTA
+    event_journal: EventJournal = field(default_factory=EventJournal, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
 
     @classmethod
@@ -153,6 +156,95 @@ class HeadRuntimeApp:
 
     def voice_realtime(self) -> Mapping[str, Any] | Any | None:
         return self.voice_status()
+
+    def recent_events(self, limit: int | None = None) -> list[dict[str, Any]]:
+        return self.event_journal.recent(limit)
+
+    def event_summary(self) -> dict[str, Any]:
+        return self.event_journal.summary()
+
+    def handle_event(self, event: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
+        route = classify_event(event)
+        effective_trace_id = trace_id or _event_trace_id(event)
+        common = _event_outcome_common(route, trace_id=effective_trace_id)
+
+        if route.get("status") == "invalid":
+            outcome = {
+                **common,
+                "ok": False,
+                "accepted": False,
+                "processed": False,
+                "status": "not_processed",
+                "reason": "invalid_event",
+                "errors": list(route.get("errors") or []),
+            }
+            self.event_journal.append(event, outcome, trace_id=effective_trace_id)
+            return outcome
+
+        if route.get("status") == "not_processed":
+            reason = _string_or_default(route.get("reason"), "unsupported_event_name")
+            outcome = {
+                **common,
+                "ok": False,
+                "accepted": False,
+                "processed": False,
+                "status": "not_processed",
+                "reason": reason,
+            }
+            self.event_journal.append(event, outcome, trace_id=effective_trace_id)
+            return outcome
+
+        route_name = _string_or_default(route.get("route"), "")
+        if route_name == "action_request":
+            action = _action_from_event_route(route)
+            action_outcome = self.handle_action(action, trace_id=effective_trace_id)
+            accepted = action_outcome.get("status") == "accepted" or action_outcome.get("success") is True
+            outcome = {
+                **common,
+                "ok": bool(action_outcome.get("success")),
+                "accepted": bool(accepted),
+                "processed": True,
+                "status": _string_or_default(action_outcome.get("status"), "unknown"),
+                "route": route_name,
+                "action_outcome": action_outcome,
+            }
+            reason = _action_outcome_reason(action_outcome)
+            if reason:
+                outcome["reason"] = reason
+            self.event_journal.append(event, outcome, trace_id=effective_trace_id)
+            return outcome
+
+        if route_name in {
+            "capability_manifest",
+            "asr_partial",
+            "asr_final",
+            "realtime_vision_frame",
+            "execution_outcome",
+            "user_feedback",
+        }:
+            outcome = {
+                **common,
+                "ok": True,
+                "accepted": True,
+                "processed": False,
+                "status": "recorded",
+                "reason": "recorded_for_diagnostics",
+                "route": route_name,
+            }
+            self.event_journal.append(event, outcome, trace_id=effective_trace_id)
+            return outcome
+
+        outcome = {
+            **common,
+            "ok": False,
+            "accepted": False,
+            "processed": False,
+            "status": "not_processed",
+            "reason": "unsupported_event_route",
+            "route": route_name,
+        }
+        self.event_journal.append(event, outcome, trace_id=effective_trace_id)
+        return outcome
 
     def handle_action(self, action: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
         normalized, effective_trace_id = self._normalize_action(action, trace_id=trace_id)
@@ -511,6 +603,79 @@ class HeadRuntimeApp:
             "delegated": delegated,
             "details": dict(details or {}),
         }
+
+
+def _event_outcome_common(route: Mapping[str, Any], *, trace_id: str | None) -> dict[str, Any]:
+    return {
+        "runtime": "eihead",
+        "node_role": "head",
+        "trace_id": trace_id or "",
+        "event_name": _string_or_default(route.get("eventName"), ""),
+        "event_type": _string_or_default(route.get("eventType"), ""),
+    }
+
+
+def _event_trace_id(event: Mapping[str, Any] | Any) -> str | None:
+    if isinstance(event, Mapping):
+        return _optional_string(event.get("traceId") or event.get("trace_id"))
+
+    to_dict = getattr(event, "to_dict", None)
+    if callable(to_dict):
+        try:
+            payload = to_dict()
+        except Exception:
+            payload = None
+        if isinstance(payload, Mapping):
+            return _optional_string(payload.get("traceId") or payload.get("trace_id"))
+
+    return _optional_string(getattr(event, "trace_id", None) or getattr(event, "traceId", None))
+
+
+def _action_from_event_route(route: Mapping[str, Any]) -> dict[str, Any]:
+    action_id = _string_or_default(route.get("actionId"), "")
+    action_type = _string_or_default(route.get("actionType"), "")
+    target = _string_or_default(route.get("target"), "")
+    params = _params_with_action_aliases(route.get("params"), action_type=action_type)
+    action: dict[str, Any] = {
+        "id": action_id,
+        "action_id": action_id,
+        "type": action_type,
+        "action_type": action_type,
+        "target": target,
+        "params": params,
+        "risk_level": _string_or_default(route.get("riskLevel"), ""),
+        "idempotency_key": _string_or_default(route.get("idempotencyKey"), ""),
+    }
+    if target:
+        action["target_name"] = target
+    return action
+
+
+def _params_with_action_aliases(params: Any, *, action_type: str) -> dict[str, Any]:
+    normalized = dict(params) if isinstance(params, Mapping) else {}
+    for key, value in list(normalized.items()):
+        snake_key = _camel_to_snake(str(key))
+        normalized.setdefault(snake_key, value)
+
+    if action_type == "move_head" and "target_angle" in normalized:
+        normalized.setdefault("angle", normalized["target_angle"])
+    return normalized
+
+
+def _camel_to_snake(text: str) -> str:
+    result: list[str] = []
+    for index, char in enumerate(text):
+        if char.isupper() and index > 0 and text[index - 1] != "_":
+            result.append("_")
+        result.append(char.lower())
+    return "".join(result)
+
+
+def _action_outcome_reason(outcome: Mapping[str, Any]) -> str:
+    details = outcome.get("details")
+    if isinstance(details, Mapping):
+        return _string_or_default(details.get("reason"), "")
+    return ""
 
 
 def _action_value(action: Mapping[str, Any], key: str, default: Any = None) -> Any:

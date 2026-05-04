@@ -16,9 +16,11 @@
 当前拆分状态：`/dev-project/eibrain` 仍是 source repo；
 `/dev-project/eiprotocol` 是 exported shared protocol repo；
 `/dev-project/eihead` 是 exported head repo。下一批 transport
-binding 的 MVP 是 HTTP JSON `POST /events` 传递 eiprotocol envelope；
-SSE/WebSocket/MQTT、二进制音频/视频 chunk 和真正实时 transport
-streaming 仍是后续工作。
+binding 在 `POST /events` scaffold 之后进入 runtime event routing：HTTP
+JSON 每次请求只传递一个 eiprotocol envelope，先完成 action dispatch、
+recent event journal/diagnostics 和明确的 `not_processed`/`not_wired` 结果；
+SSE/WebSocket/MQTT、二进制音频/视频 chunk 和真正实时 transport streaming
+仍是后续工作。
 
 Eye 方向单独明确：正式目标是 `/dev/video0` + `/dev/hailo0` 的 realtime stream detection，也就是从
 摄像头/Hailo 连续流产生 `RealtimeVisionObservation`、运行状态和监控检测框。
@@ -41,8 +43,9 @@ functional-not-complete。当前闭环语音诊断是 functional offline/quasi-s
 diagnostics，不是 hardware-verified real streaming。真实流式 LLM/TTS 尚未接入，
 监控只能展示真实来源可见状态，缺失阶段必须显示 `not_wired/unknown`，
 不能把未接入的 streaming LLM/TTS 阶段显示成完成。
-同一 truthfulness 规则也适用于 transport handler：未接线的 handler
-必须返回明确的 `not_wired` / `not_processed` 状态和原因，不能返回空数据或伪正常结果。
+同一 truthfulness 规则也适用于 event routing handler：非法 envelope
+必须走清晰 JSON error / `not_processed` 路径；未接线的 handler 必须返回
+明确的 `not_wired` / `not_processed` 状态和原因，不能返回空数据或伪正常结果。
 
 暂不做：
 
@@ -180,7 +183,9 @@ eihead
 下一批 transport binding 先只接受 event transport MVP：
 HTTP JSON `POST /events`，请求体为 `eiprotocol` envelope。实时 transport
 streaming、WebSocket/SSE/MQTT、二进制音频/视频 chunk、replay/resume 和
-backpressure 不作为本批验收要求。
+backpressure 不作为本批验收要求。本批只路由每个 HTTP request 中的一
+个 JSON envelope，并把 route/dispatch/diagnostic 结果留在 runtime
+recent event journal 中。
 
 eihead -> eibrain：
 
@@ -197,10 +202,24 @@ eibrain -> eihead：
 - `AttentionIntent`: 注视、跟随、休眠、唤醒等状态。
 - `CaptureFrameAction`: 诊断取帧。
 
+runtime routing:
+
+- action request event 先进入 `handle_action` bridge，再分发到已有的
+  mouth、neck、attention、diagnostic capture handler。
+- observation、outcome、feedback event 写入 recent event journal/diagnostics，
+  供 Web monitor 和 runtime API 查看。
+- invalid envelope 返回 JSON error，并产生明确的 `not_processed` 结果；
+  unknown/unwired event 返回 `not_wired` 或 `not_processed` 和原因。
+
 验收标准：
 
 - `eihead` 与 `eibrain` 至少能通过 HTTP JSON `POST /events` 交换
   capability、observation、action、outcome envelope。
+- action request event 能通过 `handle_action` bridge 到达当前 action
+  执行路径。
+- observation、outcome、feedback 能被记录为 recent event journal/diagnostics。
+- invalid envelope 走清晰 JSON error / `not_processed` 路径。
+- monitor/API 能 inspect recent events。
 - 语音对话仍能完成，且 trace 能看到 ASR -> LLM -> TTS -> 播放。
 - 视觉检测框和分数仍能显示在 honjia Web 监控。
 - 云台动作可以从 eibrain 通过 action 下发到 eihead。

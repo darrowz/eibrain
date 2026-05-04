@@ -288,6 +288,41 @@ class RecentMethodApp(FakeMonitorApp):
         ]
 
 
+class RecentEventsMethodApp(FakeMonitorApp):
+    def recent_events(self) -> list[dict[str, Any]]:
+        return [
+            {"event_id": "evt-1", "event_type": "vision.frame", "status": "processed"},
+            {"event_id": "evt-2", "event_type": "voice.turn", "status": "accepted"},
+        ]
+
+
+class EventJournalAttributeApp(FakeMonitorApp):
+    class Journal:
+        def recent(self) -> dict[str, object]:
+            return {
+                "events": [
+                    {"event_id": "evt-3", "event_type": "route.command", "status": "accepted"},
+                ],
+                "max_items": 100,
+            }
+
+    event_journal = Journal()
+
+
+class WrappedRecentEventsApp(FakeMonitorApp):
+    def recent_events(self) -> dict[str, object]:
+        return {
+            "status": "stale",
+            "wired": False,
+            "source": "upstream",
+            "count": 999,
+            "events": [
+                {"event_id": "evt-safe", "event_type": "dialogue", "status": "recorded"},
+            ],
+            "max_items": 100,
+        }
+
+
 @dataclass(slots=True)
 class ActionRecord:
     action_id: str
@@ -623,6 +658,7 @@ def test_root_returns_simple_html_with_not_wired_recent_actions() -> None:
     assert "/api/status" in body
     assert "/api/capabilities" in body
     assert "/api/actions/recent" in body
+    assert "/api/events/recent" in body
     assert "not_wired" in body
 
 
@@ -1272,6 +1308,71 @@ def test_recent_actions_reports_not_wired_when_runtime_exposes_no_log() -> None:
     assert payload["captured_at_ts"] == 789.0
     assert payload["actions"] == []
     assert "does not expose" in payload["message"]
+
+
+def test_recent_events_uses_runtime_recent_events_method() -> None:
+    app = RecentEventsMethodApp()
+
+    with running_server(app, clock=lambda: 654.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/events/recent")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.recent_events.v1"
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "recent_events"
+    assert payload["captured_at_ts"] == 654.0
+    assert payload["count"] == 2
+    assert payload["events"][0]["event_id"] == "evt-1"
+
+
+def test_recent_events_alias_uses_event_journal_recent_method() -> None:
+    app = EventJournalAttributeApp()
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/recent-events")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["source"] == "event_journal.recent"
+    assert payload["count"] == 1
+    assert payload["events"] == [
+        {"event_id": "evt-3", "event_type": "route.command", "status": "accepted"}
+    ]
+    assert payload["max_items"] == 100
+
+
+def test_recent_events_reports_not_wired_when_runtime_exposes_no_event_source() -> None:
+    app = FakeMonitorApp()
+
+    with running_server(app, clock=lambda: 987.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/events/recent")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.recent_events.v1"
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["source"] is None
+    assert payload["captured_at_ts"] == 987.0
+    assert payload["count"] == 0
+    assert payload["events"] == []
+    assert "does not expose" in payload["message"]
+
+
+def test_recent_events_wrapper_cannot_override_monitor_status_fields() -> None:
+    app = WrappedRecentEventsApp()
+
+    with running_server(app, clock=lambda: 321.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/events/recent")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "recent_events"
+    assert payload["captured_at_ts"] == 321.0
+    assert payload["count"] == 1
+    assert payload["events"][0]["event_id"] == "evt-safe"
+    assert payload["max_items"] == 100
 
 
 def test_health_falls_back_to_status_and_can_return_503() -> None:

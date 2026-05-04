@@ -67,7 +67,7 @@ hardware-verified real streaming.
 | Capability registry | Native | `eihead.services.capability_registry` declares honjia camera, Hailo, I2C, microphone, speaker, neck, ASR, TTS, and vision backend. | Feed it native per-organ probe results instead of only static path checks. | `/capabilities` shows online/degraded/offline with device paths and last-ok timestamps. |
 | Local eihead protocol | Partly native | `eihead.protocol` has local action/outcome classes so eihead does not import `eibrain.protocol` for basic actions. | Replace the local mirror and eibrain compatibility classes with shared `eiprotocol` models. | eihead and eibrain import the same protocol package without cyclic dependency. |
 | Shared protocol | MVP split started | Top-level `eiprotocol` owns the v0.1 event envelope; `scripts/export-eiprotocol-repo.py` generates `/dev-project/eiprotocol`; `eibrain.protocol.eiprotocol_bridge` adapts legacy head messages. | Keep `eiprotocol` as the source-of-truth contract while reducing `eibrain.protocol` and `eihead.protocol` mirrors module by module. | JSON round-trip tests pass for capability, observation, action, outcome, and feedback payloads; eihead export manifests pin `protocol_sources.eiprotocol`. |
-| Event transport | MVP binding next | Shared envelopes exist, but the cross-repo event transport acceptance path is not yet the realtime streaming stack. | Add HTTP JSON `POST /events` between eihead and eibrain; defer SSE/WebSocket/MQTT, binary chunks, replay/resume, and backpressure. | Capability, observation, action, and outcome envelopes round-trip through `/events`; missing handlers return explicit `not_wired` or `not_processed` with reason, never blank or fake-normal data. |
+| Event transport | Routing batch next | Shared envelopes and the `POST /events` scaffold exist, but the next acceptance path is runtime routing, not realtime streaming. | Route one HTTP JSON envelope per request, dispatch action requests through `handle_action`, record recent event journal/diagnostics, and defer SSE/WebSocket/MQTT, binary chunks, replay/resume, and backpressure. | Capability, observation, action, outcome, and feedback envelopes route through `/events`; invalid envelopes return JSON error plus `not_processed`; missing handlers return explicit `not_wired` or `not_processed` with reason; monitor/API can inspect recent events. |
 | Eye | Native boundary emerging | Camera/Hailo/realtime stream state logic still has legacy consumers in `apps.body_runtime.vision_hailo_service`, `eibrain.body.runtime_linux`, `eibrain.body.vision_state`, and `eibrain.body.organs.eye`; native export now carries `eihead/eye/realtime.py`, `eihead/eye/adapters.py`, `eihead/eye/gstreamer.py`, `eihead/eye/hailo_metadata.py`, and `eihead/monitoring/realtime_vision.py`. | Finish wiring native `eihead.eye` as realtime stream detection while preserving `/tmp/eibrain-vision/latest.jpg` and `/tmp/eibrain-vision/state.json` until consumers are changed. | honjia still captures `/dev/video0`, runs `/dev/hailo0`, continuously publishes detections, and renders boxes/scores/parser readiness on `18080`; static-image detection is compatibility/test-only. |
 | Neck | Native pan protocol started, hardware legacy | Pan/yaw hardware control remains in `eibrain.body.neck_control`, `eibrain.body.raspbot_driver`, and `eibrain.body.organs.neck`; hardware-free pan state/planning now lives in `eihead/neck/pan.py`. | Wire `eihead.neck.plan_pan_move` to the runtime action boundary, then add a narrow Raspbot/I2C adapter without changing the pure planner. | Unit pan planning clamps/suppresses without hardware; manual pan command moves without oscillation after adapter wiring; tilt requests fail as unsupported; `/dev/i2c-1` ownership is unchanged. |
 | Ear | Partly native | Export now carries `eihead/ear/realtime.py`, `eihead/ear/__init__.py`, and `eihead/monitoring/voice.py`; runtime endpoints `/api/voice/realtime` and `/api/audio/realtime` are present in exports. Current closed-loop diagnostics are functional offline/quasi-streaming diagnostics, not hardware-verified real streaming. | Move to native `eihead.ear` end-to-end and keep round/scheduler/interrupt telemetry visible while real streaming LLM/TTS remains unwired. | Voice wake and one full ASR turn pass on honjia with measured stage latency, and no fake healthy speech state before streaming LLM/TTS completion. |
@@ -168,7 +168,10 @@ cover only what eihead and eibrain both need:
 Transport binding for this batch is intentionally narrow: HTTP JSON
 `POST /events` carries one eiprotocol envelope per request. Realtime transport
 streaming, SSE/WebSocket/MQTT, binary media chunks, replay/resume, and
-backpressure remain future work.
+backpressure remain future work. The immediate migration work is runtime event
+routing: validate the envelope, dispatch action requests through
+`handle_action`, record observation/outcome/feedback envelopes as recent event
+journal diagnostics, and expose those recent events to the monitor/API.
 
 Acceptance:
 
@@ -182,6 +185,12 @@ Acceptance:
   payloads.
 - `/events` accepts and routes capability, observation, action, outcome, and
   feedback events without requiring a streaming transport.
+- Action request events reach the existing action execution path through the
+  `handle_action` bridge.
+- Observation, outcome, and feedback events are recorded as recent event
+  journal diagnostics.
+- Invalid envelopes return a clear JSON error and `not_processed` path.
+- Monitor/API endpoints can inspect recent routed events.
 - Unknown or unwired event names return explicit `not_wired` or
   `not_processed` status with a reason.
 

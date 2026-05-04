@@ -15,8 +15,12 @@ from typing import Sequence
 
 
 DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
-COPY_DIRS = ("eiprotocol",)
-COPY_FILES = ("tests/protocol/test_eiprotocol_mvp.py",)
+COPY_DIRS = ("eiprotocol", "tests/fixtures/eiprotocol")
+COPY_FILES = (
+    "tests/protocol/test_eiprotocol_event_routing.py",
+    "tests/protocol/test_eiprotocol_mvp.py",
+    "tests/protocol/test_eiprotocol_fixtures.py",
+)
 SKIP_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
 

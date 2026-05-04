@@ -17,6 +17,7 @@ from .models import (
     UserFeedback,
     validate_event,
 )
+from .event_routing import classify_event
 
 __all__ = [
     "SPEC_VERSION",
@@ -33,5 +34,6 @@ __all__ = [
     "SourceRef",
     "TargetRef",
     "UserFeedback",
+    "classify_event",
     "validate_event",
 ]

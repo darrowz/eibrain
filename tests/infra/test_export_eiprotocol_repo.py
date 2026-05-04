@@ -46,6 +46,8 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
         "pyproject.toml",
         "eiprotocol/__init__.py",
         "eiprotocol/models.py",
+        "tests/protocol/test_eiprotocol_event_routing.py",
+        "tests/protocol/test_eiprotocol_fixtures.py",
         "tests/protocol/test_eiprotocol_mvp.py",
     ]
     for rel_path in required_paths:
@@ -53,6 +55,8 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
 
     assert "eiprotocol/__init__.py" in result.copied
     assert "eiprotocol/models.py" in result.copied
+    assert "tests/protocol/test_eiprotocol_event_routing.py" in result.copied
+    assert "tests/protocol/test_eiprotocol_fixtures.py" in result.copied
     assert "tests/protocol/test_eiprotocol_mvp.py" in result.copied
     assert result.generated == ("pyproject.toml", "README.md", ".gitignore")
     assert not (target / "eibrain").exists()
@@ -137,6 +141,32 @@ def test_exported_repo_imports_eiprotocol_from_target_and_round_trips_json(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_exported_repo_runs_mvp_fixture_and_event_routing_tests(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eiprotocol-standalone"
+    module.export_eiprotocol_repo(target, repo_root=REPO_ROOT)
+
+    env = {**os.environ, "PYTHONPATH": str(target)}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "tests/protocol/test_eiprotocol_mvp.py",
+            "tests/protocol/test_eiprotocol_fixtures.py",
+            "tests/protocol/test_eiprotocol_event_routing.py",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=target,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_cli_prints_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

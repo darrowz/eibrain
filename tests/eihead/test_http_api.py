@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
+from pathlib import Path
 import threading
 from typing import Any, Iterator
 from urllib import request
@@ -9,8 +10,14 @@ from urllib.error import HTTPError
 
 import pytest
 
+from eibrain.infra.head_events import post_head_action_event
 from eibrain.infra.head_client import HeadClient
+from eihead.protocol import ActionExecuted, MoveHeadAction
+from eihead.runtime.app import HeadRuntimeApp
 from eihead.runtime.http_api import create_handler, create_server
+
+
+FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "eiprotocol"
 
 
 class FakeHeadApp:
@@ -69,6 +76,33 @@ class EventHeadApp(FakeHeadApp):
             "trace_id": trace_id,
             "event_type": event.get("type"),
         }
+
+
+class RecordingBodyRuntime:
+    def __init__(self) -> None:
+        self.dispatched: list[object] = []
+
+    def snapshot(self) -> dict[str, object]:
+        return {"node_id": "honjia-test"}
+
+    def dispatch_actions(self, actions: list[object]) -> list[object]:
+        self.dispatched.extend(actions)
+        action = actions[0]
+        if isinstance(action, MoveHeadAction):
+            return [
+                ActionExecuted(
+                    ts=action.ts,
+                    source="neck.motor",
+                    status="ok",
+                    action_kind=action.kind,
+                    details={"target_angle": action.target_angle},
+                )
+            ]
+        return []
+
+
+def load_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
 @contextmanager
@@ -145,6 +179,25 @@ def test_post_events_calls_runtime_event_handler() -> None:
             "trace-event-1",
         )
     ]
+
+
+def test_head_client_post_event_routes_eiprotocol_action_through_runtime_app() -> None:
+    body_runtime = RecordingBodyRuntime()
+    app = HeadRuntimeApp(body_runtime=body_runtime)
+
+    with running_server(app) as (base_url, _server, _thread):
+        client = HeadClient(base_url, trace_id="trace-runtime-event")
+        payload = post_head_action_event(client, load_fixture("head_action_request.json"))
+
+    assert payload["ok"] is True
+    assert payload["accepted"] is True
+    assert payload["processed"] is True
+    assert payload["status"] == "accepted"
+    assert payload["trace_id"] == "trc_voice_001"
+    assert payload["action_outcome"]["action_type"] == "move_head"
+    assert isinstance(body_runtime.dispatched[0], MoveHeadAction)
+    assert body_runtime.dispatched[0].target_angle == 92
+    assert body_runtime.dispatched[0].target_name == "neck.pan"
 
 
 def test_post_events_returns_not_wired_success_when_handler_is_absent() -> None:
