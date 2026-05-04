@@ -69,7 +69,7 @@ TRANSITIONAL_PACKAGES = (
     {
         "package": "eiprotocol",
         "paths": ["eiprotocol"],
-        "reason": "Shared protocol MVP carried until /dev-project/eiprotocol becomes its own source repository.",
+        "reason": "Shared protocol MVP carried as an export copy; EXPORT_MANIFEST pins the independent /dev-project/eiprotocol revision when supplied.",
     },
     {
         "package": "eibrain.protocol",
@@ -313,8 +313,9 @@ The current runtime still carries a small `eibrain.protocol` compatibility
 subset, transitional `eibrain.body` hardware code, and the minimal
 `eibrain.cognition.realtime` scheduler primitives needed by the exported
 `apps.body_runtime` voice chain, plus transitional hardware verification
-helpers. Split those subsets into `eiprotocol` and the native eihead/eibrain
-protocol boundary once the shared protocol repo is ready.
+helpers. The shared protocol package is also exported as `/dev-project/eiprotocol`;
+when this exporter is given `--eiprotocol-repo-root`, `EXPORT_MANIFEST.json`
+pins the independent protocol repository revision used by this eihead build.
 """
 
 
@@ -366,6 +367,7 @@ def export_eihead_repo(
     target_dir: str | Path,
     *,
     repo_root: str | Path | None = None,
+    eiprotocol_repo_root: str | Path | None = None,
     force: bool = False,
 ) -> ExportResult:
     """Export eihead standalone files into ``target_dir``.
@@ -376,6 +378,9 @@ def export_eihead_repo(
     """
 
     source_root = _resolve_repo_root(repo_root)
+    protocol_root = _resolve_optional_eiprotocol_repo_root(eiprotocol_repo_root)
+    if protocol_root is not None and _same_path(protocol_root, source_root):
+        raise ValueError("eiprotocol repo root must be independent from the eibrain repo root")
     target = _resolve_target(target_dir)
 
     if target.exists():
@@ -407,6 +412,7 @@ def export_eihead_repo(
         _write_export_manifest(
             target_root=target,
             source_root=source_root,
+            eiprotocol_repo_root=protocol_root,
             copied=tuple(sorted(copied)),
             generated=tuple(generated),
         )
@@ -430,6 +436,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Source eibrain repository root. Defaults to this script's parent repo.",
     )
     parser.add_argument(
+        "--eiprotocol-repo-root",
+        default=None,
+        help=(
+            "Optional independent eiprotocol repository root. When supplied, "
+            "its git revision is pinned in EXPORT_MANIFEST.json."
+        ),
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Replace an existing target directory after path validation.",
@@ -441,7 +455,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:
-        result = export_eihead_repo(args.target, repo_root=args.repo_root, force=args.force)
+        result = export_eihead_repo(
+            args.target,
+            repo_root=args.repo_root,
+            eiprotocol_repo_root=args.eiprotocol_repo_root,
+            force=args.force,
+        )
     except Exception as exc:  # pragma: no cover - exercised by CLI callers.
         print(f"export failed: {exc}", file=sys.stderr)
         return 1
@@ -453,6 +472,17 @@ def _resolve_repo_root(repo_root: str | Path | None) -> Path:
     root = Path(repo_root or DEFAULT_REPO_ROOT).expanduser().resolve(strict=True)
     if not (root / "pyproject.toml").is_file():
         raise FileNotFoundError(f"repo root does not contain pyproject.toml: {root}")
+    return root
+
+
+def _resolve_optional_eiprotocol_repo_root(repo_root: str | Path | None) -> Path | None:
+    if repo_root in (None, ""):
+        return None
+    root = Path(repo_root).expanduser().resolve(strict=True)
+    if not (root / "pyproject.toml").is_file():
+        raise FileNotFoundError(f"eiprotocol repo root does not contain pyproject.toml: {root}")
+    if not (root / "eiprotocol").is_dir():
+        raise FileNotFoundError(f"eiprotocol repo root does not contain eiprotocol/: {root}")
     return root
 
 
@@ -547,17 +577,33 @@ def _write_export_manifest(
     *,
     target_root: Path,
     source_root: Path,
+    eiprotocol_repo_root: Path | None,
     copied: tuple[str, ...],
     generated: tuple[str, ...],
 ) -> str:
     generated_with_manifest = (*generated, MANIFEST_FILENAME)
     source_state = _read_source_git_state(source_root)
+    eiprotocol_state = _read_eiprotocol_source_state(
+        source_root,
+        eiprotocol_repo_root,
+        source_state=source_state,
+    )
     manifest = {
         "schema_version": 1,
         "source": {
             "repository": "eibrain",
             "repo_root": str(source_root),
             **source_state,
+        },
+        "protocol_sources": {
+            "eiprotocol": eiprotocol_state,
+            "legacy_eibrain_protocol": {
+                "repository": "eibrain",
+                "mode": "transitional_compatibility",
+                "repo_root": str(source_root),
+                "paths": ["eibrain/protocol"],
+                "commit": source_state["commit"],
+            },
         },
         "standalone_repo": {
             "name": "eihead",
@@ -593,6 +639,33 @@ def _read_source_git_state(source_root: Path) -> dict[str, object]:
         "commit": commit or "unknown",
         "dirty": bool(status_short),
         "status_short": status_short,
+    }
+
+
+def _read_eiprotocol_source_state(
+    source_root: Path,
+    eiprotocol_repo_root: Path | None,
+    *,
+    source_state: dict[str, object],
+) -> dict[str, object]:
+    if eiprotocol_repo_root is None:
+        return {
+            "repository": "eiprotocol",
+            "mode": "embedded_export",
+            "repo_root": str(source_root),
+            "paths": ["eiprotocol"],
+            "commit": source_state["commit"],
+            "dirty": source_state["dirty"],
+            "status_short": list(source_state.get("status_short", [])),
+        }
+
+    protocol_state = _read_source_git_state(eiprotocol_repo_root)
+    return {
+        "repository": "eiprotocol",
+        "mode": "independent_repo",
+        "repo_root": str(eiprotocol_repo_root),
+        "paths": ["eiprotocol"],
+        **protocol_state,
     }
 
 

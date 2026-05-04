@@ -24,6 +24,45 @@ def _load_export_module():
     return module
 
 
+def _create_protocol_git_repo(tmp_path: Path) -> tuple[Path, str]:
+    repo = tmp_path / "eiprotocol-repo"
+    (repo / "eiprotocol").mkdir(parents=True)
+    (repo / "eiprotocol" / "__init__.py").write_text(
+        '"""fixture protocol package."""\n',
+        encoding="utf-8",
+    )
+    (repo / "pyproject.toml").write_text(
+        "[project]\nname = \"eiprotocol\"\nversion = \"0.1.0\"\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init"], check=True, capture_output=True, text=True, cwd=repo)
+    subprocess.run(["git", "add", "."], check=True, capture_output=True, text=True, cwd=repo)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Codex",
+            "-c",
+            "user.email=codex@example.invalid",
+            "commit",
+            "-m",
+            "Initialize eiprotocol fixture",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=repo,
+    )
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+        cwd=repo,
+    ).stdout.strip()
+    return repo, commit
+
+
 def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead-standalone"
@@ -115,6 +154,18 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
     assert manifest["source"]["commit"] == source_commit
     assert isinstance(manifest["source"]["dirty"], bool)
     assert isinstance(manifest["source"]["status_short"], list)
+    assert manifest["protocol_sources"]["eiprotocol"]["repository"] == "eiprotocol"
+    assert manifest["protocol_sources"]["eiprotocol"]["mode"] == "embedded_export"
+    assert manifest["protocol_sources"]["eiprotocol"]["repo_root"] == str(REPO_ROOT)
+    assert manifest["protocol_sources"]["eiprotocol"]["paths"] == ["eiprotocol"]
+    assert manifest["protocol_sources"]["eiprotocol"]["commit"] == source_commit
+    assert manifest["protocol_sources"]["legacy_eibrain_protocol"] == {
+        "repository": "eibrain",
+        "mode": "transitional_compatibility",
+        "repo_root": str(REPO_ROOT),
+        "paths": ["eibrain/protocol"],
+        "commit": source_commit,
+    }
     assert manifest["standalone_repo"]["expected_honxin_path"] == "/dev-project/eihead"
     assert manifest["standalone_repo"]["runtime_path"] == "/opt/eihead/current"
     assert manifest["future_capabilities"] == [
@@ -193,7 +244,7 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
         {
             "package": "eiprotocol",
             "paths": ["eiprotocol"],
-            "reason": "Shared protocol MVP carried until /dev-project/eiprotocol becomes its own source repository.",
+            "reason": "Shared protocol MVP carried as an export copy; EXPORT_MANIFEST pins the independent /dev-project/eiprotocol revision when supplied.",
         },
         {
             "package": "eibrain.protocol",
@@ -281,6 +332,7 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert "closed-loop voice diagnostics" in readme
     assert "round/scheduler/interrupt" in readme
     assert "hardware verification" in readme
+    assert "pins the independent protocol repository revision" in readme
     assert "Static image detection is compatibility/test-only" in readme
     assert "eihead-runtime http --host 0.0.0.0 --port 18081" in readme
     assert "__pycache__/" in gitignore
@@ -389,6 +441,40 @@ def test_export_documents_realtime_eye_adapter_monitor_and_truthfulness(tmp_path
     assert "Realtime Cognitive" in readme
     assert "Scheduler" in readme
     assert "Static image detection is compatibility/test-only" in readme
+
+
+def test_export_manifest_can_pin_independent_eiprotocol_repo_revision(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+    protocol_repo, protocol_commit = _create_protocol_git_repo(tmp_path)
+
+    module.export_eihead_repo(
+        target,
+        repo_root=REPO_ROOT,
+        eiprotocol_repo_root=protocol_repo,
+    )
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+
+    assert manifest["protocol_sources"]["eiprotocol"] == {
+        "repository": "eiprotocol",
+        "mode": "independent_repo",
+        "repo_root": str(protocol_repo.resolve()),
+        "paths": ["eiprotocol"],
+        "commit": protocol_commit,
+        "dirty": False,
+        "status_short": [],
+    }
+
+
+def test_export_rejects_eibrain_root_as_independent_eiprotocol_repo(tmp_path: Path) -> None:
+    module = _load_export_module()
+
+    with pytest.raises(ValueError, match="must be independent"):
+        module.export_eihead_repo(
+            tmp_path / "eihead-standalone",
+            repo_root=REPO_ROOT,
+            eiprotocol_repo_root=REPO_ROOT,
+        )
 
 
 def test_exported_transitional_runtime_imports_without_brain_runtime(tmp_path: Path) -> None:

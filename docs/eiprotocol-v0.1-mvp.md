@@ -66,10 +66,12 @@ The first implementation lives in top-level package `eiprotocol`:
 - `HeadAction`, `ExecutionOutcome`, `UserFeedback`
 - `validate_event`
 
-The package is included in `pyproject.toml` and exported into standalone
-`eihead` builds by `scripts/export-eihead-repo.py`. This keeps the current
-monorepo working while leaving a clean path to split `/dev-project/eiprotocol`
-into a standalone repository later.
+The package is included in `pyproject.toml`, exported into standalone
+`eiprotocol` builds by `scripts/export-eiprotocol-repo.py`, and carried into
+standalone `eihead` builds by `scripts/export-eihead-repo.py`. This keeps the
+current monorepo working while establishing `/dev-project/eiprotocol` as the
+shared protocol repository. When the eihead export is given
+`--eiprotocol-repo-root`, its manifest pins the independent protocol revision.
 
 ## Required Next Supplements
 
@@ -78,8 +80,9 @@ three follow-up supplements before real cutover:
 
 1. Transport binding: HTTP, SSE, or WebSocket routes that carry the envelope
    between `eihead` and `eibrain`.
-2. Compatibility adapters: conversion between existing `eibrain.protocol` /
-   `eihead.protocol` classes and `eiprotocol` envelope events.
+2. Compatibility adapters: keep expanding conversion between existing
+   `eibrain.protocol` / `eihead.protocol` classes and `eiprotocol` envelope
+   events as more realtime surfaces move out of compatibility mode.
 3. Golden fixtures: stored JSON examples for voice barge-in, realtime vision,
    pan-only neck action, execution outcome, and user feedback.
 

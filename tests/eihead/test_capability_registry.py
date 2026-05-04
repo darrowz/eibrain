@@ -3,7 +3,15 @@ from __future__ import annotations
 import json
 
 from eihead.monitoring import build_status_snapshot, snapshot_to_json
-from eihead.services import CapabilityRegistry, DEGRADED, OFFLINE, ONLINE, manifest_from_config, manifest_to_json
+from eihead.services import (
+    CapabilityRegistry,
+    DEGRADED,
+    OFFLINE,
+    ONLINE,
+    manifest_from_config,
+    manifest_to_eiprotocol_event,
+    manifest_to_json,
+)
 
 
 def test_manifest_detects_default_device_paths_with_injected_probe() -> None:
@@ -119,6 +127,78 @@ def test_manifest_and_snapshot_are_json_serializable() -> None:
 
     assert json.loads(manifest_json)["capabilities"]["asr"]["status"] == ONLINE
     assert json.loads(snapshot_json)["overall_status"] == DEGRADED
+
+
+def test_eiprotocol_conversion_preserves_plain_manifest_shape() -> None:
+    existing_paths = {"/dev/video0", "/dev/hailo0", "/dev/i2c-1"}
+    manifest = CapabilityRegistry(
+        {"node_id": "honjia"},
+        path_exists=existing_paths.__contains__,
+        clock=_clock(600.0),
+    ).manifest()
+    original = json.loads(json.dumps(manifest))
+
+    manifest_to_eiprotocol_event(
+        manifest,
+        event_id="evt_capability_registry",
+        request_id="req_capability_registry",
+        sequence=11,
+        time="2026-05-04T10:31:00+08:00",
+    )
+
+    assert manifest == original
+    assert set(manifest) == {"schema", "node_id", "generated_at_ts", "capabilities"}
+    assert set(manifest["capabilities"]["camera"]) == {
+        "name",
+        "kind",
+        "status",
+        "latency_ms",
+        "last_ok_ts",
+        "error",
+        "limits",
+        "details",
+    }
+    assert manifest["capabilities"]["neck"]["limits"] == {"pan_deg": [0, 180], "tilt_deg": None}
+
+
+def test_registry_eiprotocol_manifest_round_trips_for_honjia_devices() -> None:
+    from eiprotocol import EventEnvelope, validate_event
+
+    existing_paths = {"/dev/video0", "/dev/hailo0", "/dev/i2c-1"}
+    registry = CapabilityRegistry(
+        {"node_id": "honjia"},
+        path_exists=existing_paths.__contains__,
+        clock=_clock(700.0),
+    )
+
+    event = registry.eiprotocol_manifest(
+        event_id="evt_capability_registry",
+        request_id="req_capability_registry",
+        sequence=12,
+        time="2026-05-04T10:31:00+08:00",
+    )
+    payload = json.loads(event.to_json())
+    restored = EventEnvelope.from_dict(payload)
+    capabilities = {item["capabilityId"]: item for item in payload["content"]["capabilities"]}
+
+    assert payload["name"] == "ei.capability.manifest.report"
+    assert payload["source"]["domain"] == "eihead"
+    assert payload["source"]["instanceId"] == "honjia"
+    assert payload["source"]["deviceId"] == "honjia"
+    assert payload["content"]["device"]["deviceId"] == "honjia"
+    assert capabilities["camera.front"]["devicePath"] == "/dev/video0"
+    assert capabilities["accelerator.hailo"]["devicePath"] == "/dev/hailo0"
+    assert capabilities["bus.i2c"]["devicePath"] == "/dev/i2c-1"
+    assert capabilities["microphone.default"]["kind"] == "audio_input"
+    assert capabilities["speaker.default"]["kind"] == "audio_output"
+    assert capabilities["neck.pan"]["limits"] == {
+        "axis": "pan",
+        "minAngle": 0,
+        "maxAngle": 180,
+        "tiltSupported": False,
+    }
+    assert restored.to_dict() == payload
+    assert validate_event(restored) == []
 
 
 def _clock(*values: float):

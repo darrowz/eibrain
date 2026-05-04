@@ -5,9 +5,11 @@ from .capability_registry import (
     CapabilityRegistry,
     DEGRADED,
     DEFAULT_CAPABILITIES,
+    EIPROTOCOL_MANIFEST_EVENT,
     OFFLINE,
     ONLINE,
     manifest_from_config,
+    manifest_to_eiprotocol_event,
     manifest_to_json,
 )
 
@@ -16,8 +18,10 @@ __all__ = [
     "CapabilityRegistry",
     "DEGRADED",
     "DEFAULT_CAPABILITIES",
+    "EIPROTOCOL_MANIFEST_EVENT",
     "OFFLINE",
     "ONLINE",
     "manifest_from_config",
+    "manifest_to_eiprotocol_event",
     "manifest_to_json",
 ]
