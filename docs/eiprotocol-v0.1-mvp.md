@@ -12,6 +12,11 @@ Repository state after the split: `/dev-project/eibrain` remains the source
 repo, `/dev-project/eiprotocol` is the exported shared protocol repo, and
 `/dev-project/eihead` is the exported head repo.
 
+v0.1.1 supplement: `docs/eiprotocol-v0.1.1-freeze.md` is the freeze boundary
+for this MVP line. It clarifies that v0.1.1 freezes the protocol package
+contract, fixtures, validation, routing, and standalone export surface; it does
+not require the full JoyInside product/runtime capability set.
+
 ## What Enters MVP
 
 - A versioned event envelope with `specVersion=eiprotocol/0.1`.
@@ -27,6 +32,8 @@ repo, `/dev-project/eiprotocol` is the exported shared protocol repo, and
 - Realtime dialogue coordination using `ei.dialogue.fast_hypothesis` and
   `ei.dialogue.decision.stable`.
 - Realtime vision frame observations using `ei.observation.vision.frame`.
+- Realtime vision supplements for `vision.scene` and `vision.event` event
+  contracts, without requiring scene graph algorithms in the protocol package.
 - Head runtime monitoring using `ei.observation.head.status.report`.
 - Head actions using `ei.action.request`, including idempotency keys for
   side-effecting operations.
@@ -36,6 +43,8 @@ repo, `/dev-project/eiprotocol` is the exported shared protocol repo, and
   `POST /events` carrying one envelope per request.
 - Basic validation for required envelope fields, turn-scoped `roundId`, and
   idempotency on side-effecting action events.
+- v0.1.1 supplements for `memory.policy.report`, speech-action plan contracts,
+  and realtime dialogue event coverage.
 
 ## JoyInside Reference Points Adopted
 
@@ -67,6 +76,9 @@ These are useful but intentionally not implementation blockers for v0.1:
 - TTS audio chunk streaming and phoneme/action synchronization.
 - Signed policy decisions and tamper-evident audit records.
 - Multi-device linked sessions.
+- WebSocket/SSE/MQTT runtime implementations, binary media transport, scene
+  graph algorithms, long-term memory implementation, and the JoyInside role
+  ecosystem are deferred to v0.2+ or product/runtime repositories.
 
 ## Current Code Shape
 
@@ -119,3 +131,10 @@ Acceptance for this MVP is intentionally code-level: catalog/fixture parity,
 strict validation tests, JSON codec round-trips, standalone export tests,
 standalone `eihead` export import smoke, and the `/events` transport
 truthfulness checks must pass.
+
+For v0.1.1, completion is measured against the supplement freeze: envelope,
+catalog, routing, validation, fixtures, standalone export, `vision.frame`,
+`vision.scene`, `vision.event`, `memory.policy.report`, speech-action plan, and
+realtime dialogue events are in scope; runtime transports, binary media, scene
+graph algorithms, safety runtime, long-term memory internals, and JoyInside role
+ecosystem behavior are deferred.

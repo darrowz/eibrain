@@ -1,0 +1,63 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_memory_policy_report_001",
+  "type": "memory",
+  "name": "ei.memory.policy.report",
+  "time": "2026-05-05T09:42:02.000+08:00",
+  "sequence": 303,
+  "requestId": "req_memory_policy_report_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "evt_vision_event_001",
+  "causationId": "evt_vision_event_001",
+  "traceId": "trc_memory_policy_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": null,
+  "mode": {
+    "conversationState": "thinking",
+    "interactionMode": "free"
+  },
+  "content": {
+    "policyId": "mpol_recall_privacy_001",
+    "scope": {
+      "roundId": "rnd_voice_001",
+      "memoryTypes": [
+        "preference"
+      ]
+    },
+    "decision": "allow",
+    "reason": "round context allows preference recall",
+    "evidence": [
+      {
+        "kind": "consent",
+        "value": "session"
+      }
+    ],
+    "metadata": {
+      "policyVersion": "2026-05-05"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eimemory",
+    "instanceId": "memoria",
+    "metadata": {}
+  }
+}

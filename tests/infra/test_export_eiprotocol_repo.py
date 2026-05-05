@@ -56,7 +56,9 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
         "eiprotocol/__init__.py",
         "eiprotocol/models.py",
         "docs/eiprotocol-hardening-checklist.md",
+        "docs/eiprotocol-v0.1.1-freeze.md",
         "docs/eiprotocol-v0.1-mvp.md",
+        "scripts/eiprotocol_conformance_report.py",
         "tests/protocol/test_eiprotocol_event_routing.py",
         "tests/protocol/test_eiprotocol_fixtures.py",
         "tests/protocol/test_eiprotocol_mvp.py",
@@ -67,7 +69,9 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
     assert "eiprotocol/__init__.py" in result.copied
     assert "eiprotocol/models.py" in result.copied
     assert "docs/eiprotocol-hardening-checklist.md" in result.copied
+    assert "docs/eiprotocol-v0.1.1-freeze.md" in result.copied
     assert "docs/eiprotocol-v0.1-mvp.md" in result.copied
+    assert "scripts/eiprotocol_conformance_report.py" in result.copied
     assert "tests/protocol/test_eiprotocol_event_routing.py" in result.copied
     assert "tests/protocol/test_eiprotocol_fixtures.py" in result.copied
     assert "tests/protocol/test_eiprotocol_mvp.py" in result.copied
@@ -76,6 +80,7 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
         assert rel_path in result.copied
     assert result.generated == ("pyproject.toml", "README.md", ".gitignore")
     assert not (target / "eibrain").exists()
+    assert not (target / "eihead").exists()
     assert not (target / "eiprotocol/__pycache__").exists()
 
 
@@ -173,6 +178,24 @@ def test_exported_repo_runs_all_exported_eiprotocol_tests(tmp_path: Path) -> Non
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", *exported_tests],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=target,
+        env=env,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_exported_repo_runs_conformance_report_in_strict_mode(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eiprotocol-standalone"
+    module.export_eiprotocol_repo(target, repo_root=REPO_ROOT)
+
+    env = {**os.environ, "PYTHONPATH": str(target)}
+    result = subprocess.run(
+        [sys.executable, "scripts/eiprotocol_conformance_report.py", "--strict"],
         check=False,
         capture_output=True,
         text=True,

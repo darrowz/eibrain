@@ -568,6 +568,49 @@ class MemoryPrefetchRequest:
 
 
 @dataclass(slots=True)
+class MemoryPolicyReport:
+    policy_id: str
+    scope: dict[str, Any]
+    decision: str
+    reason: str = ""
+    evidence: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "policyId": self.policy_id,
+            "scope": dict(self.scope),
+            "decision": self.decision,
+            "reason": self.reason,
+            "evidence": [dict(item) for item in self.evidence],
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "MemoryPolicyReport":
+        scope = data.get("scope")
+        evidence = data.get("evidence")
+        metadata = data.get("metadata")
+        return cls(
+            policy_id=str(data.get("policyId", data.get("policy_id", "")) or ""),
+            scope=_dict(scope if isinstance(scope, Mapping) else None),
+            decision=str(data.get("decision", "") or ""),
+            reason=str(data.get("reason", "") or ""),
+            evidence=_dict_items(evidence),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="memory",
+            name="ei.memory.policy.report",
+            content=self.to_content(),
+            priority="normal",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
 class SpeechActionPlan:
     plan_id: str
     stable: bool
@@ -804,6 +847,105 @@ class RealtimeVisionObservation:
         return _round_event(
             event_type="observation",
             name="ei.observation.vision.frame",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class VisionSceneObservation:
+    scene_id: str
+    observed_at: str
+    summary: str = ""
+    objects: list[dict[str, Any]] = field(default_factory=list)
+    relationships: list[dict[str, Any]] = field(default_factory=list)
+    environment: dict[str, Any] = field(default_factory=dict)
+    image_url: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "sceneId": self.scene_id,
+            "observedAt": self.observed_at,
+            "summary": self.summary,
+            "objects": [dict(item) for item in self.objects],
+            "relationships": [dict(item) for item in self.relationships],
+            "environment": dict(self.environment),
+            "imageUrl": self.image_url,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "VisionSceneObservation":
+        objects = data.get("objects")
+        relationships = data.get("relationships")
+        environment = data.get("environment")
+        metadata = data.get("metadata")
+        return cls(
+            scene_id=str(data.get("sceneId", data.get("scene_id", "")) or ""),
+            observed_at=str(data.get("observedAt", data.get("observed_at", "")) or ""),
+            summary=str(data.get("summary", "") or ""),
+            objects=_dict_items(objects),
+            relationships=_dict_items(relationships),
+            environment=_dict(environment if isinstance(environment, Mapping) else None),
+            image_url=str(data.get("imageUrl", data.get("image_url", "")) or ""),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="observation",
+            name="ei.observation.vision.scene",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class VisionEventObservation:
+    event_id: str
+    event_type: str
+    observed_at: str
+    scene_id: str = ""
+    subject: dict[str, Any] = field(default_factory=dict)
+    confidence: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "eventId": self.event_id,
+            "eventType": self.event_type,
+            "observedAt": self.observed_at,
+            "sceneId": self.scene_id,
+            "subject": dict(self.subject),
+            "confidence": self.confidence,
+            "details": dict(self.details),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "VisionEventObservation":
+        subject = data.get("subject")
+        details = data.get("details")
+        metadata = data.get("metadata")
+        return cls(
+            event_id=str(data.get("eventId", data.get("event_id", "")) or ""),
+            event_type=str(data.get("eventType", data.get("event_type", "")) or ""),
+            observed_at=str(data.get("observedAt", data.get("observed_at", "")) or ""),
+            scene_id=str(data.get("sceneId", data.get("scene_id", "")) or ""),
+            subject=_dict(subject if isinstance(subject, Mapping) else None),
+            confidence=_optional_float(data.get("confidence")),
+            details=_dict(details if isinstance(details, Mapping) else None),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="observation",
+            name="ei.observation.vision.event",
             content=self.to_content(),
             priority="realtime",
             **kwargs,

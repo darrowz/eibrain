@@ -17,6 +17,7 @@ from .models import (
     EventEnvelope,
     ExecutionOutcome,
     HeadStatusReport,
+    MemoryPolicyReport,
     MemoryPrefetchRequest,
     PolicyState,
     ProactiveActivityProposal,
@@ -24,6 +25,8 @@ from .models import (
     SourceRef,
     SpeechActionPlan,
     TargetRef,
+    VisionEventObservation,
+    VisionSceneObservation,
 )
 from .validation import ValidationIssue, validate_event_strict
 
@@ -49,6 +52,8 @@ _EVENT_DEFAULTS: dict[str, tuple[str, bool]] = {
     "ei.capability.manifest.report": ("capability", False),
     "ei.observation.audio.chunk": ("observation", False),
     "ei.observation.vision.frame": ("observation", False),
+    "ei.observation.vision.scene": ("observation", False),
+    "ei.observation.vision.event": ("observation", False),
     "ei.observation.head.status.report": ("observation", False),
     "ei.observation.emotion.context": ("observation", True),
     "ei.dialogue.asr.partial": ("dialogue", True),
@@ -70,6 +75,7 @@ _EVENT_DEFAULTS: dict[str, tuple[str, bool]] = {
     "ei.policy.decision": ("policy", True),
     "ei.memory.recall.request": ("memory", True),
     "ei.memory.prefetch.requested": ("memory", True),
+    "ei.memory.policy.report": ("memory", True),
     "ei.memory.recall.result": ("memory", True),
     "ei.memory.write.proposed": ("memory", True),
     "ei.memory.write.committed": ("memory", True),
@@ -664,6 +670,66 @@ def build_memory_prefetch_requested_event(
     )
 
 
+def build_memory_policy_report_event(
+    *,
+    source: SourceLike,
+    report: MemoryPolicyReport | Mapping[str, Any] | None = None,
+    policy_id: str = "",
+    scope: Mapping[str, Any] | None = None,
+    decision: str = "",
+    reason: str = "",
+    evidence: Iterable[Mapping[str, Any]] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = None,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _memory_policy_report(
+        report,
+        policy_id=policy_id,
+        scope=scope,
+        decision=decision,
+        reason=reason,
+        evidence=evidence,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.memory.policy.report",
+        event_type="memory",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="normal",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
 def build_speech_action_plan_event(
     *,
     source: SourceLike,
@@ -914,6 +980,130 @@ def build_vision_frame_event(
         sequence=sequence,
         session_id=session_id,
         round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=False,
+    )
+
+
+def build_vision_scene_event(
+    *,
+    source: SourceLike,
+    scene: VisionSceneObservation | Mapping[str, Any] | None = None,
+    scene_id: str = "",
+    observed_at: str = "",
+    summary: str = "",
+    objects: Iterable[Mapping[str, Any]] | None = None,
+    relationships: Iterable[Mapping[str, Any]] | None = None,
+    environment: Mapping[str, Any] | None = None,
+    image_url: str = "",
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 1000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _vision_scene_observation(
+        scene,
+        scene_id=scene_id,
+        observed_at=observed_at,
+        summary=summary,
+        objects=objects,
+        relationships=relationships,
+        environment=environment,
+        image_url=image_url,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.observation.vision.scene",
+        event_type="observation",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=False,
+    )
+
+
+def build_vision_event_event(
+    *,
+    source: SourceLike,
+    event_id: str,
+    event_type: str,
+    observed_at: str,
+    scene_id: str = "",
+    event: VisionEventObservation | Mapping[str, Any] | None = None,
+    subject: Mapping[str, Any] | None = None,
+    confidence: float | None = None,
+    details: Mapping[str, Any] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    protocol_event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 1000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _vision_event_observation(
+        event,
+        event_id=event_id,
+        event_type=event_type,
+        observed_at=observed_at,
+        scene_id=scene_id,
+        subject=subject,
+        confidence=confidence,
+        details=details,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.observation.vision.event",
+        event_type="observation",
+        source=source,
+        target=target,
+        content=content,
+        event_id=protocol_event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
         correlation_id=correlation_id,
         causation_id=causation_id,
         trace_id=trace_id,
@@ -1225,6 +1415,43 @@ def _memory_prefetch_request(
     )
 
 
+def _memory_policy_report(
+    report: MemoryPolicyReport | Mapping[str, Any] | None,
+    *,
+    policy_id: str,
+    scope: Mapping[str, Any] | None,
+    decision: str,
+    reason: str,
+    evidence: Iterable[Mapping[str, Any]] | None,
+    metadata: Mapping[str, Any] | None,
+) -> MemoryPolicyReport:
+    if isinstance(report, MemoryPolicyReport):
+        return report
+    if isinstance(report, Mapping):
+        merged = dict(report)
+        if policy_id:
+            merged["policyId"] = policy_id
+        if scope is not None:
+            merged["scope"] = dict(scope)
+        if decision:
+            merged["decision"] = decision
+        if reason:
+            merged["reason"] = reason
+        if evidence is not None:
+            merged["evidence"] = [dict(item) for item in evidence]
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return MemoryPolicyReport.from_content(merged)
+    return MemoryPolicyReport(
+        policy_id=policy_id,
+        scope=dict(scope or {}),
+        decision=decision,
+        reason=reason,
+        evidence=[dict(item) for item in evidence or ()],
+        metadata=dict(metadata or {}),
+    )
+
+
 def _speech_action_plan(
     plan: SpeechActionPlan | Mapping[str, Any] | None,
     *,
@@ -1356,6 +1583,96 @@ def _dialogue_cancellation_applied(
     )
 
 
+def _vision_scene_observation(
+    scene: VisionSceneObservation | Mapping[str, Any] | None,
+    *,
+    scene_id: str,
+    observed_at: str,
+    summary: str,
+    objects: Iterable[Mapping[str, Any]] | None,
+    relationships: Iterable[Mapping[str, Any]] | None,
+    environment: Mapping[str, Any] | None,
+    image_url: str,
+    metadata: Mapping[str, Any] | None,
+) -> VisionSceneObservation:
+    if isinstance(scene, VisionSceneObservation):
+        return scene
+    if isinstance(scene, Mapping):
+        merged = dict(scene)
+        if scene_id:
+            merged["sceneId"] = scene_id
+        if observed_at:
+            merged["observedAt"] = observed_at
+        if summary:
+            merged["summary"] = summary
+        if objects is not None:
+            merged["objects"] = [dict(item) for item in objects]
+        if relationships is not None:
+            merged["relationships"] = [dict(item) for item in relationships]
+        if environment is not None:
+            merged["environment"] = dict(environment)
+        if image_url:
+            merged["imageUrl"] = image_url
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return VisionSceneObservation.from_content(merged)
+    return VisionSceneObservation(
+        scene_id=scene_id,
+        observed_at=observed_at,
+        summary=summary,
+        objects=[dict(item) for item in objects or ()],
+        relationships=[dict(item) for item in relationships or ()],
+        environment=dict(environment or {}),
+        image_url=image_url,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _vision_event_observation(
+    event: VisionEventObservation | Mapping[str, Any] | None,
+    *,
+    event_id: str,
+    event_type: str,
+    observed_at: str,
+    scene_id: str,
+    subject: Mapping[str, Any] | None,
+    confidence: float | None,
+    details: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None,
+) -> VisionEventObservation:
+    if isinstance(event, VisionEventObservation):
+        return event
+    if isinstance(event, Mapping):
+        merged = dict(event)
+        if event_id:
+            merged["eventId"] = event_id
+        if event_type:
+            merged["eventType"] = event_type
+        if observed_at:
+            merged["observedAt"] = observed_at
+        if scene_id:
+            merged["sceneId"] = scene_id
+        if subject is not None:
+            merged["subject"] = dict(subject)
+        if confidence is not None:
+            merged["confidence"] = confidence
+        if details is not None:
+            merged["details"] = dict(details)
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return VisionEventObservation.from_content(merged)
+    return VisionEventObservation(
+        event_id=event_id,
+        event_type=event_type,
+        observed_at=observed_at,
+        scene_id=scene_id,
+        subject=dict(subject or {}),
+        confidence=confidence,
+        details=dict(details or {}),
+        metadata=dict(metadata or {}),
+    )
+
+
 def _raise_if_invalid(event: EventEnvelope) -> None:
     errors = [_issue_to_error(issue) for issue in validate_event_strict(event, known_event_required=True)]
     if errors:
@@ -1380,8 +1697,11 @@ __all__ = [
     "build_event",
     "build_execution_outcome_event",
     "build_head_status_report_event",
+    "build_memory_policy_report_event",
     "build_memory_prefetch_requested_event",
     "build_proactive_activity_proposed_event",
     "build_speech_action_plan_event",
+    "build_vision_event_event",
     "build_vision_frame_event",
+    "build_vision_scene_event",
 ]

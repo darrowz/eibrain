@@ -1,0 +1,60 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_vision_event_001",
+  "type": "observation",
+  "name": "ei.observation.vision.event",
+  "time": "2026-05-05T09:42:01.010+08:00",
+  "sequence": 302,
+  "requestId": "req_vision_event_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "",
+  "correlationId": "evt_vision_scene_001",
+  "causationId": "evt_vision_frame_001",
+  "traceId": "trc_vision_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "camera.front",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 1000,
+  "mode": {
+    "conversationState": "listening",
+    "interactionMode": "free"
+  },
+  "content": {
+    "eventId": "vevt_person_entered_001",
+    "eventType": "person_entered",
+    "observedAt": "2026-05-05T09:42:01.000+08:00",
+    "sceneId": "scene_front_001",
+    "subject": {
+      "label": "person",
+      "trackId": "track_person_1"
+    },
+    "confidence": 0.88,
+    "details": {
+      "zone": "desk"
+    },
+    "metadata": {
+      "source": "vision_event_detector"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

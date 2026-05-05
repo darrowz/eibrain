@@ -39,6 +39,7 @@ EXPECTED_FIXTURES = {
     "interrupt_requested.json",
     "memory_recall_request.json",
     "memory_prefetch_requested.json",
+    "memory_policy.json",
     "memory_recall_result.json",
     "memory_write_committed.json",
     "memory_write_proposed.json",
@@ -50,6 +51,8 @@ EXPECTED_FIXTURES = {
     "tts_delta.json",
     "tts_final.json",
     "user_feedback.json",
+    "vision_event.json",
+    "vision_scene.json",
 }
 
 

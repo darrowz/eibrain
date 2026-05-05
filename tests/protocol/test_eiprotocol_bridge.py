@@ -413,3 +413,136 @@ def test_payload_to_eiprotocol_event_routes_realtime_vision_payload_kind() -> No
     assert payload["content"]["frameId"] == "frame-routed-1"
     assert payload["content"]["boxes"] == [[0.1, 0.2, 0.3, 0.4]]
     assert payload["content"]["scores"] == [0.88]
+
+
+def test_payload_to_eiprotocol_event_routes_v011_generic_payload_kinds() -> None:
+    from eibrain.protocol.eiprotocol_bridge import payload_to_eiprotocol_event
+
+    cases = [
+        (
+            "ei.observation.vision.scene",
+            "ei.observation.vision.scene",
+            "observation",
+            "vision_scene",
+            {
+                "scene_id": "scene-1",
+                "summary": "A person is standing near the desk.",
+                "objects": [{"label": "person", "score": 0.94}],
+                "metadata": {"lighting": "indoor"},
+            },
+            {"sceneId": "scene-1", "summary": "A person is standing near the desk."},
+        ),
+        (
+            "vision_scene",
+            "ei.observation.vision.scene",
+            "observation",
+            "vision_scene",
+            {
+                "sceneId": "scene-2",
+                "summary": "The desk is clear.",
+                "objects": [{"label": "desk", "score": 0.87}],
+            },
+            {"sceneId": "scene-2", "summary": "The desk is clear."},
+        ),
+        (
+            "ei.observation.vision.event",
+            "ei.observation.vision.event",
+            "observation",
+            "vision_event",
+            {
+                "vision_event_id": "vision-event-1",
+                "event_type": "object_entered",
+                "subject": {"label": "person", "track_id": "track-1"},
+                "metadata": {"zone": "left"},
+            },
+            {"eventId": "vision-event-1", "eventType": "object_entered"},
+        ),
+        (
+            "vision_event",
+            "ei.observation.vision.event",
+            "observation",
+            "vision_event",
+            {
+                "eventId": "vision-event-2",
+                "eventType": "object_left",
+                "subject": {"label": "person", "track_id": "track-2"},
+            },
+            {"eventId": "vision-event-2", "eventType": "object_left"},
+        ),
+        (
+            "ei.memory.policy.report",
+            "ei.memory.policy.report",
+            "memory",
+            "memory_policy_report",
+            {
+                "report_id": "memory-policy-1",
+                "scope": {"operation": "write"},
+                "decision": "allow",
+                "reason": "salient user preference",
+                "writes": [{"memory_id": "mem-1", "status": "proposed"}],
+            },
+            {"policyId": "memory-policy-1", "decision": "allow"},
+        ),
+        (
+            "memory_policy_report",
+            "ei.memory.policy.report",
+            "memory",
+            "memory_policy_report",
+            {
+                "reportId": "memory-policy-2",
+                "scope": {"operation": "writeback"},
+                "decision": "deny",
+                "reason": "low confidence",
+                "metadata": {"policy": "salient_or_user_requested"},
+            },
+            {"policyId": "memory-policy-2", "decision": "deny"},
+        ),
+    ]
+
+    for kind, expected_name, expected_type, expected_route, extra_payload, expected_content in cases:
+        event = payload_to_eiprotocol_event(
+            {
+                "kind": kind,
+                "source": "eibrain.honxin",
+                "target": "eimemory.default",
+                "session_id": "session-v011",
+                "round_id": "round-v011",
+                "trace_id": f"trace-{kind}",
+                **extra_payload,
+            },
+            event_id=f"evt_{kind.replace('.', '_')}",
+            request_id=f"req_{kind.replace('.', '_')}",
+            sequence=11,
+            time="2026-05-05T10:00:00.000+08:00",
+        )
+
+        payload = _assert_strict_round_trip_and_route(event, expected_route)
+        assert payload["name"] == expected_name
+        assert payload["type"] == expected_type
+        assert payload["source"]["domain"] == "eibrain"
+        assert payload["target"]["domain"] == "eimemory"
+        assert payload["roundId"] == ("round-v011" if expected_type == "memory" else "")
+        for key, value in expected_content.items():
+            assert payload["content"][key] == value
+
+
+def test_v011_vision_bridge_defaults_to_head_to_brain_direction() -> None:
+    from eibrain.protocol.eiprotocol_bridge import payload_to_eiprotocol_event
+
+    event = payload_to_eiprotocol_event(
+        {
+            "kind": "vision_scene",
+            "sceneId": "scene-default-direction",
+            "observedAt": "2026-05-05T10:01:00.000+08:00",
+        },
+        event_id="evt_vision_scene_default_direction",
+        request_id="req_vision_scene_default_direction",
+        sequence=12,
+        time="2026-05-05T10:01:00.100+08:00",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "vision_scene")
+    assert payload["source"]["domain"] == "eihead"
+    assert payload["source"]["instanceId"] == "honjia"
+    assert payload["target"]["domain"] == "eibrain"
+    assert payload["target"]["instanceId"] == "honxin"

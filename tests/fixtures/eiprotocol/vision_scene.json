@@ -1,0 +1,76 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_vision_scene_001",
+  "type": "observation",
+  "name": "ei.observation.vision.scene",
+  "time": "2026-05-05T09:42:00.110+08:00",
+  "sequence": 301,
+  "requestId": "req_vision_scene_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "",
+  "correlationId": "",
+  "causationId": "evt_vision_frame_001",
+  "traceId": "trc_vision_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "camera.front",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 1000,
+  "mode": {
+    "conversationState": "listening",
+    "interactionMode": "free"
+  },
+  "content": {
+    "sceneId": "scene_front_001",
+    "observedAt": "2026-05-05T09:42:00.100+08:00",
+    "summary": "person seated near desk with cup",
+    "objects": [
+      {
+        "label": "person",
+        "trackId": "track_person_1",
+        "confidence": 0.91
+      },
+      {
+        "label": "cup",
+        "trackId": "track_cup_1",
+        "confidence": 0.77
+      }
+    ],
+    "relationships": [
+      {
+        "subject": "person",
+        "relation": "near",
+        "object": "desk"
+      }
+    ],
+    "environment": {
+      "lighting": "indoor",
+      "camera": "front"
+    },
+    "imageUrl": "file:///var/lib/eihead/frames/frame_000043.jpg",
+    "metadata": {
+      "detector": "hailo",
+      "sceneVersion": "v0.1.1"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

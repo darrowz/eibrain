@@ -2,16 +2,16 @@
 
 Status date: 2026-05-05
 
-This checklist defines the completion bar for the eiprotocol v0.1 MVP shared by
-`eihead`, `eibrain`, `eimemory`, `eiskills`, `eidocs`, and future body modules.
-The goal is a stable event contract that supports realtime multimodal dialogue,
-interrupts, semantic actions, memory exchange, and outcome feedback without
-forcing one transport or runtime implementation.
+This checklist defines the completion bar for the eiprotocol v0.1.1 100% bar
+shared by `eihead`, `eibrain`, `eimemory`, `eiskills`, `eidocs`, and future body
+modules. The goal is a stable event contract that supports realtime multimodal
+dialogue, interrupts, semantic actions, memory exchange, and outcome feedback
+without forcing one transport or runtime implementation.
 
 ## Completion Target
 
-The eiprotocol MVP can be treated as 98%+ complete when all items below are
-implemented and verified:
+The eiprotocol v0.1.1 freeze can be treated as 100% complete only when all
+items below are implemented and verified:
 
 - Event envelope round-trips through `EventEnvelope`, JSON codec, fixtures, and
   standalone package export.
@@ -25,23 +25,30 @@ implemented and verified:
 - Routing classifies all v0.1 core events and preserves backward-compatible
   action request fields used by `eihead`.
 - Golden fixtures cover control, capability, observation, dialogue, action,
-  policy, memory, outcome, training, and error planes.
+  policy, memory, outcome, training, and error planes, including
+  `vision.scene`, `vision.event`, and `memory.policy.report`.
 - Standalone export includes all eiprotocol modules, fixtures, and
   standalone-safe protocol tests.
 - Existing `eibrain` compatibility bridge tests still pass in the monorepo.
 - Unknown future events remain forward-compatible unless strict known-event
   validation is explicitly requested.
+- Product/runtime scope remains out of the v0.1.1 package: WebSocket/SSE/MQTT
+  runtime transport, binary media transport, scene graph algorithms, safety
+  runtime execution, long-term memory implementation, and the JoyInside role
+  ecosystem are deferred to v0.2+ or runtime repositories.
 
 ## Core Event Planes
 
 - `control`: hello, ping, pong, resume, ack, error.
 - `capability`: manifest report.
-- `observation`: audio chunk, realtime vision frame, head status report.
+- `observation`: audio chunk, realtime vision frame, vision scene, vision
+  event, head status report.
 - `dialogue`: ASR partial/final, fast hypothesis, stable decision, agent
   delta/final, TTS delta/final, interrupt requested.
 - `action`: request, dispatch, progress, complete, emergency stop.
 - `policy`: policy decision.
-- `memory`: recall request/result, write proposed/committed.
+- `memory`: recall request/result, write proposed/committed, memory policy
+  report.
 - `outcome`: execution outcome, user feedback.
 - `training`: learning signal.
 - `error`: protocol or runtime error event such as `ei.error.event`.
@@ -53,6 +60,7 @@ implemented and verified:
 - Safety policy runtime execution.
 - Memory indexing or retrieval internals.
 - LLM, ASR, TTS, or vision model provider APIs.
+- JoyInside role ecosystem implementation.
 
 These remain consumers of the protocol, not part of the protocol package.
 

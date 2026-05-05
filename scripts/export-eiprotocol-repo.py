@@ -18,6 +18,7 @@ DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
 COPY_DIRS = ("eiprotocol", "tests/fixtures/eiprotocol")
 COPY_FILE_GLOBS = (
     "docs/eiprotocol*.md",
+    "scripts/eiprotocol_conformance_report.py",
     "tests/protocol/test_eiprotocol*.py",
 )
 STANDALONE_TEST_EXCLUDES = frozenset(

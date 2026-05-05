@@ -143,6 +143,30 @@ def payload_to_eiprotocol_event(
             sequence=sequence,
             time=time,
         )
+    if kind in {"ei.observation.vision.scene", "vision_scene"}:
+        return generic_vision_scene_payload_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    if kind in {"ei.observation.vision.event", "vision_event"}:
+        return generic_vision_event_payload_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    if kind in {"ei.memory.policy.report", "memory_policy_report"}:
+        return generic_memory_policy_report_payload_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
     raise TypeError(f"Unsupported eiprotocol bridge payload kind: {kind or 'unknown'}")
 
 
@@ -599,6 +623,154 @@ def realtime_vision_payload_to_eiprotocol_event(
     )
 
 
+def generic_vision_scene_payload_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize a v0.1.1 generic vision-scene payload into an event envelope."""
+
+    raw = _coerce_mapping(payload, label="vision scene payload")
+    scene_id = _first_text(raw.get("sceneId"), raw.get("scene_id"), raw.get("id"), fallback="scene")
+    observed_at = _first_text(raw.get("observedAt"), raw.get("observed_at"), _reported_at(raw, fallback=time))
+    content = _generic_payload_content(raw, exclude=_GENERIC_VISION_SCENE_CONTENT_ALIASES)
+    content["sceneId"] = scene_id
+    content["observedAt"] = observed_at
+    if _first_text(raw.get("summary")):
+        content["summary"] = _first_text(raw.get("summary"))
+    objects = _list_of_dicts(raw.get("objects")) or _list_of_dicts(raw.get("detections"))
+    if objects:
+        content["objects"] = objects
+    relationships = _list_of_dicts(raw.get("relationships"))
+    if relationships:
+        content["relationships"] = relationships
+    return _generic_payload_to_event(
+        raw,
+        name="ei.observation.vision.scene",
+        event_type="observation",
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        sequence=sequence,
+        time=time,
+        source=source,
+        target=target,
+        source_fallback="eihead.honjia",
+        target_fallback="eibrain.honxin",
+        event_id_prefix="vision_scene",
+        event_id_token=scene_id,
+        priority="realtime",
+        round_scoped=False,
+    )
+
+
+def generic_vision_event_payload_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize a v0.1.1 generic vision-event payload into an event envelope."""
+
+    raw = _coerce_mapping(payload, label="vision event payload")
+    vision_event_id = _first_text(
+        raw.get("visionEventId"),
+        raw.get("vision_event_id"),
+        raw.get("eventId"),
+        raw.get("event_id"),
+        raw.get("id"),
+        fallback="vision_event",
+    )
+    observed_at = _first_text(raw.get("observedAt"), raw.get("observed_at"), _reported_at(raw, fallback=time))
+    content = _generic_payload_content(raw, exclude=_GENERIC_VISION_EVENT_CONTENT_ALIASES)
+    content["eventId"] = vision_event_id
+    event_type_value = _first_text(raw.get("eventType"), raw.get("event_type"), raw.get("event"), fallback="vision_event")
+    content["eventType"] = event_type_value
+    content["observedAt"] = observed_at
+    subject = raw.get("subject")
+    if isinstance(subject, Mapping):
+        content["subject"] = _copy_jsonish(dict(subject))
+    return _generic_payload_to_event(
+        raw,
+        name="ei.observation.vision.event",
+        event_type="observation",
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        sequence=sequence,
+        time=time,
+        source=source,
+        target=target,
+        source_fallback="eihead.honjia",
+        target_fallback="eibrain.honxin",
+        event_id_prefix="vision_event",
+        event_id_token=vision_event_id,
+        priority="realtime",
+        round_scoped=False,
+    )
+
+
+def generic_memory_policy_report_payload_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize a v0.1.1 generic memory-policy report payload into an event envelope."""
+
+    raw = _coerce_mapping(payload, label="memory policy report payload")
+    policy_id = _first_text(
+        raw.get("policyId"),
+        raw.get("policy_id"),
+        raw.get("reportId"),
+        raw.get("report_id"),
+        raw.get("id"),
+        fallback="memory_policy_report",
+    )
+    content = _generic_payload_content(raw, exclude=_GENERIC_MEMORY_POLICY_REPORT_CONTENT_ALIASES)
+    content["policyId"] = policy_id
+    scope = raw.get("scope")
+    content["scope"] = _copy_jsonish(dict(scope)) if isinstance(scope, Mapping) else {}
+    if _first_text(raw.get("decision")):
+        content["decision"] = _first_text(raw.get("decision"))
+    if _first_text(raw.get("reason")):
+        content["reason"] = _first_text(raw.get("reason"))
+    writes = _list_of_dicts(raw.get("writes")) or _list_of_dicts(raw.get("writebacks"))
+    if writes:
+        content["writes"] = writes
+    return _generic_payload_to_event(
+        raw,
+        name="ei.memory.policy.report",
+        event_type="memory",
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        sequence=sequence,
+        time=time,
+        source=source,
+        target=target,
+        source_fallback="eibrain.honxin",
+        target_fallback="eimemory.default",
+        event_id_prefix="memory_policy_report",
+        event_id_token=policy_id,
+        priority="normal",
+        round_scoped=True,
+    )
+
+
 def vision_observation_to_eiprotocol_event(
     observation: LegacyVisionObservation,
     *,
@@ -1040,6 +1212,133 @@ def _mapping_items(value: object) -> list[dict[str, Any]]:
     return [_copy_jsonish(dict(item)) for item in value if isinstance(item, Mapping)]
 
 
+_GENERIC_EVENT_CONTROL_KEYS = {
+    "causationId",
+    "causation_id",
+    "correlationId",
+    "correlation_id",
+    "deviceId",
+    "device_id",
+    "event_name",
+    "extensions",
+    "kind",
+    "mode",
+    "name",
+    "policy",
+    "priority",
+    "requestId",
+    "request_id",
+    "roundId",
+    "round_id",
+    "sequence",
+    "sessionId",
+    "session_id",
+    "source",
+    "target",
+    "time",
+    "timestampMs",
+    "timestamp_ms",
+    "traceId",
+    "trace_id",
+    "ttlMs",
+    "ttl_ms",
+    "type",
+}
+_GENERIC_VISION_SCENE_CONTENT_ALIASES = _GENERIC_EVENT_CONTROL_KEYS | {
+    "detections",
+    "id",
+    "objects",
+    "observedAt",
+    "observed_at",
+    "relationships",
+    "sceneId",
+    "scene_id",
+    "summary",
+}
+_GENERIC_VISION_EVENT_CONTENT_ALIASES = _GENERIC_EVENT_CONTROL_KEYS | {
+    "event",
+    "eventId",
+    "eventType",
+    "event_id",
+    "event_type",
+    "id",
+    "observedAt",
+    "observed_at",
+    "subject",
+    "visionEventId",
+    "vision_event_id",
+}
+_GENERIC_MEMORY_POLICY_REPORT_CONTENT_ALIASES = _GENERIC_EVENT_CONTROL_KEYS | {
+    "decision",
+    "id",
+    "policyId",
+    "policy_id",
+    "reason",
+    "reportId",
+    "report_id",
+    "scope",
+    "writebacks",
+    "writes",
+}
+
+
+def _generic_payload_to_event(
+    payload: Mapping[str, Any],
+    *,
+    name: str,
+    event_type: str,
+    content: Mapping[str, Any],
+    event_id: str | None,
+    request_id: str | None,
+    sequence: int | None,
+    time: str | None,
+    source: str | SourceRef | Mapping[str, Any] | None,
+    target: str | TargetRef | Mapping[str, Any] | None,
+    source_fallback: str,
+    target_fallback: str,
+    event_id_prefix: str,
+    event_id_token: str,
+    priority: str,
+    round_scoped: bool,
+) -> EventEnvelope:
+    trace_id = _first_text(payload.get("trace_id"), payload.get("traceId"))
+    resolved_event_id = _resolve_event_id(event_id, event_id_prefix, event_id_token, trace_id)
+    resolved_round_id = _first_text(payload.get("roundId"), payload.get("round_id")) if round_scoped else ""
+    return EventEnvelope(
+        event_id=resolved_event_id,
+        event_type=event_type,
+        name=name,
+        time=time or _reported_at(payload),
+        sequence=_positive_sequence(payload, sequence),
+        request_id=_first_text(request_id, payload.get("requestId"), payload.get("request_id"), trace_id, resolved_event_id),
+        session_id=_first_text(payload.get("sessionId"), payload.get("session_id")),
+        round_id=resolved_round_id,
+        correlation_id=_first_text(payload.get("correlationId"), payload.get("correlation_id")),
+        causation_id=_first_text(payload.get("causationId"), payload.get("causation_id")),
+        trace_id=trace_id,
+        source=_source_like(
+            source,
+            fallback=_first_text(payload.get("source"), fallback=source_fallback),
+            device_id=_first_text(payload.get("deviceId"), payload.get("device_id")),
+        ),
+        target=_target_like(target, fallback=_first_text(payload.get("target"), fallback=target_fallback)),
+        priority=_first_text(payload.get("priority"), fallback=priority),
+        ttl_ms=_optional_int(payload.get("ttlMs", payload.get("ttl_ms")), fallback=None),
+        mode=_dict_from(payload.get("mode")),
+        content=_copy_jsonish(dict(content)),
+        policy=PolicyState.from_dict(payload.get("policy") if isinstance(payload.get("policy"), Mapping) else None),
+        extensions=_dict_from(payload.get("extensions")),
+    )
+
+
+def _generic_payload_content(payload: Mapping[str, Any], *, exclude: set[str]) -> dict[str, Any]:
+    return {
+        str(key): _copy_jsonish(value)
+        for key, value in payload.items()
+        if str(key) not in exclude and value is not None
+    }
+
+
 def _coerce_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise TypeError(f"{label} must be a mapping")
@@ -1306,6 +1605,9 @@ __all__ = [
     "dialogue_fast_hypothesis_to_eiprotocol_event",
     "dialogue_stable_decision_to_eiprotocol_event",
     "execution_outcome_to_eiprotocol_event",
+    "generic_memory_policy_report_payload_to_eiprotocol_event",
+    "generic_vision_event_payload_to_eiprotocol_event",
+    "generic_vision_scene_payload_to_eiprotocol_event",
     "head_action_to_eiprotocol_event",
     "head_status_report_to_eiprotocol_event",
     "payload_to_eiprotocol_event",
