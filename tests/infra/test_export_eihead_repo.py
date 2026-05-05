@@ -321,6 +321,82 @@ def test_export_manifest_records_native_completion_gates(tmp_path: Path) -> None
     assert "honjia Phase 0 baseline" in deploy_gate["next_acceptance"]
 
 
+def test_export_manifest_records_cutover_readiness_summary(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+
+    readiness = manifest["cutover_readiness"]
+    assert readiness["overall_state"] == "transitional"
+    assert readiness["hardware_verified"] is False
+    assert readiness["completion_policy"] == "blocked_until_honjia_hardware_acceptance"
+    assert readiness["legacy_body_runtime_detached"] is False
+    assert readiness["fake_completion_guard"] == (
+        "Report not_wired, unknown, degraded, or blocked until the acceptance gate is verified."
+    )
+
+    providers = {entry["area"]: entry for entry in readiness["native_provider_modules"]}
+    assert set(providers) == {"eye", "neck", "ear", "mouth", "runtime"}
+    assert providers["eye"]["state"] == "native_boundary"
+    assert providers["eye"]["hardware_verified"] is False
+    assert "/dev/video0" in providers["eye"]["hardware_devices"]
+    assert "/dev/hailo0" in providers["eye"]["hardware_devices"]
+    assert "eihead.eye.gstreamer" in providers["eye"]["provider_modules"]
+    assert providers["runtime"]["state"] == "transitional"
+    assert "apps.body_runtime.BodyRuntimeApp" in providers["runtime"]["legacy_shim_dependencies"]
+
+    endpoints = {entry["path"]: entry for entry in readiness["monitor_endpoints"]}
+    assert {"/api/voice/realtime", "/api/audio/realtime", "/api/vision/realtime", "/api/eye/realtime"} <= set(
+        endpoints
+    )
+    assert endpoints["/api/voice/realtime"]["port"] == 18080
+    assert endpoints["/api/voice/realtime"]["provider_module"] == "eihead.monitoring.voice"
+    assert endpoints["/api/audio/realtime"]["alias_for"] == "/api/voice/realtime"
+    assert endpoints["/api/vision/realtime"]["provider_module"] == "eihead.monitoring.realtime_vision"
+    assert endpoints["/api/eye/realtime"]["alias_for"] == "/api/vision/realtime"
+    for endpoint in endpoints.values():
+        assert endpoint["hardware_verified"] is False
+        assert endpoint["completion_state"] in {"transitional", "blocked_by_hardware_validation"}
+
+
+def test_export_marks_legacy_shims_as_transitional_not_detached(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+    readme = (target / "README.md").read_text(encoding="utf-8")
+    audit = (target / "docs" / "eihead-migration-audit.md").read_text(encoding="utf-8")
+
+    shim_policy = manifest["cutover_readiness"]["legacy_shim_policy"]
+    assert shim_policy["state"] == "transitional"
+    assert shim_policy["legacy_body_runtime_detached"] is False
+    assert shim_policy["legacy_paths_must_be_marked_as_shims"] is True
+    assert shim_policy["full_detachment_claim_allowed"] is False
+
+    shims = {entry["package"]: entry for entry in shim_policy["shims"]}
+    assert set(shims) == {entry["package"] for entry in manifest["transitional_packages"]}
+    for package in ("apps.body_runtime", "eibrain.body"):
+        shim = shims[package]
+        assert shim["classification"] == "transitional_shim"
+        assert shim["blocks_full_detachment"] is True
+        assert shim["removal_gate"]
+        assert shim["paths"] == next(
+            entry["paths"] for entry in manifest["transitional_packages"] if entry["package"] == package
+        )
+
+    assert "fake completion" in readme
+    assert "cutover_readiness" in readme
+    assert "legacy_shim_policy.legacy_body_runtime_detached` is `false`" in readme
+    assert "blocked/transitional" in readme
+    assert "hardware has not been verified on honjia" in readme
+    assert "fake completion" in audit
+    assert "cutover_readiness" in audit
+    assert "legacy_shim_policy" in audit
+
+
 def test_export_manifest_paths_stay_relative_when_target_is_named_eihead(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead"

@@ -1,0 +1,54 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_dialogue_decision_stable_001",
+  "type": "dialogue",
+  "name": "ei.dialogue.decision.stable",
+  "time": "2026-05-04T10:32:01.700+08:00",
+  "sequence": 5,
+  "requestId": "req_voice_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "evt_fast_hypothesis_001",
+  "causationId": "evt_asr_final_001",
+  "traceId": "trc_voice_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "high",
+  "ttlMs": 3000,
+  "mode": {
+    "conversationState": "deciding",
+    "interactionMode": "free"
+  },
+  "content": {
+    "decisionId": "dlg_decision_001",
+    "decision": "respond",
+    "confidence": 0.91,
+    "text": "Hello, I am listening.",
+    "actions": [],
+    "stableSinceMs": 260,
+    "metadata": {
+      "planner": "realtime_turn_manager"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "metadata": {}
+  }
+}

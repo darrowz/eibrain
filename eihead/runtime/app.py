@@ -22,6 +22,11 @@ from .legacy_body import (
     BodyRuntimeFactory,
     LegacyBodyRuntimeAdapter,
 )
+from .native_providers import (
+    NativeProviderProbe,
+    build_native_provider_statuses,
+    normalize_native_provider_statuses,
+)
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
 DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS = 2.0
@@ -41,7 +46,14 @@ class HeadRuntimeApp:
     event_journal: EventJournal = field(default_factory=EventJournal, repr=False)
     neck_servo_adapter: Any | None = field(default=None, repr=False)
     neck_pan_state: PanNeckState = field(default_factory=PanNeckState, repr=False)
+    native_providers: Mapping[str, Any] | None = field(default=None, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        self.native_providers = normalize_native_provider_statuses(
+            self.native_providers,
+            neck_servo_adapter=self.neck_servo_adapter,
+        )
 
     @classmethod
     def from_config_path(
@@ -49,17 +61,28 @@ class HeadRuntimeApp:
         path: str = DEFAULT_CONFIG_PATH,
         *,
         body_runtime_factory: BodyRuntimeFactory | None = None,
+        native_provider_probe: NativeProviderProbe | None = None,
+        native_environ: Mapping[str, str] | None = None,
+        neck_servo_adapter: Any | None = None,
     ) -> "HeadRuntimeApp":
         adapter = (
             LegacyBodyRuntimeAdapter(body_runtime_factory=body_runtime_factory)
             if body_runtime_factory is not None
             else LegacyBodyRuntimeAdapter()
         )
+        native_config = _load_optional_eihead_config(str(path))
         return cls(
             body_runtime=adapter.load_runtime(str(path)),
             config_path=str(path),
             delegate_name=adapter.delegate_name,
             legacy_body_adapter=adapter,
+            neck_servo_adapter=neck_servo_adapter,
+            native_providers=build_native_provider_statuses(
+                config=native_config,
+                environ=native_environ,
+                probe=native_provider_probe,
+                neck_servo_adapter=neck_servo_adapter,
+            ),
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -70,6 +93,7 @@ class HeadRuntimeApp:
             "status": "ok",
             "config_path": self.config_path,
             "delegate": self.delegate_name,
+            "native_providers": dict(self.native_providers or {}),
             "body_runtime": body_snapshot,
         }
 
@@ -512,10 +536,12 @@ class HeadRuntimeApp:
                 "head_runtime_import": "ok",
                 "body_runtime_delegate": "ok",
                 "body_runtime_snapshot": "ok",
+                "native_provider_boundaries": "ok",
             },
             "organ_count": organ_count,
             "config_path": self.config_path,
             "delegate": self.delegate_name,
+            "native_providers": snapshot.get("native_providers", {}),
             "body_runtime": body_runtime,
         }
 
@@ -720,6 +746,18 @@ class HeadRuntimeApp:
             "delegated": delegated,
             "details": dict(details or {}),
         }
+
+
+def _load_optional_eihead_config(path: str) -> Any | None:
+    filename = path.replace("\\", "/").rsplit("/", 1)[-1]
+    if not filename.startswith("eihead"):
+        return None
+    try:
+        from .config import EiheadConfigError, load_eihead_config
+
+        return load_eihead_config(path)
+    except (EiheadConfigError, OSError):
+        return None
 
 
 def _event_outcome_common(route: Mapping[str, Any], *, trace_id: str | None) -> dict[str, Any]:

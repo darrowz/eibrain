@@ -24,7 +24,10 @@ repo, `/dev-project/eiprotocol` is the exported shared protocol repo, and
   pan-only neck.
 - Audio turn events using `ei.dialogue.asr.partial` and
   `ei.dialogue.asr.final`.
+- Realtime dialogue coordination using `ei.dialogue.fast_hypothesis` and
+  `ei.dialogue.decision.stable`.
 - Realtime vision frame observations using `ei.observation.vision.frame`.
+- Head runtime monitoring using `ei.observation.head.status.report`.
 - Head actions using `ei.action.request`, including idempotency keys for
   side-effecting operations.
 - Execution outcomes using `ei.outcome.execution`.
@@ -41,6 +44,8 @@ adopts these parts now:
 
 - Event-first naming: `ei.<plane>.<subject>.<verb>[.<detail>]`.
 - Stream/round readiness: all turn-scoped payloads carry `roundId`.
+- Low-latency dialogue readiness: fast hypotheses can be superseded by stable
+  decisions without changing the envelope contract.
 - Interrupt-ready action model: actions and outcomes can be correlated without
   relying on implicit local state.
 - Capability-driven brain behavior: the brain should read a manifest instead of

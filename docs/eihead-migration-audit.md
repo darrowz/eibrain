@@ -284,3 +284,21 @@ acceptance checks are verified. Operator UI and status payloads should reflect
 the same truthfulness rule: report `not_wired`, `unknown`, `degraded`, or
 `blocked` instead of presenting transitional or hardware-unverified paths as
 healthy.
+
+The exporter also writes `cutover_readiness`. This summary ties the native
+provider boundary to the monitor and shim policy:
+
+- `native_provider_modules` names the current eihead-owned provider modules and
+  their completion gate, state, hardware devices, hardware verification flag,
+  and any legacy shim dependencies.
+- `monitor_endpoints` lists the exported port `18080` readiness endpoints and
+  the provider module behind each endpoint or alias.
+- `legacy_shim_policy` marks every copied legacy package as a
+  `transitional_shim`, records that the legacy body runtime is not detached,
+  and blocks any full-detachment claim until the removal gates pass.
+
+Use this to catch fake completion: if `cutover_readiness.hardware_verified` is
+`false`, or if `legacy_shim_policy.legacy_body_runtime_detached` is `false`,
+the export is still blocked/transitional even when static fixtures, local unit
+tests, or offline/quasi-streaming diagnostics pass. Real cutover requires the
+honjia hardware gates to be recorded with real monitor/status evidence.

@@ -184,6 +184,181 @@ NATIVE_RUNTIME_WEB_FILES = (
     },
 )
 
+NATIVE_PROVIDER_MODULES = (
+    {
+        "area": "eye",
+        "state": "native_boundary",
+        "completion_gate": "eye",
+        "provider_modules": [
+            "eihead.eye.adapters",
+            "eihead.eye.gstreamer",
+            "eihead.eye.hailo_metadata",
+            "eihead.eye.realtime",
+            "eihead.monitoring.realtime_vision",
+        ],
+        "hardware_devices": ["/dev/video0", "/dev/hailo0"],
+        "hardware_verified": False,
+        "readiness_note": "Native boundary exists, but honjia realtime camera/Hailo validation is still required.",
+    },
+    {
+        "area": "neck",
+        "state": "transitional",
+        "completion_gate": "neck",
+        "provider_modules": ["eihead.neck.pan"],
+        "hardware_devices": ["/dev/i2c-1"],
+        "hardware_verified": False,
+        "legacy_shim_dependencies": [
+            "eibrain.body.neck_control",
+            "eibrain.body.raspbot_driver",
+            "eibrain.body.organs.neck",
+        ],
+        "readiness_note": "Pure pan planning is native; honjia Raspbot/I2C actuation still depends on legacy body shims.",
+    },
+    {
+        "area": "ear",
+        "state": "transitional",
+        "completion_gate": "ear",
+        "provider_modules": ["eihead.ear.realtime", "eihead.monitoring.voice"],
+        "hardware_devices": ["plughw:CARD=U4K,DEV=0", "/dev/snd"],
+        "hardware_verified": False,
+        "legacy_shim_dependencies": [
+            "apps.body_runtime.voice_dialogue_loop",
+            "eibrain.body.sherpa_streaming",
+            "eibrain.body.vad_policy",
+        ],
+        "readiness_note": "Native voice status contracts exist; real streaming microphone/VAD/ASR validation is not complete.",
+    },
+    {
+        "area": "mouth",
+        "state": "transitional",
+        "completion_gate": "mouth",
+        "provider_modules": ["eihead.mouth.playback", "eihead.monitoring.voice"],
+        "hardware_devices": ["configured honjia speaker/playback device"],
+        "hardware_verified": False,
+        "legacy_shim_dependencies": ["apps.body_runtime.voice_dialogue_loop"],
+        "readiness_note": "Native playback contracts exist; audible TTS/playback/stop validation is still required.",
+    },
+    {
+        "area": "runtime",
+        "state": "transitional",
+        "completion_gate": "runtime",
+        "provider_modules": [
+            "eihead.runtime.app",
+            "eihead.runtime.http_api",
+            "eihead.monitoring.web",
+        ],
+        "hardware_devices": [],
+        "hardware_verified": False,
+        "legacy_shim_dependencies": ["apps.body_runtime.BodyRuntimeApp"],
+        "readiness_note": "Runtime API and monitor are native wrappers while snapshot/action paths still delegate to legacy body runtime.",
+    },
+)
+
+MONITOR_ENDPOINTS = (
+    {
+        "path": "/health",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.web",
+        "completion_gate": "runtime",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Return real health or explicit degraded/error state; never fake healthy.",
+    },
+    {
+        "path": "/api/status",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.runtime.app",
+        "completion_gate": "runtime",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Delegated compatibility must remain visible until native providers own status.",
+    },
+    {
+        "path": "/api/capabilities",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.runtime.app",
+        "completion_gate": "runtime",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Report device readiness from real probes or explicit unknown/offline/degraded states.",
+    },
+    {
+        "path": "/api/vision/realtime",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.realtime_vision",
+        "completion_gate": "eye",
+        "completion_state": "blocked_by_hardware_validation",
+        "hardware_verified": False,
+        "truthfulness_rule": "Realtime boxes/scores/parser readiness must come from live /dev/video0 and /dev/hailo0 data or explicit not_wired/degraded states.",
+    },
+    {
+        "path": "/api/eye/realtime",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.realtime_vision",
+        "alias_for": "/api/vision/realtime",
+        "completion_gate": "eye",
+        "completion_state": "blocked_by_hardware_validation",
+        "hardware_verified": False,
+        "truthfulness_rule": "Alias for realtime eye diagnostics; static-image compatibility cannot satisfy this endpoint.",
+    },
+    {
+        "path": "/api/voice/realtime",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.voice",
+        "completion_gate": "ear_mouth",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Voice diagnostics may show offline/quasi-streaming data, but missing streaming stages must remain not_wired/unknown/degraded.",
+    },
+    {
+        "path": "/api/audio/realtime",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.voice",
+        "alias_for": "/api/voice/realtime",
+        "completion_gate": "ear_mouth",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Alias for voice diagnostics; hardware-unverified closed-loop diagnostics are not real streaming completion.",
+    },
+    {
+        "path": "/api/actions/recent",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.web",
+        "completion_gate": "runtime",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Report recent actions only when runtime exposes a real action log, otherwise not_wired.",
+    },
+    {
+        "path": "/api/events/recent",
+        "method": "GET",
+        "port": 18080,
+        "provider_module": "eihead.monitoring.web",
+        "completion_gate": "runtime",
+        "completion_state": "transitional",
+        "hardware_verified": False,
+        "truthfulness_rule": "Report recent events only when runtime exposes a real event journal, otherwise not_wired.",
+    },
+)
+
+LEGACY_SHIM_REMOVAL_GATES = {
+    "apps.body_runtime": "HeadRuntimeApp snapshot/actions no longer instantiate or import BodyRuntimeApp.",
+    "eibrain.body": "Native eihead eye, neck, ear, and mouth providers pass honjia parity without eibrain.body imports.",
+    "eibrain.cognition.realtime": "Voice round lifecycle and scheduler state are owned by eihead/eiprotocol contracts without eibrain scheduler imports.",
+    "eibrain.infra": "eihead owns its deployment config layer and no longer needs shared eibrain infra helpers.",
+    "eiprotocol": "eiprotocol is consumed as an independent package rather than a copied export payload.",
+    "eibrain.protocol": "eihead and eibrain both consume eiprotocol directly without legacy eibrain.protocol compatibility exports.",
+    "eibrain.verification": "Hardware verification CLI/checks are native to eihead or a shared verification package.",
+}
+
 MIGRATION_NOTES = (
     {
         "area": "eye",
@@ -393,6 +568,22 @@ export, and deploy are complete. A module remains transitional or blocked until
 its gate is verified on honjia; status and monitor payloads must say
 `not_wired`, `unknown`, `degraded`, or `blocked` rather than implying fake
 completion.
+
+## Cutover readiness and fake completion
+
+`EXPORT_MANIFEST.json` contains `cutover_readiness`, a machine-readable summary
+for cutover review. It lists `native_provider_modules`, `monitor_endpoints`, and
+`legacy_shim_policy` so reviewers can tell native boundaries from transitional
+compatibility.
+
+How to judge fake completion:
+- If `cutover_readiness.hardware_verified` is `false`, the hardware has not been verified on honjia and the export remains blocked/transitional even if local tests or static fixtures pass.
+- If `legacy_shim_policy.legacy_body_runtime_detached` is `false`, the export
+  still carries legacy body runtime shims. Those paths must stay explicitly
+  marked as transitional shims and must not be described as fully detached.
+- Monitor endpoints are readiness probes, not proof of completion. A response
+  is only acceptable when it shows real data or explicit `not_wired`, `unknown`,
+  `degraded`, or `blocked` state for missing hardware or unwired stages.
 """
 
 
@@ -698,6 +889,7 @@ def _write_export_manifest(
         "native_realtime_eye_files": list(NATIVE_REALTIME_EYE_FILES),
         "native_realtime_voice_files": list(NATIVE_REALTIME_VOICE_FILES),
         "native_runtime_web_files": list(NATIVE_RUNTIME_WEB_FILES),
+        "cutover_readiness": _build_cutover_readiness_summary(),
         "native_completion_gates": list(NATIVE_COMPLETION_GATES),
         "future_capabilities": list(FUTURE_CAPABILITIES),
         "migration_notes": list(MIGRATION_NOTES),
@@ -713,6 +905,44 @@ def _write_export_manifest(
         newline="\n",
     )
     return MANIFEST_FILENAME
+
+
+def _build_cutover_readiness_summary() -> dict[str, object]:
+    return {
+        "overall_state": "transitional",
+        "hardware_verified": False,
+        "completion_policy": "blocked_until_honjia_hardware_acceptance",
+        "legacy_body_runtime_detached": False,
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "native_provider_modules": list(NATIVE_PROVIDER_MODULES),
+        "monitor_endpoints": list(MONITOR_ENDPOINTS),
+        "legacy_shim_policy": _build_legacy_shim_policy(),
+    }
+
+
+def _build_legacy_shim_policy() -> dict[str, object]:
+    shims: list[dict[str, object]] = []
+    for package in TRANSITIONAL_PACKAGES:
+        package_name = str(package["package"])
+        shims.append(
+            {
+                **package,
+                "classification": "transitional_shim",
+                "blocks_full_detachment": True,
+                "removal_gate": LEGACY_SHIM_REMOVAL_GATES[package_name],
+            }
+        )
+    return {
+        "state": "transitional",
+        "legacy_body_runtime_detached": False,
+        "legacy_paths_must_be_marked_as_shims": True,
+        "full_detachment_claim_allowed": False,
+        "policy": (
+            "Legacy copies are allowed only as explicitly named transitional shims. "
+            "Their presence blocks any claim that eihead is fully detached from legacy body runtime."
+        ),
+        "shims": shims,
+    }
 
 
 def _read_source_git_state(source_root: Path) -> dict[str, object]:

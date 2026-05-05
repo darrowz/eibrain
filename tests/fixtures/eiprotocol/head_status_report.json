@@ -1,0 +1,73 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_head_status_report_001",
+  "type": "observation",
+  "name": "ei.observation.head.status.report",
+  "time": "2026-05-04T10:31:30.000+08:00",
+  "sequence": 20,
+  "requestId": "req_head_status_001",
+  "sessionId": "",
+  "roundId": "",
+  "correlationId": "",
+  "causationId": "",
+  "traceId": "trc_head_status_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "honjia",
+    "botId": "",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 2000,
+  "mode": {
+    "monitoring": "head"
+  },
+  "content": {
+    "status": "ok",
+    "components": {
+      "camera.front": {
+        "status": "online",
+        "message": "frames flowing",
+        "metrics": {
+          "fps": 30
+        }
+      },
+      "microphone.u4k": {
+        "status": "online",
+        "message": "vad active",
+        "metrics": {
+          "level": 0.18
+        }
+      },
+      "neck.pan": {
+        "status": "online",
+        "message": "idle",
+        "metrics": {
+          "angle": 90
+        }
+      }
+    },
+    "reportedAt": "2026-05-04T10:31:30.000+08:00",
+    "summary": "head runtime ready",
+    "metadata": {
+      "runtime": "eihead"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

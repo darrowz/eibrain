@@ -1,6 +1,7 @@
 """Realtime cognition turn coordination primitives."""
 
 from .turn import (
+    CancellationToken,
     FastThinkEngine,
     FastThinkResult,
     InterruptionController,
@@ -11,6 +12,7 @@ from .turn import (
 )
 
 __all__ = [
+    "CancellationToken",
     "FastThinkEngine",
     "FastThinkResult",
     "InterruptionController",

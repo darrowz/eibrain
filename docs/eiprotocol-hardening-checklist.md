@@ -36,9 +36,9 @@ implemented and verified:
 
 - `control`: hello, ping, pong, resume, ack, error.
 - `capability`: manifest report.
-- `observation`: audio chunk, realtime vision frame.
-- `dialogue`: ASR partial/final, agent delta/final, TTS delta/final,
-  interrupt requested.
+- `observation`: audio chunk, realtime vision frame, head status report.
+- `dialogue`: ASR partial/final, fast hypothesis, stable decision, agent
+  delta/final, TTS delta/final, interrupt requested.
 - `action`: request, dispatch, progress, complete, emergency stop.
 - `policy`: policy decision.
 - `memory`: recall request/result, write proposed/committed.

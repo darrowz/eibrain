@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .neck import build_neck_diagnostics_from_app
 from .realtime_vision import realtime_vision_payload_from_app
 from .voice import build_voice_diagnostics_from_app
 
@@ -190,6 +191,12 @@ def create_handler(
                 self._write_json(
                     HTTPStatus.OK,
                     build_voice_diagnostics_from_app(runtime_app, timestamp=now()),
+                )
+                return
+            if path in {"/api/neck/status", "/api/neck/realtime"}:
+                self._write_json(
+                    HTTPStatus.OK,
+                    build_neck_diagnostics_from_app(runtime_app, timestamp=now()),
                 )
                 return
             if path in {"/api/actions/recent", "/api/recent-actions"}:
@@ -501,6 +508,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     capabilities = _safe_payload(lambda: _call_json_object(app, "capabilities"))
     realtime = _safe_payload(lambda: realtime_vision_payload_from_app(app, timestamp=timestamp))
     voice = _safe_payload(lambda: build_voice_diagnostics_from_app(app, timestamp=timestamp))
+    neck = _safe_payload(lambda: build_neck_diagnostics_from_app(app, timestamp=timestamp))
     recent = _safe_payload(lambda: _recent_actions_payload(app, timestamp))
     recent_events = _safe_payload(lambda: _recent_events_payload(app, timestamp))
 
@@ -513,6 +521,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     )
     realtime_state = _display_value(realtime.get("status", "unknown"))
     voice_state = _display_value(voice.get("status", "unknown"))
+    neck_state = _display_value(neck.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
     recent_events_state = _display_value(recent_events.get("status", "unknown"))
     realtime_diagnostic = realtime.get("diagnostic") if isinstance(realtime.get("diagnostic"), Mapping) else {}
@@ -551,11 +560,20 @@ def _render_index(app: Any, timestamp: float) -> str:
     )
     voice_cancellation_chain = _display_value(_voice_cancellation_chain_summary(voice.get("cancellation_chain")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
+    neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
+    neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
+    neck_will_move = _display_value(neck.get("will_move") if neck.get("will_move") is not None else "unknown")
+    neck_suppressed = _display_value(neck.get("suppressed") if neck.get("suppressed") is not None else "unknown")
+    neck_suppression_reason = _display_value(neck.get("suppression_reason") or "unknown")
+    neck_servo = _display_value(_neck_servo_summary(neck.get("servo")))
+    neck_axis_support = _display_value(_neck_axis_support_summary(neck.get("axis_support")))
+    neck_readiness = _display_value(neck.get("readiness_message") or "unknown")
 
     status_json = _json_for_html(status)
     capabilities_json = _json_for_html(capabilities)
     realtime_json = _json_for_html(realtime)
     voice_json = _json_for_html(voice)
+    neck_json = _json_for_html(neck)
     recent_json = _json_for_html(recent)
     recent_events_json = _json_for_html(recent_events)
 
@@ -584,13 +602,14 @@ def _render_index(app: Any, timestamp: float) -> str:
   <main>
     <header>
       <h1>eihead native monitor</h1>
-      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · actions <strong>{recent_state}</strong> · events <strong>{recent_events_state}</strong></p>
+      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · neck <strong>{neck_state}</strong> · actions <strong>{recent_state}</strong> · events <strong>{recent_events_state}</strong></p>
     </header>
     <section class="grid">
       <div class="card"><div class="label">Status API</div><a href="/api/status">/api/status</a></div>
       <div class="card"><div class="label">Capabilities API</div><a href="/api/capabilities">/api/capabilities</a></div>
       <div class="card"><div class="label">Realtime Vision API</div><a href="/api/vision/realtime">/api/vision/realtime</a></div>
       <div class="card"><div class="label">Voice Diagnostics API</div><a href="/api/voice/realtime">/api/voice/realtime</a></div>
+      <div class="card"><div class="label">Neck Diagnostics API</div><a href="/api/neck/status">/api/neck/status</a></div>
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
       <div class="card"><div class="label">Recent Events API</div><a href="/api/events/recent">/api/events/recent</a></div>
       <div class="card"><div class="label">Health API</div><a href="/health">/health</a></div>
@@ -613,6 +632,18 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Parse errors</div><span class="metric">{vision_parse_errors}</span></div>
     </section>
     <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
+    <h2>Neck Diagnostics</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Status</div><span class="metric">{neck_state}</span></div>
+      <div class="card"><div class="label">Current angle</div><span class="metric">{neck_current_angle}</span></div>
+      <div class="card"><div class="label">Target angle</div><span class="metric">{neck_target_angle}</span></div>
+      <div class="card"><div class="label">Will move</div><span class="metric">{neck_will_move}</span></div>
+      <div class="card"><div class="label">Suppressed</div><span class="metric">{neck_suppressed}</span></div>
+      <div class="card"><div class="label">Suppression reason</div><span class="metric">{neck_suppression_reason}</span></div>
+      <div class="card"><div class="label">Servo</div><span class="metric">{neck_servo}</span></div>
+      <div class="card"><div class="label">Axis support</div><span class="metric">{neck_axis_support}</span></div>
+      <div class="card"><div class="label">Readiness</div><span class="metric">{neck_readiness}</span></div>
+    </section>
     <h2>Voice Diagnostics</h2>
     <section class="grid">
       <div class="card"><div class="label">Status</div><span class="metric">{voice_state}</span></div>
@@ -642,6 +673,8 @@ def _render_index(app: Any, timestamp: float) -> str:
     <pre>{realtime_json}</pre>
     <h2>Voice</h2>
     <pre>{voice_json}</pre>
+    <h2>Neck</h2>
+    <pre>{neck_json}</pre>
     <h2>Recent Actions</h2>
     <pre>{recent_json}</pre>
     <h2>Recent Events</h2>
@@ -721,6 +754,46 @@ def _devices_summary(value: Any) -> str:
     if camera and hailo:
         return f"{camera}, {hailo}"
     return _metric_value(value)
+
+
+def _neck_servo_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    status = value.get("status") or "unknown"
+    available = value.get("available")
+    reason = value.get("reason")
+    parts = [str(status)]
+    if available is not None:
+        parts.append("available" if available is True else "unavailable")
+    if reason and reason != "unknown":
+        parts.append(str(reason))
+    return " / ".join(parts)
+
+
+def _neck_axis_support_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    parts: list[str] = []
+    for axis in ("pan", "tilt"):
+        axis_payload = value.get(axis)
+        if not isinstance(axis_payload, Mapping):
+            parts.append(f"{axis}=unknown")
+            continue
+        status = axis_payload.get("status")
+        supported = axis_payload.get("supported")
+        reason = axis_payload.get("reason")
+        if status:
+            rendered = str(status)
+        elif supported is True:
+            rendered = "supported"
+        elif supported is False:
+            rendered = "unsupported"
+        else:
+            rendered = "unknown"
+        if reason:
+            rendered = f"{rendered} ({reason})"
+        parts.append(f"{axis}={rendered}")
+    return " / ".join(parts)
 
 
 def _voice_component_summary(value: Any, *, kind: str) -> str:

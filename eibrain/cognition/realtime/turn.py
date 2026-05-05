@@ -12,12 +12,40 @@ Clock = Callable[[], float]
 
 
 @dataclass
+class CancellationToken:
+    """Serializable cancellation guard for a single realtime round."""
+
+    round_id: str
+    token_id: str
+    cancelled: bool = False
+    reason: str | None = None
+    cancelled_at_ts: float | None = None
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self.cancelled
+
+    def cancel(self, *, reason: str | None = None, at_ts: float | None = None) -> "CancellationToken":
+        if not self.cancelled:
+            self.cancelled = True
+            self.reason = reason
+            self.cancelled_at_ts = at_ts
+        return self
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class TurnBlackboard:
     round_id: str
     cancellation_token: str
+    cancellation: CancellationToken | None = None
     state: str = "active"
     asr_partial: list[str] = field(default_factory=list)
     asr_final: str | None = None
+    fast_hypotheses: list[dict[str, Any]] = field(default_factory=list)
+    stable_decisions: list[dict[str, Any]] = field(default_factory=list)
     intent_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     emotion_state: dict[str, Any] = field(default_factory=dict)
     memory_candidates: list[dict[str, Any]] = field(default_factory=list)
@@ -33,6 +61,9 @@ class TurnBlackboard:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def status_payload(self) -> dict[str, Any]:
+        return self.to_dict()
 
 
 @dataclass(frozen=True)
@@ -68,6 +99,7 @@ class RealtimeTurnManager:
         turn = TurnBlackboard(
             round_id=round_id,
             cancellation_token=token,
+            cancellation=CancellationToken(round_id=round_id, token_id=token),
             state="active",
             created_at_ts=now,
             updated_at_ts=now,
@@ -90,6 +122,7 @@ class RealtimeTurnManager:
             current.round_id == round_id
             and current.cancellation_token == cancellation_token
             and current.state == "active"
+            and (current.cancellation is None or not current.cancellation.cancelled)
         )
 
     def reject_if_cancelled(self, *, round_id: str, cancellation_token: str) -> None:
@@ -129,6 +162,67 @@ class RealtimeTurnManager:
         self._current_turn.updated_at_ts = now
         return self._current_turn
 
+    def write_fast_hypothesis(
+        self,
+        *,
+        round_id: str,
+        cancellation_token: str,
+        hypothesis: Mapping[str, Any],
+        source: str = "fast_lane",
+    ) -> dict[str, Any]:
+        self.reject_if_cancelled(round_id=round_id, cancellation_token=cancellation_token)
+        if self._current_turn is None:
+            raise RuntimeError("no active turn")
+        if hypothesis.get("stable") is True or "decision" in hypothesis:
+            raise ValueError("fast lane may only record non-stable hypotheses")
+
+        now = self._clock()
+        payload = dict(hypothesis)
+        payload.update(
+            {
+                "round_id": round_id,
+                "cancellation_token": cancellation_token,
+                "stable": False,
+                "source": source,
+                "created_at_ts": now,
+            }
+        )
+        self._current_turn.fast_hypotheses.append(payload)
+        self._current_turn.updated_at_ts = now
+        return payload
+
+    def commit_stable_decision(
+        self,
+        *,
+        round_id: str,
+        cancellation_token: str,
+        decision: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        self.reject_if_cancelled(round_id=round_id, cancellation_token=cancellation_token)
+        if self._current_turn is None:
+            raise RuntimeError("no active turn")
+        if decision.get("stable") is not True:
+            raise ValueError("stable decisions must set stable=True")
+
+        speech_segments = list(decision.get("speech_segments") or [])
+        if any(segment.get("stable") is not True for segment in speech_segments):
+            raise ValueError("stable decision speech_segments must be stable")
+
+        now = self._clock()
+        payload = dict(decision)
+        payload.update(
+            {
+                "round_id": round_id,
+                "cancellation_token": cancellation_token,
+                "stable": True,
+                "created_at_ts": now,
+            }
+        )
+        self._current_turn.stable_decisions.append(payload)
+        self._current_turn.stable_speech_segments = speech_segments
+        self._current_turn.updated_at_ts = now
+        return payload
+
     def interrupt(self, *, reason: str | None = None) -> TurnBlackboard:
         current = self._current_turn
         now = self._clock()
@@ -136,10 +230,25 @@ class RealtimeTurnManager:
             current.state = "interrupted"
             current.interrupted_at_ts = now
             current.updated_at_ts = now
+            if current.cancellation is not None:
+                current.cancellation.cancel(reason=reason, at_ts=now)
             if reason is not None:
                 current.safety_state["interrupt_reason"] = reason
 
         return self.start_round(reason=reason or "interrupted")
+
+    def status_payload(self) -> dict[str, Any]:
+        current = self._current_turn
+        return {
+            "active": current is not None and current.state == "active",
+            "current_round_id": current.round_id if current is not None else None,
+            "current": current.to_dict() if current is not None else None,
+            "history": {round_id: turn.to_dict() for round_id, turn in self._history.items()},
+            "round_count": self._round_index,
+        }
+
+    def status(self) -> dict[str, Any]:
+        return self.status_payload()
 
 
 class FastThinkEngine:

@@ -23,8 +23,11 @@ CORE_EVENT_NAMES = {
     "ei.capability.manifest.report",
     "ei.observation.audio.chunk",
     "ei.observation.vision.frame",
+    "ei.observation.head.status.report",
     "ei.dialogue.asr.partial",
     "ei.dialogue.asr.final",
+    "ei.dialogue.fast_hypothesis",
+    "ei.dialogue.decision.stable",
     "ei.dialogue.agent.delta",
     "ei.dialogue.agent.final",
     "ei.dialogue.tts.delta",
@@ -81,6 +84,8 @@ def test_list_event_names_filters_by_event_type_and_plane() -> None:
     assert list_event_names(plane="dialogue") == [
         "ei.dialogue.asr.partial",
         "ei.dialogue.asr.final",
+        "ei.dialogue.fast_hypothesis",
+        "ei.dialogue.decision.stable",
         "ei.dialogue.agent.delta",
         "ei.dialogue.agent.final",
         "ei.dialogue.tts.delta",
@@ -121,6 +126,16 @@ def test_required_content_fields_and_routing_metadata_are_documented() -> None:
     assert asr.realtime is True
     assert asr.direction == "head_to_brain"
 
+    fast_hypothesis = require_event_definition("ei.dialogue.fast_hypothesis")
+    assert fast_hypothesis.required_content_fields == ("hypothesisId", "text", "confidence")
+    assert fast_hypothesis.realtime is True
+    assert fast_hypothesis.direction == "brain_to_head"
+
+    stable_decision = require_event_definition("ei.dialogue.decision.stable")
+    assert stable_decision.required_content_fields == ("decisionId", "decision", "confidence")
+    assert stable_decision.round_scoped is True
+    assert stable_decision.direction == "brain_to_head"
+
     manifest = require_event_definition("ei.capability.manifest.report")
     assert manifest.required_content_fields == ("manifestId", "manifestVersion", "capabilities")
     assert manifest.round_scoped is False
@@ -128,6 +143,11 @@ def test_required_content_fields_and_routing_metadata_are_documented() -> None:
     audio = require_event_definition("ei.observation.audio.chunk")
     assert audio.required_content_fields == ("streamId", "chunkIndex", "audioBase64")
     assert audio.realtime is True
+
+    head_status = require_event_definition("ei.observation.head.status.report")
+    assert head_status.required_content_fields == ("status", "components", "reportedAt")
+    assert head_status.round_scoped is False
+    assert head_status.direction == "head_to_brain"
 
 
 def test_unknown_lookup_is_optional_until_required() -> None:
