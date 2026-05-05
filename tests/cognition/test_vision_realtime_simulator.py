@@ -111,3 +111,33 @@ def test_realtime_simulator_maps_snapshots_to_eiprotocol_friendly_content() -> N
     assert event_contents
     assert event_contents[0]["sceneId"] == scene_content["sceneId"]
     assert event_contents[0]["subject"]["trackId"]
+
+
+def test_realtime_simulator_replays_detection_frames_without_raw_frame_dump() -> None:
+    simulator = RealtimeVisionSimulator(move_threshold=0.05, max_missing_frames=0)
+
+    snapshots = simulator.replay(
+        [
+            {
+                "frame_id": "frame-001",
+                "observed_at": "2026-05-05T10:00:00.000+08:00",
+                "detections": [_det("cup", (0.10, 0.20, 0.20, 0.35))],
+            },
+            {
+                "frame_id": "frame-002",
+                "observed_at": "2026-05-05T10:00:00.100+08:00",
+                "detections": [_det("cup", (0.30, 0.20, 0.40, 0.35))],
+            },
+            {
+                "frame_id": "frame-003",
+                "observed_at": "2026-05-05T10:00:00.200+08:00",
+                "detections": [],
+            },
+        ]
+    )
+
+    assert len(snapshots) == 3
+    assert snapshots[0]["sceneSnapshot"]["objects"][0]["trackId"] == snapshots[1]["sceneSnapshot"]["objects"][0]["trackId"]
+    assert [event["eventType"] for event in snapshots[1]["events"]] == ["moved", "attention"]
+    assert [event["eventType"] for event in snapshots[2]["events"]] == ["disappeared"]
+    assert "detections" not in snapshots[1]["sceneSnapshot"]

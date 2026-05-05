@@ -246,6 +246,25 @@ class EiVoiceGateway:
             round_scoped=False,
         )
 
+    def ack_capture_frame(self, count: int = 1) -> int:
+        remaining = self._call_device_count_method(
+            self.capture,
+            ("ack_frame", "ack_frames", "acknowledge_frame", "acknowledge_frames"),
+            count=count,
+        )
+        if remaining is not None:
+            return remaining
+        return self._capture_queue_length()
+
+    def flush_capture(self) -> int:
+        remaining = self._call_device_count_method(
+            self.capture,
+            ("flush_capture", "flush", "clear_capture", "clear"),
+        )
+        if remaining is not None:
+            return remaining
+        return self._capture_queue_length()
+
     def mark_disconnected(self, reason: str = "transport_lost") -> None:
         self.connected = False
         self.reconnect_reason = reason
@@ -382,6 +401,29 @@ class EiVoiceGateway:
         if isinstance(frames, (list, tuple)):
             return len(frames)
         return 0
+
+    @staticmethod
+    def _call_device_count_method(
+        device: Any,
+        method_names: tuple[str, ...],
+        *,
+        count: int | None = None,
+    ) -> int | None:
+        for method_name in method_names:
+            method = getattr(device, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method() if count is None else method(max(0, int(count)))
+            except TypeError:
+                result = method()
+            if result is None:
+                return None
+            try:
+                return max(0, int(result))
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _device_health(self, device: Any) -> dict[str, Any]:
         health = getattr(device, "health", None)

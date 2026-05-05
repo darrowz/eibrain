@@ -174,6 +174,21 @@ class RealtimeVisionSimulator:
             "sceneGraphSummary": summary,
         }
 
+    def replay(self, frames: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Replay a deterministic sequence of detection frames through the tracker."""
+
+        snapshots: list[dict[str, Any]] = []
+        for index, frame in enumerate(frames, start=1):
+            detections = frame.get("detections", [])
+            snapshots.append(
+                self.update(
+                    frame_id=str(frame.get("frame_id", frame.get("frameId", f"frame-{index:03d}"))),
+                    observed_at=str(frame.get("observed_at", frame.get("observedAt", ""))),
+                    detections=[dict(item) for item in detections] if isinstance(detections, list) else [],
+                )
+            )
+        return snapshots
+
     def _match_detections(self, detections: list[dict[str, Any]]) -> list[tuple[int, str]]:
         candidates: list[tuple[float, int, str]] = []
         active_tracks = [track for track in self._tracks.values() if track.missing_frames <= self.max_missing_frames]

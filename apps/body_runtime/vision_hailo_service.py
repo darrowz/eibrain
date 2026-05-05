@@ -22,6 +22,9 @@ from eibrain.body.vision_state import DEFAULT_VISION_FRAME_PATH
 from eibrain.body.vision_state import DEFAULT_VISION_STATE_PATH
 from eibrain.body.vision_state import VisionStateWriter
 from eibrain.body.vision_state import build_vision_state
+from eibrain.cognition.vision_realtime import RealtimeVisionSimulator
+from eibrain.cognition.vision_realtime import to_eiprotocol_event_contents
+from eibrain.cognition.vision_realtime import to_eiprotocol_scene_content
 from eibrain.infra.config import EIBrainConfig, load_config
 
 
@@ -358,36 +361,46 @@ class VisionHailoService:
         interval_s: float = 0.2,
         engagement_reader: EngagementStateReader | None = None,
         sleeping_interval_s: float = 2.0,
+        clock=time.time,
+        realtime_simulator: RealtimeVisionSimulator | None = None,
     ) -> None:
         self.detector = detector
         self.writer = writer
         self.interval_s = interval_s
         self.engagement_reader = engagement_reader
         self.sleeping_interval_s = max(float(sleeping_interval_s), interval_s)
+        self.clock = clock
+        self.realtime_simulator = realtime_simulator or RealtimeVisionSimulator()
+        self._last_frame_ts: float | None = None
         self._running = False
 
     def run_forever(self) -> None:
         self._running = True
         while self._running:
             started = time.monotonic()
-            if self._should_run_vision():
-                state = self.detector.detect_once()
-                interval_s = self.interval_s
-            else:
-                self._stop_detector_pipeline()
-                state = build_vision_state(
-                    detections=[],
-                    frame_path=None,
-                    status="sleeping",
-                    backend="vision_sleep_gate",
-                    pipeline={"mode": "sleeping", "reason": "conversation_inactive"},
-                    details={"engagement": self.engagement_reader.read() if self.engagement_reader else {}},
-                )
-                interval_s = self.sleeping_interval_s
-            self.writer.write(state)
+            result = self.process_once()
+            interval_s = self.sleeping_interval_s if isinstance(result, float) else self.interval_s
             sleep_s = max(0.0, interval_s - (time.monotonic() - started))
             if sleep_s:
                 time.sleep(sleep_s)
+
+    def process_once(self) -> float | dict[str, Any]:
+        if self._should_run_vision():
+            state = self._enrich_realtime_state(self.detector.detect_once())
+            self.writer.write(state)
+            return state
+
+        self._stop_detector_pipeline()
+        state = build_vision_state(
+            detections=[],
+            frame_path=None,
+            status="sleeping",
+            backend="vision_sleep_gate",
+            pipeline={"mode": "sleeping", "reason": "conversation_inactive"},
+            details={"engagement": self.engagement_reader.read() if self.engagement_reader else {}},
+        )
+        self.writer.write(state)
+        return self.sleeping_interval_s
 
     def stop(self) -> None:
         self._running = False
@@ -404,6 +417,54 @@ class VisionHailoService:
         stop = getattr(self.detector, "stop", None)
         if callable(stop):
             stop()
+
+    def _enrich_realtime_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        frame_ts = _float_or_none(state.get("frame_captured_at_ts"))
+        observed_at = str(state.get("observed_at") or state.get("observedAt") or frame_ts or self.clock())
+        frame_id = str(state.get("frame_id") or state.get("frameId") or f"frame-{int((frame_ts or self.clock()) * 1000)}")
+        detections = state.get("detections")
+        snapshot = self.realtime_simulator.update(
+            frame_id=frame_id,
+            observed_at=observed_at,
+            detections=[dict(item) for item in detections] if isinstance(detections, list) else [],
+        )
+        scene_content = to_eiprotocol_scene_content(snapshot)
+        event_contents = to_eiprotocol_event_contents(snapshot)
+        enriched = dict(state)
+        details = enriched.get("details")
+        details_map = dict(details) if isinstance(details, dict) else {}
+        backend = str(enriched.get("backend") or "hailo")
+        track_count = len(scene_content.get("objects", [])) if isinstance(scene_content.get("objects"), list) else 0
+        latency_ms = _latency_ms(details_map)
+        enriched.update(
+            {
+                "scene": scene_content,
+                "spatial": {"relations": list(scene_content.get("relationships", []))},
+                "events": event_contents,
+                "scene_id": scene_content.get("sceneId"),
+                "track_count": track_count,
+                "event_count": len(event_contents),
+                "fps": self._fps(frame_ts),
+                "latency": {"ms": latency_ms},
+                "freshness": {
+                    "source": backend,
+                    "age_s": _round_float(max(0.0, float(self.clock()) - frame_ts)) if frame_ts is not None else None,
+                },
+                "source": {"backend": backend, "mode": "realtime_simulated"},
+                "last_detection_summary": str(snapshot.get("sceneGraphSummary") or scene_content.get("summary") or ""),
+            }
+        )
+        if frame_ts is not None:
+            self._last_frame_ts = frame_ts
+        return enriched
+
+    def _fps(self, frame_ts: float | None) -> float:
+        if frame_ts is None or self._last_frame_ts is None:
+            return 0.0
+        delta = frame_ts - self._last_frame_ts
+        if delta <= 0:
+            return 0.0
+        return _round_float(1.0 / delta)
 
 
 def detector_from_config(config: EIBrainConfig, *, backend: str) -> object:
@@ -509,6 +570,30 @@ def _read_track_id(detection) -> object | None:
     except Exception:
         return None
     return None
+
+
+def _float_or_none(value: object) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _latency_ms(details: dict[str, Any]) -> float | None:
+    for key in ("latency_ms", "latencyMs"):
+        value = _float_or_none(details.get(key))
+        if value is not None:
+            return value
+    timings = details.get("timings_ms")
+    if isinstance(timings, dict):
+        value = _float_or_none(timings.get("total"))
+        if value is not None:
+            return value
+    return None
+
+
+def _round_float(value: float) -> float:
+    return round(float(value), 3)
 
 
 def _select_model_config(detection_extra: dict[str, Any]) -> ModelConfig:

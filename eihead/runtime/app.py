@@ -951,6 +951,10 @@ def _mapping_realtime_candidates(payload: Any) -> list[Any]:
         return []
     candidates: list[Any] = []
 
+    simulator_candidate = _simulator_vision_state_candidate(payload.get("vision_state"))
+    if simulator_candidate is not None:
+        candidates.append(simulator_candidate)
+
     for attr_name in REALTIME_VISION_ATTRS:
         if attr_name in payload:
             candidates.append(payload[attr_name])
@@ -978,6 +982,30 @@ def _mapping_realtime_candidates(payload: Any) -> list[Any]:
                 candidates.append(organ_payload)
                 candidates.extend(_mapping_realtime_candidates(organ_payload))
     return candidates
+
+
+def _simulator_vision_state_candidate(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    if not (_truthy_payload_flag(payload.get("simulated")) or _truthy_payload_flag(payload.get("replay"))):
+        return None
+    source = str(payload.get("source") or "").strip()
+    if not source or source == "vision_state":
+        source = "vision_replay_simulator"
+    candidate = {
+        str(key): value
+        for key, value in payload.items()
+        if str(key) not in {"schema", "kind", "mode", "primary_mode", "source"}
+    }
+    return {
+        "schema": "eihead.eye.realtime_status.v1",
+        "kind": "realtime_vision_observation",
+        "mode": "realtime_stream",
+        "primary_mode": True,
+        "source": source,
+        "status": payload.get("status") or "tracking",
+        **candidate,
+    }
 
 
 def _capability_live_probe_from_native_providers(native_providers: Mapping[str, Any]):

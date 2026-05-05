@@ -48,6 +48,9 @@ class VoiceStreamingAdapter:
 
     def __init__(self, session: RealtimeVoiceSession) -> None:
         self.session = session
+        self._audio_frames = 0
+        self._tts_chunks = 0
+        self._last_heartbeat: dict[str, object] = {}
 
     def apply(self, event: Mapping[str, object] | EventEnvelope) -> dict[str, object]:
         payload = self._event_payload(event)
@@ -71,16 +74,30 @@ class VoiceStreamingAdapter:
             round_id=round_id,
             cancellation_token=cancellation_token,
         )
+        duplicate = operation.startswith("duplicate_")
         return {
-            "applied": operation != "ignored",
+            "applied": operation not in {"ignored"} and not duplicate,
             "eventName": name,
             "name": name,
             "operation": operation,
+            "duplicate": duplicate,
+            "terminal": duplicate or self.session.phase in {"barge_in", "completed", "error"},
             "round_id": round_id,
             "roundId": round_id,
             "cancellation_token": cancellation_token,
             "cancellationToken": cancellation_token,
             "content": dict(content),
+            "live_trace": self._live_trace(),
+        }
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "streaming": {
+                "audio_frames": self._audio_frames,
+                "tts_chunks": self._tts_chunks,
+                "last_heartbeat_state": str(self._last_heartbeat.get("state", "") or ""),
+            },
+            "live_trace": self._live_trace(),
         }
 
     def _apply_named_event(
@@ -97,6 +114,7 @@ class VoiceStreamingAdapter:
         }
         if name in AUDIO_FRAME_EVENTS:
             self.session.note_audio(**round_scope)
+            self._audio_frames += 1
             return "note_audio"
         if name in ASR_PARTIAL_EVENTS:
             self.session.update_partial_transcript(
@@ -127,6 +145,7 @@ class VoiceStreamingAdapter:
                 payload=dict(content),
                 **round_scope,
             )
+            self._tts_chunks += 1
             return "observe_tts_chunk"
         if name in PLAYBACK_STOP_EVENTS:
             reason = self._text_content(content, "reason", default="completed")
@@ -150,8 +169,16 @@ class VoiceStreamingAdapter:
                 lane="listening",
                 payload=dict(content),
             )
+            self._last_heartbeat = dict(content)
             return "observe_heartbeat"
         return "ignored"
+
+    def _live_trace(self) -> dict[str, object]:
+        return {
+            "audio_frames": self._audio_frames,
+            "tts_chunks": self._tts_chunks,
+            "last_heartbeat": dict(self._last_heartbeat),
+        }
 
     def _is_duplicate_completed_stop(
         self,

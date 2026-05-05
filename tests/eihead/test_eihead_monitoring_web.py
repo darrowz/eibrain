@@ -927,6 +927,54 @@ def test_realtime_vision_helper_standardizes_observation_payload() -> None:
     assert payload["frame_interval_ms"] is None
     assert payload["jitter_guard"] is None
     assert payload["hooks_used"] is None
+    assert payload["source_freshness"] == {
+        "state": "simulated",
+        "healthy": True,
+        "stale": False,
+        "offline": False,
+        "simulated": True,
+        "age_s": 0.12,
+        "source": "vision_realtime",
+    }
+    assert payload["latency_ms"] == 38.5
+    assert payload["tracks"]["count"] == 1
+    assert payload["tracks"]["items"][0]["label"] == "person"
+    assert payload["events"] == {"count": 0, "items": [], "summary": "none"}
+    assert payload["detections_summary"] == "person 0.95, cat 0.72"
+    assert payload["health_state"] == "healthy"
+
+
+def test_realtime_vision_helper_reports_offline_summary_without_hardware() -> None:
+    payload = build_realtime_vision_payload(None, timestamp=321.0, source=None, wired=False)
+
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["source_freshness"]["state"] == "offline"
+    assert payload["source_freshness"]["offline"] is True
+    assert payload["health_state"] == "offline"
+    assert payload["detections_summary"] == "no detections (offline)"
+    assert payload["tracks"] == {"count": 0, "items": [], "summary": "none"}
+    assert payload["events"] == {"count": 0, "items": [], "summary": "none"}
+
+
+def test_realtime_vision_helper_accepts_nested_service_latency_and_simulated_source() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "hailo-live-1",
+            "source": {"backend": "gstreamer_hailo", "mode": "realtime_simulated"},
+            "latency": {"ms": 24.5},
+            "detections": [{"label": "person", "score": 0.91}],
+        },
+        timestamp=321.0,
+        source="vision_realtime",
+    )
+
+    assert payload["latency_ms"] == 24.5
+    assert payload["source_freshness"]["state"] == "simulated"
+    assert payload["health_state"] == "healthy"
 
 
 def test_realtime_vision_api_and_html_render_wired_payload() -> None:
@@ -962,6 +1010,11 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert payload["frame_interval_ms"] is None
     assert payload["jitter_guard"] is None
     assert payload["hooks_used"] is None
+    assert payload["source_freshness"]["state"] == "simulated"
+    assert payload["latency_ms"] == 38.5
+    assert payload["tracks"]["summary"] == "person"
+    assert payload["events"]["summary"] == "none"
+    assert payload["detections_summary"] == "person 0.95, cat 0.72"
     assert alias_code == 200
     assert alias_payload["observation"] == payload["observation"]
     assert alias_payload["diagnostic"] == payload["diagnostic"]
@@ -989,6 +1042,13 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert "Devices" in body
     assert "Readiness" in body
     assert "Parse errors" in body
+    assert "source_freshness" in body
+    assert "simulated" in body
+    assert "latency_ms" in body
+    assert "detections_summary" in body
+    assert "person 0.95, cat 0.72" in body
+    assert "tracks" in body
+    assert "events" in body
     assert "/api/vision/realtime" in body
     assert "eye.realtime" in body
 

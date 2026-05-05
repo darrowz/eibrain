@@ -18,6 +18,7 @@ from eibrain.body.organs.eye.organ import EyeOrgan
 from eibrain.body.organs.mouth.organ import MouthOrgan
 from eibrain.body.organs.neck.organ import NeckOrgan
 from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
+from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
 from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.protocol.actions import Action, MoveHeadAction
@@ -38,6 +39,8 @@ class BodyRuntimeApp:
         self.degradation_manager = DegradationManager()
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
+        self._neck_fusion = NeckFusionPolicy(NeckFusionConfig(consecutive_bias_required=1))
+        self._neck_fusion_last_action: dict[str, object] | None = None
         self._visual_tracking_misses = 0
         self._visual_tracking_recentered_this_episode = False
         self._speech_busy_until = 0.0
@@ -671,17 +674,36 @@ class BodyRuntimeApp:
         self,
         *,
         target_name: str,
-        target_x: float,
+        target_x: float | None,
+        score: float = 1.0,
         session_id: str,
         actor_id: str,
-    ) -> MoveHeadAction:
+        now_ts: float | None = None,
+    ) -> MoveHeadAction | None:
+        current_angle = self._neck_home_angle()
+        if isinstance(self._neck_fusion_last_action, dict):
+            try:
+                current_angle = int(self._neck_fusion_last_action.get("target_angle") or current_angle)
+            except (TypeError, ValueError):
+                current_angle = self._neck_home_angle()
+        recommendation = self._neck_fusion.recommend(
+            target_x=target_x,
+            score=float(score),
+            current_angle=current_angle,
+            last_action=self._neck_fusion_last_action,
+            now_ts=time.time() if now_ts is None else float(now_ts),
+        )
+        self._neck_fusion_last_action = dict(recommendation.last_action)
+        if recommendation.action == "hold":
+            return None
         return MoveHeadAction(
             ts=1.0,
             source="eye.tracking",
             session_id=session_id,
             actor_id=actor_id,
-            target_name=target_name,
+            target_name="recenter" if recommendation.action == "recenter" else target_name,
             target_x=target_x,
+            target_angle=recommendation.target_angle,
         )
 
     def track_visual_target_once(
@@ -747,9 +769,18 @@ class BodyRuntimeApp:
         action = self.plan_visual_tracking_action(
             target_name=str(tracking_target.get("label", "target")),
             target_x=float(tracking_target["target_x"]),
+            score=self._coerce_float(tracking_target.get("score"), default=0.0),
             session_id=session_id,
             actor_id=actor_id,
         )
+        if action is None:
+            self._update_visual_tracking_state(
+                status="holding_target",
+                target=tracking_target,
+                miss_count=0,
+                last_outcome_status=None,
+            )
+            return None
         outcomes = self.dispatch_actions([action])
         outcome = outcomes[0] if outcomes else None
         self._note_visual_target_locked(tracking_target)

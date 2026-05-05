@@ -295,3 +295,72 @@ def test_vision_service_writes_sleeping_state_without_detection(tmp_path) -> Non
     assert detector.stop_calls >= 1
     assert state["status"] == "sleeping"
     assert state["backend"] == "vision_sleep_gate"
+
+
+def test_vision_service_enriches_detection_frames_with_realtime_scene_events(tmp_path) -> None:
+    from apps.body_runtime.vision_hailo_service import VisionHailoService
+    from eibrain.body.vision_state import VisionStateWriter
+
+    class _ReplayDetector:
+        def __init__(self) -> None:
+            self.frames = [
+                {
+                    "status": "ok",
+                    "backend": "fake_hailo",
+                    "frame_id": "frame-001",
+                    "frame_captured_at_ts": 100.0,
+                    "detections": [
+                        {
+                            "label": "cup",
+                            "score": 0.9,
+                            "bbox": {"x_min": 0.10, "y_min": 0.20, "x_max": 0.20, "y_max": 0.35},
+                        }
+                    ],
+                    "details": {"latency_ms": 12.5},
+                },
+                {
+                    "status": "ok",
+                    "backend": "fake_hailo",
+                    "frame_id": "frame-002",
+                    "frame_captured_at_ts": 100.1,
+                    "detections": [
+                        {
+                            "label": "cup",
+                            "score": 0.91,
+                            "bbox": {"x_min": 0.35, "y_min": 0.20, "x_max": 0.45, "y_max": 0.35},
+                        }
+                    ],
+                    "details": {"latency_ms": 14.0},
+                },
+            ]
+            self.index = 0
+
+        def detect_once(self):
+            frame = self.frames[self.index]
+            self.index += 1
+            return frame
+
+    state_path = tmp_path / "state.json"
+    detector = _ReplayDetector()
+    service = VisionHailoService(
+        detector=detector,
+        writer=VisionStateWriter(state_path),
+        interval_s=0.01,
+        clock=lambda: 100.2,
+    )
+
+    first = service.process_once()
+    second = service.process_once()
+
+    assert first["track_count"] == 1
+    assert second["track_count"] == 1
+    assert first["scene"]["objects"][0]["trackId"] == second["scene"]["objects"][0]["trackId"]
+    assert second["event_count"] >= 1
+    assert any(event["eventType"] == "moved" for event in second["events"])
+    assert second["fps"] > 0
+    assert second["latency"] == {"ms": 14.0}
+    assert second["freshness"]["source"] == "fake_hailo"
+    assert second["freshness"]["age_s"] == 0.1
+    assert second["source"] == {"backend": "fake_hailo", "mode": "realtime_simulated"}
+    assert second["last_detection_summary"] == "Observed cup; realtime events: attention, moved"
+    assert "detections" not in second["scene"]

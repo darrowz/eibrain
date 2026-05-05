@@ -131,6 +131,27 @@ class LegacyVisionStateRuntime(FakeBodyRuntime):
         }
 
 
+class ReplaySimulatorVisionStateRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "node_id": "honjia-test",
+            "vision_state": {
+                "schema": "eibrain.vision_state.v2",
+                "source": "vision_replay_simulator",
+                "simulated": True,
+                "replay": True,
+                "frame_id": "sim-frame-7",
+                "status": "tracking",
+                "fps": 12.5,
+                "latency_ms": 22.0,
+                "last_frame_age": 0.18,
+                "detections": [{"label": "person", "score": 0.88}],
+                "tracks": [{"track_id": "person-1", "label": "person", "age_frames": 4}],
+                "events": [{"event_type": "track_started", "track_id": "person-1"}],
+            },
+        }
+
+
 class StaticVisionObservationRuntime(FakeBodyRuntime):
     def vision_realtime(self) -> VisionObservation:
         return VisionObservation(ts=2.0, source="eihead.honjia.eye.compat", frame_id="still-1")
@@ -521,6 +542,39 @@ def test_head_runtime_does_not_promote_legacy_vision_state_snapshot_to_realtime(
     runtime = HeadRuntimeApp(body_runtime=LegacyVisionStateRuntime(), config_path="config/test.yaml")
 
     assert runtime.vision_realtime() is None
+
+
+def test_head_runtime_promotes_replay_simulator_vision_state_to_realtime_monitoring() -> None:
+    runtime = HeadRuntimeApp(body_runtime=ReplaySimulatorVisionStateRuntime(), config_path="config/test.yaml")
+
+    payload = runtime.vision_realtime()
+
+    assert isinstance(payload, dict)
+    assert payload["kind"] == "realtime_vision_observation"
+    assert payload["mode"] == "realtime_stream"
+    assert payload["primary_mode"] is True
+    assert payload["source"] == "vision_replay_simulator"
+    assert payload["simulated"] is True
+    assert payload["replay"] is True
+    assert payload["frame_id"] == "sim-frame-7"
+    assert payload["tracks"][0]["track_id"] == "person-1"
+    assert payload["events"][0]["event_type"] == "track_started"
+
+
+def test_head_runtime_http_realtime_endpoint_exposes_simulator_diagnostics() -> None:
+    runtime = HeadRuntimeApp(body_runtime=ReplaySimulatorVisionStateRuntime(), config_path="config/test.yaml")
+
+    with _running_server(runtime, clock=lambda: 1200.0) as base_url:
+        status_code, payload = _read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["source"] == "vision_realtime"
+    assert payload["source_freshness"]["state"] == "simulated"
+    assert payload["latency_ms"] == 22.0
+    assert payload["tracks"]["count"] == 1
+    assert payload["events"]["count"] == 1
+    assert payload["detections_summary"] == "person 0.88"
 
 
 def test_head_runtime_does_not_promote_snapshot_static_compat_payload_to_realtime() -> None:

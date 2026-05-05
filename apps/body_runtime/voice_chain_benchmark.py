@@ -39,7 +39,9 @@ _STREAMING_SIGNALS = {
 
 def summarize_voice_chain(turns: Iterable[Mapping[str, Any]], *, thresholds: Mapping[str, Any] | None = None) -> dict[str, Any]:
     turn_list = [turn for turn in turns if isinstance(turn, Mapping)]
-    threshold_values = _coerce_thresholds(DEFAULT_THRESHOLDS if thresholds is None else thresholds)
+    threshold_values = dict(DEFAULT_THRESHOLDS)
+    if thresholds is not None:
+        threshold_values.update(_coerce_thresholds(thresholds))
     fields = _metric_fields(turn_list, threshold_values)
 
     metrics = {}

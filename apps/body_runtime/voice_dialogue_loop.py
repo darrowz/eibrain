@@ -378,7 +378,7 @@ class VoiceDialogueLoop:
         stop_started_s = time.perf_counter()
         stop_status, stop_error = self._dispatch_stop_speech()
         stop_dispatch_elapsed_ms = round(max(0.0, time.perf_counter() - stop_started_s) * 1000, 2)
-        tts_stop_confirmed = stop_status in {"ok", "healthy", "completed", "stopped"}
+        tts_stop_confirmed = self._tts_stop_confirmed(stop_status)
         interruption["stop_dispatch_elapsed_ms"] = stop_dispatch_elapsed_ms
         interruption["interrupt_to_tts_stop_ms"] = stop_dispatch_elapsed_ms if tts_stop_confirmed else None
         interruption["tts_stop_confirmed"] = tts_stop_confirmed
@@ -617,6 +617,11 @@ class VoiceDialogueLoop:
             "interrupted": interrupted,
             "roundLeak": round_leak,
         }
+        if stage_latency_ms:
+            trace["stageLatencyMs"] = dict(stage_latency_ms)
+        streaming = self._streaming_trace_from_payload(payload)
+        if streaming:
+            trace["streaming"] = streaming
         if asr_final_ms is not None:
             trace["asrFinalMs"] = asr_final_ms
         if first_audio_ms is not None:
@@ -624,6 +629,30 @@ class VoiceDialogueLoop:
         if interrupt_stop_ms is not None:
             trace["interruptStopMs"] = interrupt_stop_ms
         return trace
+
+    def _streaming_trace_from_payload(self, payload: dict[str, object]) -> dict[str, bool]:
+        explicit = payload.get("streaming")
+        if isinstance(explicit, dict):
+            return {
+                "asrPartial": bool(explicit.get("asrPartial") or explicit.get("asr_partial")),
+                "llmDelta": bool(explicit.get("llmDelta") or explicit.get("llm_delta")),
+                "ttsChunk": bool(explicit.get("ttsChunk") or explicit.get("tts_chunk")),
+            }
+        closed_loop = payload.get("closed_loop_state")
+        closed = closed_loop if isinstance(closed_loop, dict) else {}
+        events = payload.get("realtime_events")
+        event_list = events if isinstance(events, list) else []
+        event_types = {
+            str(event.get("event_type") or "")
+            for event in event_list
+            if isinstance(event, dict)
+        }
+        streaming = {
+            "asrPartial": bool(closed.get("final_asr") or "asr_partial" in event_types or "asr_final" in event_types),
+            "llmDelta": bool(payload.get("last_reply_delta") or closed.get("reply_delta") or "agent_think" in event_types),
+            "ttsChunk": bool(closed.get("speaking") or "tts_started" in event_types),
+        }
+        return streaming if any(streaming.values()) else {}
 
     @staticmethod
     def _numeric_mapping(value: object) -> dict[str, float]:
@@ -827,6 +856,17 @@ class VoiceDialogueLoop:
                 error = str(details.get("last_error") or details.get("error") or details.get("reason") or "")
             return first_status, error
         return "not_supported", ""
+
+    def _tts_stop_confirmed(self, stop_status: str) -> bool:
+        if stop_status not in {"ok", "healthy", "completed", "stopped"}:
+            return False
+        is_speaking = getattr(self.body_runtime, "is_speaking", None)
+        if callable(is_speaking):
+            try:
+                return not bool(is_speaking())
+            except Exception:
+                return stop_status in {"completed", "stopped"}
+        return stop_status in {"completed", "stopped"}
 
     def _maybe_interrupt_during_playback(self) -> bool:
         probe = getattr(self.body_runtime, "probe_barge_in", None)
@@ -1551,6 +1591,11 @@ class VoiceDialogueLoop:
                     last_stage_latency_ms=stage_latency_ms,
                     last_bottleneck_stage=self._bottleneck_stage(stage_latency_ms),
                     last_bottleneck_ms=self._bottleneck_ms(stage_latency_ms),
+                    streaming={
+                        "asrPartial": True,
+                        "llmDelta": emitted_reply_delta,
+                        "ttsChunk": bool(actions and status == "ok"),
+                    },
                     last_completed_turn={
                         "round_id": turn.round_id,
                         "cancellation_token": turn.cancellation_token,

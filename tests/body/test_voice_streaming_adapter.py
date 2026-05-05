@@ -115,8 +115,15 @@ def test_adapter_records_audio_frame_tts_chunk_and_heartbeat_for_live_trace() ->
     assert session.first_audio_at_s is not None
     assert audio_trace["operation"] == "note_audio"
     assert tts_chunk_trace["operation"] == "observe_tts_chunk"
+    assert tts_chunk_trace["live_trace"]["tts_chunks"] == 1
     assert heartbeat_trace["operation"] == "observe_heartbeat"
     assert heartbeat_trace["applied"] is True
+    assert heartbeat_trace["live_trace"]["last_heartbeat"]["state"] == "capturing"
+    assert adapter.snapshot()["streaming"] == {
+        "audio_frames": 1,
+        "tts_chunks": 1,
+        "last_heartbeat_state": "capturing",
+    }
     assert [event.event_type for event in session.events[-3:]] == [
         "audio_detected",
         "tts_chunk",
@@ -171,7 +178,8 @@ def test_adapter_treats_duplicate_completed_playback_stop_as_idempotent() -> Non
 
     assert first_trace["operation"] == "complete_playback"
     assert second_trace["operation"] == "duplicate_playback_stop"
-    assert second_trace["applied"] is True
+    assert second_trace["applied"] is False
+    assert second_trace["terminal"] is True
     assert session.phase == "completed"
     assert session.status == "playback_completed"
 

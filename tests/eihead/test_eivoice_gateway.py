@@ -53,6 +53,44 @@ class FakePlayback:
         return {"status": "ok", "buffered": len(self.chunks)}
 
 
+class AckedCapture:
+    def __init__(self) -> None:
+        self._pending = [
+            {
+                "audio_base64": "UklGRg==",
+                "sample_rate_hz": 16000,
+                "channels": 1,
+                "format": "pcm16",
+                "duration_ms": 20,
+            }
+        ]
+        self._in_flight = 0
+
+    def read_frame(self) -> dict[str, object] | None:
+        if not self._pending:
+            return None
+        self._in_flight += 1
+        return dict(self._pending[0])
+
+    def pending_frames(self) -> int:
+        return len(self._pending) + self._in_flight
+
+    def ack_frame(self, count: int = 1) -> int:
+        acked = min(max(0, int(count)), self._in_flight)
+        self._in_flight -= acked
+        for _ in range(min(acked, len(self._pending))):
+            self._pending.pop(0)
+        return self.pending_frames()
+
+    def flush(self) -> int:
+        self._pending.clear()
+        self._in_flight = 0
+        return 0
+
+    def health(self) -> dict[str, object]:
+        return {"status": "ok", "frames_left": self.pending_frames()}
+
+
 def test_capture_audio_frame_emits_voice_frame_without_real_devices() -> None:
     gateway = EiVoiceGateway(
         session_id="s1",
@@ -177,3 +215,27 @@ def test_heartbeat_queue_lengths_reflect_current_buffer_not_cumulative_counts() 
 
     assert before_stop.content["queueLengths"] == {"capture": 0, "tts": 1}
     assert after_stop.content["queueLengths"] == {"capture": 0, "tts": 0}
+
+
+def test_heartbeat_capture_queue_length_can_drop_after_explicit_ack_or_flush() -> None:
+    capture = AckedCapture()
+    gateway = EiVoiceGateway(session_id="s1", actor_id="u1", capture=capture, playback=FakePlayback())
+
+    gateway.capture_audio_frame()
+    before_ack = gateway.heartbeat()
+
+    gateway.ack_capture_frame()
+    after_ack = gateway.heartbeat()
+
+    flush_capture = AckedCapture()
+    flush_gateway = EiVoiceGateway(session_id="s1", actor_id="u1", capture=flush_capture, playback=FakePlayback())
+    flush_gateway.capture_audio_frame()
+    before_flush = flush_gateway.heartbeat()
+
+    flush_gateway.flush_capture()
+    after_flush = flush_gateway.heartbeat()
+
+    assert before_ack.content["queueLengths"]["capture"] == 2
+    assert after_ack.content["queueLengths"]["capture"] == 0
+    assert before_flush.content["queueLengths"]["capture"] == 2
+    assert after_flush.content["queueLengths"]["capture"] == 0

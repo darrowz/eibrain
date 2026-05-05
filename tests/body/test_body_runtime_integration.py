@@ -89,6 +89,23 @@ def test_body_runtime_maps_visual_target_to_move_head_action() -> None:
     assert action.target_x == 0.75
 
 
+def test_body_runtime_holds_visual_tracking_action_in_deadband() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+
+    action = runtime.plan_visual_tracking_action(
+        target_name="face",
+        target_x=0.52,
+        score=0.95,
+        session_id="session-1",
+        actor_id="user-1",
+        now_ts=1.0,
+    )
+
+    assert action is None
+
+
 def test_body_runtime_can_dispatch_visual_tracking_to_neck() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth

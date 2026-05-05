@@ -75,6 +75,7 @@ def build_realtime_vision_payload(
         status=derived_status if serialized_observation is not None else "not_wired",
         wired=is_wired,
         timestamp=timestamp,
+        source=source,
     )
     payload: dict[str, Any] = {
         "schema": REALTIME_VISION_SCHEMA,
@@ -122,6 +123,12 @@ def build_realtime_vision_payload(
         "parse_errors": diagnostic["parse_errors"],
         "overlay": diagnostic["overlay"],
         "visual_diagnostic": diagnostic["overlay"],
+        "source_freshness": diagnostic["source_freshness"],
+        "latency_ms": diagnostic["latency_ms"],
+        "tracks": diagnostic["tracks"],
+        "events": diagnostic["events"],
+        "detections_summary": diagnostic["detections_summary"],
+        "health_state": diagnostic["health_state"],
     }
     if not is_wired:
         if derived_message:
@@ -165,6 +172,7 @@ def _build_realtime_diagnostic(
     status: str,
     wired: bool,
     timestamp: float,
+    source: str | None,
 ) -> dict[str, Any]:
     detections = _normalized_detections(_first_present(observation, "detections") if observation else None)
     score_threshold = _detection_score_threshold(observation)
@@ -228,6 +236,21 @@ def _build_realtime_diagnostic(
     readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
     parse_error_count = _int_or_none(_first_nested_present(observation, "parse_error_count"))
     parse_errors = _parse_errors(_first_nested_present(observation, "parse_errors", "errors"))
+    source_freshness = _source_freshness(
+        observation,
+        source=source,
+        status=status,
+        wired=wired,
+        stream_ready=stream_ready,
+        stale=stale,
+        degraded=degraded,
+        not_wired=not_wired,
+        last_frame_age=last_frame_age,
+    )
+    tracks = _tracks_payload(observation)
+    events = _events_payload(observation)
+    detections_summary = _detections_summary(filtered_detections, source_freshness=source_freshness)
+    health_state = _health_state(source_freshness=source_freshness, degraded=degraded, stale=stale)
     overlay = _build_visual_overlay(
         observation,
         filtered_detections=filtered_detections,
@@ -272,6 +295,12 @@ def _build_realtime_diagnostic(
         "parse_error_count": parse_error_count,
         "parse_errors": parse_errors,
         "detections": filtered_detections,
+        "source_freshness": source_freshness,
+        "latency_ms": _latency_ms(observation),
+        "tracks": tracks,
+        "events": events,
+        "detections_summary": detections_summary,
+        "health_state": health_state,
         "overlay": overlay,
         "visual_diagnostic": overlay,
     }
@@ -484,6 +513,157 @@ def _parse_errors(value: Any) -> list[Any] | None:
     if isinstance(value, (list, tuple)):
         return [_json_ready(item) for item in value]
     return [_json_ready(value)]
+
+
+def _source_freshness(
+    observation: Mapping[str, Any] | None,
+    *,
+    source: str | None,
+    status: str,
+    wired: bool,
+    stream_ready: bool,
+    stale: bool,
+    degraded: bool,
+    not_wired: bool,
+    last_frame_age: float | None,
+) -> dict[str, Any]:
+    simulated = _is_simulated_source(observation)
+    offline = not bool(wired) or not_wired or _status_is_not_wired(status)
+    if offline:
+        state = "offline"
+    elif stale:
+        state = "stale"
+    elif simulated:
+        state = "simulated"
+    elif degraded:
+        state = "degraded"
+    elif stream_ready:
+        state = "healthy"
+    else:
+        state = status or "unknown"
+    return {
+        "state": state,
+        "healthy": state in {"healthy", "simulated"},
+        "stale": bool(stale),
+        "offline": bool(offline),
+        "simulated": bool(simulated),
+        "age_s": last_frame_age,
+        "source": source,
+    }
+
+
+def _is_simulated_source(observation: Mapping[str, Any] | None) -> bool:
+    if observation is None:
+        return False
+    for key in ("simulated", "replay"):
+        if _truthy(_first_nested_present(observation, key)):
+            return True
+    transport = _first_nested_present(observation, "transport")
+    source = _first_nested_present(observation, "source")
+    source_text = _source_text(source)
+    return (
+        str(transport or "").lower() in {"simulated", "replay"}
+        or "simulator" in source_text
+        or "simulated" in source_text
+    )
+
+
+def _source_text(source: Any) -> str:
+    if isinstance(source, Mapping):
+        return " ".join(str(value).lower() for value in source.values())
+    return str(source or "").lower()
+
+
+def _latency_ms(observation: Mapping[str, Any] | None) -> float | None:
+    latency = _first_nested_present(observation, "latency_ms", "latencyMs")
+    number = _number_or_none(latency)
+    if number is not None:
+        return number
+    latency_payload = _first_nested_present(observation, "latency")
+    if isinstance(latency_payload, Mapping):
+        for key in ("ms", "total_ms", "total", "latency_ms", "latencyMs"):
+            number = _number_or_none(latency_payload.get(key))
+            if number is not None:
+                return number
+    return _number_or_none(latency_payload)
+
+
+def _tracks_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw_tracks = _first_nested_present(observation, "tracks", "tracked_targets")
+    if raw_tracks is None:
+        raw_tracks = _first_nested_present(observation, "tracked_target")
+    tracks = _normalized_items(raw_tracks)
+    return {
+        "count": len(tracks),
+        "items": tracks,
+        "summary": _items_summary(tracks),
+    }
+
+
+def _events_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    events = _normalized_items(_first_nested_present(observation, "events", "recent_events"))
+    return {
+        "count": len(events),
+        "items": events,
+        "summary": _items_summary(events, label_keys=("event_type", "type", "name", "label")),
+    }
+
+
+def _normalized_items(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if isinstance(value, Mapping) or isinstance(value, (str, bytes)):
+        raw_items = [value]
+    else:
+        try:
+            raw_items = list(value)
+        except TypeError:
+            raw_items = [value]
+    items: list[dict[str, Any]] = []
+    for item in raw_items:
+        normalized = _json_ready(item)
+        if isinstance(normalized, Mapping):
+            items.append({str(k): v for k, v in normalized.items()})
+        else:
+            items.append({"value": normalized, "payload_type": type(item).__name__})
+    return items
+
+
+def _detections_summary(
+    detections: list[dict[str, Any]],
+    *,
+    source_freshness: Mapping[str, Any],
+) -> str:
+    if not detections:
+        if source_freshness.get("offline") is True:
+            return "no detections (offline)"
+        if source_freshness.get("stale") is True:
+            return "no detections (stale)"
+        return "no detections"
+    return _items_summary(detections, label_keys=("label", "class", "name"))
+
+
+def _items_summary(items: list[dict[str, Any]], *, label_keys: tuple[str, ...] = ("label", "name", "track_id")) -> str:
+    if not items:
+        return "none"
+    parts: list[str] = []
+    for item in items:
+        label = _string_or_none(_first_present(item, *label_keys)) or "item"
+        score = _number_or_none(_first_present(item, "score", "confidence"))
+        parts.append(_score_label(label, score))
+    return ", ".join(parts) if parts else "none"
+
+
+def _health_state(*, source_freshness: Mapping[str, Any], degraded: bool, stale: bool) -> str:
+    if source_freshness.get("offline") is True:
+        return "offline"
+    if stale:
+        return "stale"
+    if degraded:
+        return "degraded"
+    if source_freshness.get("healthy") is True:
+        return "healthy"
+    return str(source_freshness.get("state") or "unknown")
 
 
 def _normalized_detection(raw_detection: Any) -> dict[str, Any] | None:

@@ -125,6 +125,36 @@ def test_summarize_voice_chain_uses_default_thresholds_and_is_json_serializable(
     assert json.loads(json.dumps(summary, sort_keys=True)) == summary
 
 
+def test_summarize_voice_chain_overlays_custom_thresholds_on_defaults() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
+
+    summary = summarize_voice_chain(
+        [
+            {
+                "asrFinalMs": 900.0,
+                "firstTokenMs": 650.0,
+                "firstAudioMs": 1900.0,
+                "interruptStopMs": 250.0,
+                "interrupted": True,
+                "streamingReady": True,
+            }
+        ],
+        thresholds={"asrFinalMs": 1000.0},
+    )
+
+    assert summary["thresholds"] == {
+        "asrFinalMs": 1000.0,
+        "firstTokenMs": 700.0,
+        "firstAudioMs": 2000.0,
+        "interruptStopMs": 300.0,
+    }
+    assert summary["metrics"]["asrFinalMs"]["threshold"] == 1000.0
+    assert summary["metrics"]["firstTokenMs"]["threshold"] == 700.0
+    assert summary["metrics"]["firstAudioMs"]["threshold"] == 2000.0
+    assert summary["metrics"]["interruptStopMs"]["threshold"] == 300.0
+    assert summary["readinessSummary"]["honjiaReady"] is True
+
+
 def test_summarize_voice_chain_reports_round_stage_and_readiness_summary() -> None:
     from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
 

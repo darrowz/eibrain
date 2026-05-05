@@ -218,6 +218,19 @@ class _PlaybackBargeInBody(_Body):
         return [type("Outcome", (), {"status": "ok"})()]
 
 
+class _StopAckButStillSpeakingBody(_Body):
+    def __init__(self, transcripts: list[str]) -> None:
+        super().__init__(transcripts)
+        self.speaking = True
+
+    def is_speaking(self) -> bool:
+        return self.speaking
+
+    def dispatch_actions(self, actions):
+        self.dispatched.extend(actions)
+        return [type("Outcome", (), {"status": "ok"})()]
+
+
 def _start_loop(body: _Body, cognition: _Cognition, **kwargs):
     from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
 
@@ -444,6 +457,28 @@ def test_voice_dialogue_loop_uses_streaming_facade_for_closed_loop_diagnostics()
     assert "complete" in event_types
 
 
+def test_voice_dialogue_loop_voice_chain_benchmark_exposes_live_stage_and_streaming_signals() -> None:
+    body = _Body(["你好"])
+    cognition = _StreamingCognition(deltas=["你", "好"], reply="你好")
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: any(update.get("last_status") == "reply_ready" for update in body.updates))
+    loop.stop()
+
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    trace = benchmark["recentTraces"][-1]
+    round_payload = benchmark["rounds"][-1]
+    assert trace["stageLatencyMs"]["listen_asr"] >= 0
+    assert trace["stageLatencyMs"]["think"] >= 0
+    assert trace["stageLatencyMs"]["speak"] >= 0
+    assert trace["streaming"] == {"asrPartial": True, "llmDelta": True, "ttsChunk": True}
+    assert round_payload["stageLatencyMs"]["think"] == trace["stageLatencyMs"]["think"]
+    assert benchmark["stageLatencyMetrics"]["think"]["count"] >= 1
+    assert benchmark["streaming"]["ready"] is True
+    assert benchmark["roundLeak"]["free"] is True
+    assert benchmark["interruptStop"]["requiredCount"] == 0
+
+
 def test_voice_dialogue_loop_preserves_round_token_for_json_stream_facade() -> None:
     body = _Body(["你好"])
     cognition = _JsonStreamingCognition()
@@ -608,7 +643,7 @@ def test_voice_dialogue_loop_request_interrupt_counts_confirmed_tts_stop_latency
     from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
     from eibrain.cognition.realtime.turn import RealtimeTurnManager
 
-    body = _Body([""])
+    body = _PlaybackBargeInBody([""])
     cognition = _Cognition()
     turn_manager = RealtimeTurnManager()
     turn_manager.start_round(reason="test")
@@ -627,6 +662,36 @@ def test_voice_dialogue_loop_request_interrupt_counts_confirmed_tts_stop_latency
     assert interrupt_update["tts_stop_confirmed"] is True
     assert benchmark["metrics"]["interruptStopMs"]["count"] == 1
     assert benchmark["recentTraces"][-1]["interruptStopMs"] == interrupt_update["interrupt_to_tts_stop_ms"]
+
+
+def test_voice_dialogue_loop_request_interrupt_does_not_count_stop_dispatch_without_playback_confirmation() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime.turn import RealtimeTurnManager
+
+    body = _StopAckButStillSpeakingBody([""])
+    cognition = _Cognition()
+    turn_manager = RealtimeTurnManager()
+    turn_manager.start_round(reason="test")
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=cognition,
+        realtime_turn_manager=turn_manager,
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+
+    loop.request_interrupt(reason="user_barge_in")
+
+    interrupt_update = _first_update(body, last_status="interrupted")
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert interrupt_update["stop_speech_status"] == "ok"
+    assert interrupt_update["tts_stop_confirmed"] is False
+    assert interrupt_update["interrupt_to_tts_stop_ms"] is None
+    assert "interruptStopMs" not in benchmark["metrics"]
+    assert "interruptStopMs" not in benchmark["recentTraces"][-1]
+    assert benchmark["interruptStop"]["requiredCount"] == 1
+    assert benchmark["interruptStop"]["confirmedCount"] == 0
+    assert benchmark["interruptStop"]["ready"] is False
 
 
 def test_voice_dialogue_loop_request_interrupt_surfaces_stop_failure() -> None:
