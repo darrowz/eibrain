@@ -102,7 +102,36 @@ def test_voice_realtime_exposes_voice_chain_benchmark_in_dialogue_payload() -> N
 
     assert payload["dialogue"]["voice_chain_benchmark"] == benchmark
     assert payload["voice_dialogue"]["voice_chain_benchmark"] == benchmark
+    assert payload["voice_chain_readiness"]["source"] == "live_benchmark"
+    assert payload["voice_chain_readiness"]["live"] is True
+    assert payload["voice_chain_readiness"]["honjiaReady"] is True
+    assert payload["voice_chain_readiness"]["turnCount"] == 2
+    assert payload["voice_chain_readiness"]["failedMetrics"] == []
     assert consumed["observation"]["dialogue"]["voice_chain_benchmark"] == benchmark
+    assert consumed["voice_chain_readiness"]["source"] == "live_benchmark"
+    assert consumed["voice_chain_readiness"]["honjiaReady"] is True
+
+
+def test_voice_realtime_exposes_waiting_voice_chain_readiness_without_fake_live_data() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eihead.monitoring.voice import build_voice_diagnostics_from_app
+
+    runtime = BodyRuntimeApp()
+
+    payload = runtime.voice_realtime()
+    consumed = build_voice_diagnostics_from_app(runtime, timestamp=126.5)
+
+    readiness = payload["voice_chain_readiness"]
+    assert readiness["schema"] == "eibrain.voice_chain_readiness.v1"
+    assert readiness["source"] == "waiting_for_live_benchmark"
+    assert readiness["live"] is False
+    assert readiness["honjiaReady"] is False
+    assert readiness["turnCount"] == 0
+    assert readiness["scenarioTargets"]["schema"] == "eibrain.voice_chain_scenarios.v1"
+    assert readiness["scenarioTargets"]["honjiaReady"] is True
+    assert "waiting" in readiness["readinessMessage"]
+    assert consumed["voice_chain_readiness"]["source"] == "waiting_for_live_benchmark"
+    assert consumed["voice_chain_readiness"]["honjiaReady"] is False
 
 
 def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_chain() -> None:

@@ -115,6 +115,46 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert any(metric["id"] == "voice_dialogue.listen_asr" for metric in report["latency_metrics"])
 
 
+def test_operator_console_exposes_voice_chain_readiness_in_dialogue_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    benchmark = {
+        "turnCount": 2,
+        "roundLeakCount": 0,
+        "metrics": {
+            "asrFinalMs": {"p95": 620.0, "threshold": 800.0, "pass": True},
+            "firstAudioMs": {"p95": 1510.0, "threshold": 2000.0, "pass": True},
+            "interruptStopMs": {"p95": 210.0, "threshold": 300.0, "pass": True},
+        },
+        "bottleneck": {"field": "firstAudioMs", "p95": 1510.0, "threshold": 2000.0},
+    }
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_hear_voice": True, "can_transcribe_speech": True, "can_speak": True},
+            "organs": {},
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "phase": "idle",
+                "last_status": "reply_ready",
+                "voice_chain_benchmark": benchmark,
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    readiness = report["dialogue_diagnostics"]["voice_chain_readiness"]
+    assert readiness["source"] == "live_benchmark"
+    assert readiness["live"] is True
+    assert readiness["honjiaReady"] is True
+    assert readiness["turnCount"] == 2
+    assert readiness["summary"] == "ready: 2 live turns"
+    assert readiness["bottleneck"]["field"] == "firstAudioMs"
+
+
 def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

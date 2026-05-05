@@ -23,6 +23,7 @@ COPY_DIRS = (
     "eibrain/body",
     "eibrain/cognition/realtime",
     "eibrain/infra",
+    "eibrain/voice",
     "eiprotocol",
     # Temporary compatibility until eiprotocol is split into its own repo.
     "eibrain/protocol",
@@ -65,6 +66,11 @@ TRANSITIONAL_PACKAGES = (
         "package": "eibrain.infra",
         "paths": ["eibrain/infra"],
         "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
+    },
+    {
+        "package": "eibrain.voice",
+        "paths": ["eibrain/voice"],
+        "reason": "Shared voice-chain readiness helpers kept until eihead owns native voice diagnostics end-to-end.",
     },
     {
         "package": "eiprotocol",
@@ -354,6 +360,7 @@ LEGACY_SHIM_REMOVAL_GATES = {
     "eibrain.body": "Native eihead eye, neck, ear, and mouth providers pass honjia parity without eibrain.body imports.",
     "eibrain.cognition.realtime": "Voice round lifecycle and scheduler state are owned by eihead/eiprotocol contracts without eibrain scheduler imports.",
     "eibrain.infra": "eihead owns its deployment config layer and no longer needs shared eibrain infra helpers.",
+    "eibrain.voice": "Voice-chain readiness normalization is owned by eihead/eiprotocol without eibrain compatibility helpers.",
     "eiprotocol": "eiprotocol is consumed as an independent package rather than a copied export payload.",
     "eibrain.protocol": "eihead and eibrain both consume eiprotocol directly without legacy eibrain.protocol compatibility exports.",
     "eibrain.verification": "Hardware verification CLI/checks are native to eihead or a shared verification package.",
@@ -580,6 +587,7 @@ include = [
     "eibrain.infra*",
     "eibrain.protocol*",
     "eibrain.verification*",
+    "eibrain.voice*",
     "eiprotocol*",
 ]
 exclude = ["config*", "tests*", "docs*", "scripts*", "deploy*"]
@@ -686,7 +694,8 @@ eihead-runtime monitor --host 0.0.0.0 --port 18080
 The current runtime still carries a small `eibrain.protocol` compatibility
 subset, transitional `eibrain.body` hardware code, and the minimal
 `eibrain.cognition.realtime` scheduler primitives needed by the exported
-`apps.body_runtime` voice chain, plus transitional hardware verification
+`apps.body_runtime` voice chain, shared `eibrain.voice` readiness helpers,
+plus transitional hardware verification
 helpers. The shared protocol package is also exported as `/dev-project/eiprotocol`;
 when this exporter is given `--eiprotocol-repo-root`, `EXPORT_MANIFEST.json`
 pins the independent protocol repository revision used by this eihead build.

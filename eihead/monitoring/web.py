@@ -579,6 +579,8 @@ def _render_index(app: Any, timestamp: float) -> str:
         _metric_value(_voice_latency_stage_ms(voice.get("latency"), "first_speech"), suffix="ms")
     )
     voice_cancellation_chain = _display_value(_voice_cancellation_chain_summary(voice.get("cancellation_chain")))
+    voice_chain_readiness = _display_value(_voice_chain_readiness_summary(voice.get("voice_chain_readiness")))
+    voice_chain_bottleneck = _display_value(_voice_chain_bottleneck_summary(voice.get("voice_chain_readiness")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
     neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
     neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
@@ -697,6 +699,8 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">First reply token</div><span class="metric">{voice_first_reply_token}</span></div>
       <div class="card"><div class="label">First speech</div><span class="metric">{voice_first_speech}</span></div>
       <div class="card"><div class="label">Cancellation chain</div><span class="metric">{voice_cancellation_chain}</span></div>
+      <div class="card"><div class="label">Voice chain readiness</div><span class="metric">{voice_chain_readiness}</span></div>
+      <div class="card"><div class="label">Voice chain bottleneck</div><span class="metric">{voice_chain_bottleneck}</span></div>
       <div class="card"><div class="label">Readiness</div><span class="metric">{voice_readiness}</span></div>
     </section>
     <h2>Status</h2>
@@ -1061,6 +1065,38 @@ def _voice_cancellation_chain_summary(value: Any) -> str:
     if not targets:
         return "none"
     return " -> ".join(targets)
+
+
+def _voice_chain_readiness_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    summary = value.get("summary")
+    if summary not in (None, ""):
+        return str(summary)
+    turn_count = value.get("turnCount")
+    if value.get("honjiaReady") is True:
+        return f"ready: {turn_count} live turns"
+    source = value.get("source") or "unknown"
+    return str(source)
+
+
+def _voice_chain_bottleneck_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    bottleneck = value.get("bottleneck")
+    if not isinstance(bottleneck, Mapping):
+        failed = value.get("failedMetrics")
+        if isinstance(failed, list) and failed:
+            return ", ".join(str(item) for item in failed)
+        return "none"
+    field = bottleneck.get("field") or bottleneck.get("label") or "unknown"
+    p95 = bottleneck.get("p95")
+    threshold = bottleneck.get("threshold")
+    if p95 not in (None, "") and threshold not in (None, ""):
+        return f"{field} ({p95}ms / {threshold}ms)"
+    if p95 not in (None, ""):
+        return f"{field} ({p95}ms)"
+    return str(field)
 
 
 def _is_healthy(payload: Mapping[str, Any]) -> bool:

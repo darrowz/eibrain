@@ -432,6 +432,57 @@ class NativeVoiceRealtimeApp(FakeMonitorApp):
         }
 
 
+class VoiceChainReadinessApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "wired",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {
+                "phase": "idle",
+                "last_status": "reply_ready",
+                "interrupt_active": False,
+                "interrupted_round_count": 0,
+                "voice_chain_benchmark": {
+                    "turnCount": 2,
+                    "roundLeakCount": 0,
+                    "roundLeakRate": 0.0,
+                    "metrics": {
+                        "asrFinalMs": {
+                            "count": 2,
+                            "avg": 560.0,
+                            "p95": 620.0,
+                            "threshold": 800.0,
+                            "pass": True,
+                        },
+                        "firstAudioMs": {
+                            "count": 2,
+                            "avg": 1430.0,
+                            "p95": 1510.0,
+                            "threshold": 2000.0,
+                            "pass": True,
+                        },
+                        "interruptStopMs": {
+                            "count": 1,
+                            "avg": 210.0,
+                            "p95": 210.0,
+                            "threshold": 300.0,
+                            "pass": True,
+                        },
+                    },
+                    "bottleneck": {
+                        "field": "firstAudioMs",
+                        "label": "first_audio",
+                        "p95": 1510.0,
+                        "threshold": 2000.0,
+                        "ratio": 0.755,
+                    },
+                },
+            },
+        }
+
+
 class RoundSchedulerInterruptVoiceApp(FakeMonitorApp):
     def voice_realtime(self) -> dict[str, object]:
         return {
@@ -808,6 +859,20 @@ def test_voice_helper_surfaces_rich_native_voice_diagnostics_without_fake_stream
     assert payload["mouth"]["busy"] is True
     assert payload["mouth"]["playback_state"] == "busy"
     assert payload["mouth"]["stop"]["busy_retained"] is True
+
+
+def test_voice_helper_normalizes_voice_chain_readiness_from_live_benchmark() -> None:
+    payload = build_voice_diagnostics_from_app(VoiceChainReadinessApp(), timestamp=435.5)
+
+    readiness = payload["voice_chain_readiness"]
+    assert readiness["schema"] == "eibrain.voice_chain_readiness.v1"
+    assert readiness["source"] == "live_benchmark"
+    assert readiness["live"] is True
+    assert readiness["honjiaReady"] is True
+    assert readiness["turnCount"] == 2
+    assert readiness["failedMetrics"] == []
+    assert readiness["bottleneck"]["field"] == "firstAudioMs"
+    assert readiness["summary"] == "ready: 2 live turns"
     assert payload["interruption"]["state"] == "clear"
     assert payload["streaming"]["llm"]["state"] == "unknown"
     assert payload["streaming"]["tts"]["state"] == "unknown"
@@ -950,6 +1015,23 @@ def test_voice_api_aliases_and_html_render_voice_diagnostics() -> None:
     assert "Voice Diagnostics" in body
     assert "/api/voice/realtime" in body
     assert "MiniMax" in body or "minimax" in body
+
+
+def test_voice_api_and_html_render_voice_chain_readiness_card() -> None:
+    app = VoiceChainReadinessApp()
+
+    with running_server(app, clock=lambda: 654.8) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["voice_chain_readiness"]["summary"] == "ready: 2 live turns"
+    assert payload["voice_chain_readiness"]["bottleneck"]["field"] == "firstAudioMs"
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Voice chain readiness" in body
+    assert "ready: 2 live turns" in body
+    assert "firstAudioMs" in body
 
 
 def test_voice_helper_exposes_round_scheduler_interrupt_and_microfeedback_state() -> None:

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
+from eibrain.voice.readiness import build_voice_chain_readiness
 from eihead.protocol import serialize_message
 
 
@@ -86,6 +87,7 @@ def _build_voice_payload(
     cancellation_chain = _cancellation_chain_payload(data, dialogue_source, realtime_session)
     bottleneck = _bottleneck_payload(data, dialogue_source)
     last_turn = _last_turn_payload(data, dialogue_source)
+    voice_chain_readiness = _voice_chain_readiness_payload(data, dialogue_source)
     status, derived_wired, not_wired = _voice_overall_status(
         ear=ear,
         mouth=mouth,
@@ -141,6 +143,7 @@ def _build_voice_payload(
         "cancellation_chain": cancellation_chain,
         "bottleneck": bottleneck,
         "last_turn": last_turn,
+        "voice_chain_readiness": voice_chain_readiness,
         "not_wired": bool(not_wired),
         "readiness_message": readiness_message,
     }
@@ -1017,6 +1020,32 @@ def _last_turn_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, An
         _mapping_from_keys(data, "last_turn")
         or _mapping_from_keys(dialogue, "last_completed_turn")
         or _mapping_from_keys(dialogue, "last_turn")
+    )
+
+
+def _voice_chain_readiness_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    explicit = _first_mapping(
+        data,
+        dialogue,
+        keys=("voice_chain_readiness", "voiceChainReadiness"),
+    )
+    benchmark = _first_mapping(
+        data,
+        dialogue,
+        keys=("voice_chain_benchmark", "voiceChainBenchmark"),
+    )
+    scenario_targets = _first_mapping(
+        data,
+        dialogue,
+        keys=("scenarioTargets", "voice_chain_scenarios", "voiceChainScenarios"),
+    )
+    return build_voice_chain_readiness(
+        explicit=explicit,
+        benchmark=benchmark,
+        scenario_targets=scenario_targets,
     )
 
 

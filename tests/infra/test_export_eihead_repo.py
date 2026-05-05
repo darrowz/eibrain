@@ -247,6 +247,11 @@ def test_export_writes_machine_readable_manifest_for_honxin_sync(tmp_path: Path)
             "reason": "Shared config helpers kept until eihead owns its deployment config layer.",
         },
         {
+            "package": "eibrain.voice",
+            "paths": ["eibrain/voice"],
+            "reason": "Shared voice-chain readiness helpers kept until eihead owns native voice diagnostics end-to-end.",
+        },
+        {
             "package": "eiprotocol",
             "paths": ["eiprotocol"],
             "reason": "Shared protocol MVP carried as an export copy; EXPORT_MANIFEST pins the independent /dev-project/eiprotocol revision when supplied.",

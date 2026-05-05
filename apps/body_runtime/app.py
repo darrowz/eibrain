@@ -22,6 +22,8 @@ from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
 from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.protocol.actions import Action, MoveHeadAction
 from eibrain.protocol.observations import AudioTranscriptFinal
+from eibrain.voice.readiness import build_voice_chain_readiness
+from apps.body_runtime.voice_chain_scenarios import run_voice_chain_scenarios
 
 
 _DEFAULT_BARGE_IN_PROBE_WINDOW_S = 0.25
@@ -548,6 +550,7 @@ class BodyRuntimeApp:
         self._merge_voice_realtime_latency(latency, realtime_session)
         bottleneck = self._voice_bottleneck_payload(dialogue, latency=latency)
         last_turn = self._voice_last_turn(dialogue)
+        voice_chain_readiness = self._voice_chain_readiness_payload(dialogue)
         status, wired, not_wired = self._voice_overall_status(
             ear=ear,
             mouth=mouth,
@@ -601,6 +604,7 @@ class BodyRuntimeApp:
             "last_bottleneck_stage": (bottleneck or {}).get("stage"),
             "last_bottleneck_ms": (bottleneck or {}).get("latency_ms"),
             "last_turn": last_turn,
+            "voice_chain_readiness": voice_chain_readiness,
             "not_wired": not_wired,
             "readiness_message": readiness_message,
             "recent_events": recent_events,
@@ -1390,6 +1394,16 @@ class BodyRuntimeApp:
             }
         )
         return dialogue
+
+    def _voice_chain_readiness_payload(self, dialogue: dict[str, object]) -> dict[str, object]:
+        explicit = self._first_mapping_from(dialogue, keys=("voice_chain_readiness", "voiceChainReadiness"))
+        benchmark = self._first_mapping_from(dialogue, keys=("voice_chain_benchmark", "voiceChainBenchmark"))
+        scenario_targets = run_voice_chain_scenarios()
+        return build_voice_chain_readiness(
+            explicit=explicit,
+            benchmark=benchmark,
+            scenario_targets=scenario_targets,
+        )
 
     def _voice_latency_payload(self, dialogue: dict[str, object]) -> dict[str, object]:
         stage_latency_ms = self._float_mapping(dialogue.get("last_stage_latency_ms"))

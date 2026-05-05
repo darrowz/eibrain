@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from eibrain.voice.readiness import build_voice_chain_readiness
+
 
 class OperatorConsoleApp:
     """Operator console for status summaries."""
@@ -792,6 +794,7 @@ class OperatorConsoleApp:
         last_stage_latency_ms = loop.get("last_stage_latency_ms", {})
         if not isinstance(last_stage_latency_ms, dict) or not last_stage_latency_ms:
             last_stage_latency_ms = OperatorConsoleApp._derive_stage_latency_ms(last_latency_s)
+        voice_chain_readiness = OperatorConsoleApp._build_voice_chain_readiness(loop)
         return {
             "enabled": bool(loop.get("enabled")),
             "running": bool(loop.get("running")),
@@ -815,6 +818,7 @@ class OperatorConsoleApp:
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),
             "last_llm_status": cognitive_snapshot.get("last_llm_status", {}),
+            "voice_chain_readiness": voice_chain_readiness,
         }
 
     @classmethod
@@ -1008,6 +1012,15 @@ class OperatorConsoleApp:
             return None
         value = stage_latency_ms.get(stage)
         return round(float(value), 2) if isinstance(value, (int, float)) else None
+
+    @staticmethod
+    def _build_voice_chain_readiness(loop: dict[str, object]) -> dict[str, object]:
+        explicit = loop.get("voice_chain_readiness")
+        benchmark = loop.get("voice_chain_benchmark")
+        return build_voice_chain_readiness(
+            explicit=explicit if isinstance(explicit, dict) else None,
+            benchmark=benchmark if isinstance(benchmark, dict) else None,
+        )
 
     @staticmethod
     def _first_dict(*containers: dict[str, object], keys: tuple[str, ...]) -> dict[str, object]:
