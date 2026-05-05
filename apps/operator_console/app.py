@@ -82,9 +82,13 @@ class OperatorConsoleApp:
             cognitive_snapshot=cognitive_snapshot,
         )
         neck_control_diagnostics = self._build_neck_control_diagnostics(body_snapshot=body_snapshot)
-        memory_trace_panel = self._build_memory_trace_panel(cognitive_snapshot)
+        memory_snapshot = self._build_memory_monitor_snapshot(
+            body_snapshot=body_snapshot,
+            cognitive_snapshot=cognitive_snapshot,
+        )
+        memory_trace_panel = self._build_memory_trace_panel(memory_snapshot)
         memory_diagnostics = self._build_memory_diagnostics(
-            cognitive_snapshot,
+            memory_snapshot,
             memory_trace_panel=memory_trace_panel,
         )
         summary = self._build_summary(
@@ -978,6 +982,60 @@ class OperatorConsoleApp:
             "latest_trace_status": latest_trace.get("status", ""),
             "latest_trace": latest_trace,
         }
+
+    @classmethod
+    def _build_memory_monitor_snapshot(
+        cls,
+        *,
+        body_snapshot: dict[str, object],
+        cognitive_snapshot: dict[str, object],
+    ) -> dict[str, object]:
+        merged = dict(cognitive_snapshot)
+        current = dict(merged.get("current", {})) if isinstance(merged.get("current"), dict) else {}
+        scheduler = dict(merged.get("scheduler", {})) if isinstance(merged.get("scheduler"), dict) else {}
+        merged_traces = cls._extract_memory_traces(merged)
+        scheduler_count = (
+            int(scheduler.get("memory_trace_count", 0))
+            if isinstance(scheduler.get("memory_trace_count"), int)
+            else 0
+        )
+
+        for source in cls._live_voice_memory_sources(body_snapshot):
+            for trace in cls._extract_memory_traces(source):
+                if trace not in merged_traces:
+                    merged_traces.append(trace)
+            source_scheduler = source.get("scheduler", {})
+            if not isinstance(source_scheduler, dict):
+                source_scheduler = source
+            source_count = source_scheduler.get("memory_trace_count")
+            if isinstance(source_count, int):
+                scheduler_count = max(scheduler_count, source_count)
+
+        if merged_traces:
+            current["memory_traces"] = merged_traces
+            merged["current"] = current
+        if scheduler_count:
+            scheduler["memory_trace_count"] = max(scheduler_count, len(merged_traces))
+            merged["scheduler"] = scheduler
+        return merged
+
+    @classmethod
+    def _live_voice_memory_sources(cls, body_snapshot: dict[str, object]) -> list[dict[str, object]]:
+        voice_dialogue = body_snapshot.get("voice_dialogue", {})
+        if not isinstance(voice_dialogue, dict):
+            return []
+        sources: list[dict[str, object]] = []
+        for key in (
+            "scheduler_state",
+            "scheduler",
+            "realtime_cognition",
+            "realtime_session",
+            "latest_realtime_session",
+        ):
+            value = voice_dialogue.get(key)
+            if isinstance(value, dict):
+                sources.append(value)
+        return sources
 
     @classmethod
     def _build_memory_trace_panel(cls, cognitive_snapshot: dict[str, object]) -> dict[str, object]:

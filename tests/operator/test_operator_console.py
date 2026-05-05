@@ -320,6 +320,63 @@ def test_operator_console_exposes_realtime_memory_traces_for_monitoring() -> Non
     assert panel["items"][0]["writeback_items"][0]["record_id"] == "mem_2"
 
 
+def test_operator_console_uses_live_voice_scheduler_memory_traces() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    trace = {
+        "schema": "eibrain.memory.closed_loop_trace.v1",
+        "round_id": "round-live-memory",
+        "session_id": "session-live",
+        "actor_id": "darrow",
+        "recall": {
+            "count": 1,
+            "items": [
+                {
+                    "query": "用户刚才问响应性能",
+                    "selected_count": 1,
+                    "selected_records": [{"record_id": "mem_live_1", "source": "eibrain.audio_dialogue"}],
+                    "source_composition": {"eibrain.audio_dialogue": 1},
+                }
+            ],
+        },
+        "writeback": {
+            "count": 1,
+            "items": [
+                {
+                    "status": "ok",
+                    "summary": "用户关注语音响应性能。",
+                    "record_id": "mem_live_2",
+                }
+            ],
+        },
+        "errors": [],
+    }
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "scheduler_state": {
+                    "state": "active",
+                    "memory_trace_count": 1,
+                    "memory_traces": [trace],
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["memory_trace_panel"]["count"] == 1
+    assert report["memory_trace_panel"]["latest"]["round_id"] == "round-live-memory"
+    assert report["memory_diagnostics"]["selected_records"][0]["record_id"] == "mem_live_1"
+    assert report["memory_diagnostics"]["last_writeback"]["record_id"] == "mem_live_2"
+
+
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 
