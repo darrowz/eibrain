@@ -312,6 +312,28 @@ class RealtimeVoiceSession:
         self._reject_if_supplied_mismatch(round_id=round_id, cancellation_token=cancellation_token)
         self._mark_cancellation_step("action_plan", "action_plan_cancelled", reason, at_s=self._now())
 
+    def record_stream_event(
+        self,
+        *,
+        event_type: str,
+        status: str,
+        lane: str,
+        payload: dict[str, object] | None = None,
+        detail: str = "",
+        round_id: str | None = None,
+        cancellation_token: str | None = None,
+    ) -> None:
+        self._reject_if_supplied_stale(round_id=round_id, cancellation_token=cancellation_token)
+        self._record(
+            self.phase,
+            status,
+            detail=detail,
+            at_s=self._now(),
+            lane=lane,
+            event_type=event_type,
+            payload=payload,
+        )
+
     def complete(
         self,
         *,

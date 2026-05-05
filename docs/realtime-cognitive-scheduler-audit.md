@@ -6,7 +6,7 @@ Scope: JoyInside-inspired realtime cognition refactor for eibrain, eiprotocol, e
 
 ## Completion Assessment
 
-Code-level completion is assessed at 92%.
+Code-level completion is assessed at 95%.
 
 Completed:
 
@@ -14,6 +14,7 @@ Completed:
 - Fast think, memory prefetch, slow reasoner, response arbiter, interruption controller, persona runtime, emotion context, speech/action planner, and proactive activity manager modules.
 - Voice loop integration for ASR partial/final, microfeedback telemetry, interrupt cancellation chain, arbiter-gated speech/action dispatch, degraded reply status, and first-speech latency.
 - Voice chain second wave code-level closer: truthful ear telemetry field wiring, a voice-chain benchmark summary utility, and a playback-time barge-in probe/seam for interrupting during speech playback.
+- Voice streaming readiness wave: `ei.voice.*` streaming events, fake-device eihead voice gateway, eibrain voice event adapter, playback completion/stop handling, heartbeat trace handling, and deterministic honjia-readiness scenarios.
 - eiprotocol MVP events for realtime cognition, including emotion context, memory prefetch, speech/action plan, proactive activity, and cancellation-applied events.
 - eihead Web monitoring projection for voice realtime state, scheduler lanes, interruption, cancellation chain, speech/action plans, and latency gates.
 - Regression coverage across cognition, body runtime, eihead monitor, eiprotocol fixtures/builders/bridge, and standalone eiprotocol export.
@@ -24,6 +25,23 @@ Remaining non-code or hardware-gated work:
 - U4K microphone echo validation, AEC/NS tuning, MiniMax TTS stop actual latency measurement, playback barge-in false-trigger-rate measurement, and continuous-dialogue first-packet latency measurement on honjia.
 - Runtime benchmark tuning against the target metrics under live network and MiniMax/Qwen provider latency.
 - Real video inference and continuous visual tracking are still planned as the next dedicated hardware phase.
+
+## Voice Streaming Readiness Boundary
+
+This wave moves the voice chain to the point where honjia live testing can be driven through protocol events instead of ad hoc function calls. The completed code-level scope is:
+
+- eiprotocol voice event contract: `ei.voice.audio.frame`, `ei.voice.asr.partial/final`, `ei.voice.tts.sentence_start/chunk`, `ei.voice.playback.started/stopped`, `ei.voice.barge_in.detected`, and `ei.voice.session.heartbeat` are cataloged, routed, buildable, strictly valid, and codec round-trippable.
+- eihead/eivoice gateway seam: fake capture/playback devices can emit capture frames, ASR events, TTS chunks, playback state, barge-in, reconnect state, health, and queue length events without requiring honjia hardware during CI.
+- eibrain streaming adapter: audio frames now mark first-audio timing, ASR partial/final updates the realtime session, agent deltas append reply text, TTS/playback start marks speaking, playback stopped distinguishes normal completion from interrupt stop, barge-in cancels the old round, and heartbeat/TTS chunks remain visible as trace operations.
+- Scenario runner: deterministic short Chinese, child-fuzzy, playback barge-in, follow-up, and network-jitter scenarios report thresholds, p95 bottlenecks, stale-round leakage, and `honjiaReady`.
+
+Hardware validation still required before claiming JoyInside-like live parity:
+
+- U4K microphone capture path and real device sample format.
+- AEC/NS behavior while MiniMax TTS is playing through honjia's speaker.
+- Provider latency under the chosen ASR/LLM/TTS configuration.
+- Audible playback stop latency and false barge-in rate under household noise.
+- Reconnect behavior across honjia/honxin network loss and recovery.
 
 ## Voice Chain Second Wave Boundary
 
@@ -67,7 +85,19 @@ python -m pytest -q tests/cognition/test_realtime_cognitive_scheduler.py tests/c
 
 ```text
 python -m pytest -q
-795 passed, 2 skipped in 52.98s
+924 passed, 2 skipped in 92.19s
+```
+
+Voice streaming readiness verification from the same date:
+
+```text
+python -m pytest -q tests/protocol/test_eiprotocol_voice_streaming.py tests/protocol/test_eiprotocol_realtime_dialogue_head_events.py tests/protocol/test_eiprotocol_catalog.py tests/protocol/test_eiprotocol_fixtures.py tests/infra/test_eiprotocol_conformance_report.py tests/infra/test_export_eiprotocol_repo.py
+129 passed in 21.31s
+```
+
+```text
+python -m pytest -q tests/eihead/test_eivoice_gateway.py tests/body/test_voice_streaming_adapter.py tests/body/test_realtime_voice.py tests/body/test_voice_chain_scenarios.py tests/body/test_voice_chain_benchmark.py
+30 passed in 1.20s
 ```
 
 ## Residual Risks

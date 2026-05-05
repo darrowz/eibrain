@@ -53,6 +53,15 @@ EXPECTED_FIXTURES = {
     "user_feedback.json",
     "vision_event.json",
     "vision_scene.json",
+    "voice_asr_final.json",
+    "voice_asr_partial.json",
+    "voice_audio_frame.json",
+    "voice_barge_in_detected.json",
+    "voice_playback_started.json",
+    "voice_playback_stopped.json",
+    "voice_session_heartbeat.json",
+    "voice_tts_chunk.json",
+    "voice_tts_sentence_start.json",
 }
 
 

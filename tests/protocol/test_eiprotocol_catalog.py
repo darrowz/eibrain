@@ -84,6 +84,8 @@ def test_list_event_names_filters_by_event_type_and_plane() -> None:
     assert list_event_names(plane="dialogue") == [
         "ei.dialogue.asr.partial",
         "ei.dialogue.asr.final",
+        "ei.voice.asr.partial",
+        "ei.voice.asr.final",
         "ei.dialogue.fast_hypothesis",
         "ei.dialogue.decision.stable",
         "ei.dialogue.speech_action.plan",
@@ -92,6 +94,11 @@ def test_list_event_names_filters_by_event_type_and_plane() -> None:
         "ei.dialogue.agent.final",
         "ei.dialogue.tts.delta",
         "ei.dialogue.tts.final",
+        "ei.voice.tts.sentence_start",
+        "ei.voice.tts.chunk",
+        "ei.voice.playback.started",
+        "ei.voice.playback.stopped",
+        "ei.voice.barge_in.detected",
         "ei.dialogue.interrupt.requested",
     ]
     assert list_event_names(event_type="memory", plane="memory") == [

@@ -1,0 +1,198 @@
+"""Apply voice-streaming eiprotocol events to realtime voice session state."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from eibrain.body.realtime_voice import RealtimeVoiceSession
+from eiprotocol.models import EventEnvelope
+
+
+ASR_PARTIAL_EVENTS = {
+    "ei.voice.asr.partial",
+    "ei.dialogue.asr.partial",
+}
+ASR_FINAL_EVENTS = {
+    "ei.voice.asr.final",
+    "ei.dialogue.asr.final",
+}
+AUDIO_FRAME_EVENTS = {
+    "ei.voice.audio.frame",
+}
+AGENT_DELTA_EVENTS = {
+    "ei.dialogue.agent.delta",
+}
+TTS_CHUNK_EVENTS = {
+    "ei.voice.tts.chunk",
+}
+SPEAKING_START_EVENTS = {
+    "ei.voice.tts.sentence_start",
+    "ei.voice.playback.started",
+}
+PLAYBACK_STOP_EVENTS = {
+    "ei.voice.playback.stopped",
+}
+INTERRUPT_EVENTS = {
+    "ei.voice.barge_in.detected",
+    "ei.dialogue.interrupt.requested",
+}
+HEARTBEAT_EVENTS = {
+    "ei.voice.session.heartbeat",
+}
+
+COMPLETED_PLAYBACK_REASONS = {"", "complete", "completed", "done", "ended", "eof"}
+
+
+class VoiceStreamingAdapter:
+    """Bridge eiprotocol voice-streaming events into a RealtimeVoiceSession."""
+
+    def __init__(self, session: RealtimeVoiceSession) -> None:
+        self.session = session
+
+    def apply(self, event: Mapping[str, object] | EventEnvelope) -> dict[str, object]:
+        payload = self._event_payload(event)
+        name = str(payload.get("name", "") or "")
+        content = self._mapping(payload.get("content"))
+        round_id = self._first_text(
+            payload.get("roundId"),
+            payload.get("round_id"),
+            content.get("roundId"),
+            content.get("round_id"),
+        )
+        cancellation_token = self._first_text(
+            payload.get("cancellationToken"),
+            payload.get("cancellation_token"),
+            content.get("cancellationToken"),
+            content.get("cancellation_token"),
+        )
+        operation = self._apply_named_event(
+            name,
+            content,
+            round_id=round_id,
+            cancellation_token=cancellation_token,
+        )
+        return {
+            "applied": operation != "ignored",
+            "eventName": name,
+            "name": name,
+            "operation": operation,
+            "round_id": round_id,
+            "roundId": round_id,
+            "cancellation_token": cancellation_token,
+            "cancellationToken": cancellation_token,
+            "content": dict(content),
+        }
+
+    def _apply_named_event(
+        self,
+        name: str,
+        content: Mapping[str, object],
+        *,
+        round_id: str | None,
+        cancellation_token: str | None,
+    ) -> str:
+        round_scope = {
+            "round_id": round_id,
+            "cancellation_token": cancellation_token,
+        }
+        if name in AUDIO_FRAME_EVENTS:
+            self.session.note_audio(**round_scope)
+            return "note_audio"
+        if name in ASR_PARTIAL_EVENTS:
+            self.session.update_partial_transcript(
+                self._text_content(content, "text"),
+                **round_scope,
+            )
+            return "update_partial_transcript"
+        if name in ASR_FINAL_EVENTS:
+            self.session.finalize_transcript(
+                self._text_content(content, "text"),
+                **round_scope,
+            )
+            return "finalize_transcript"
+        if name in AGENT_DELTA_EVENTS:
+            self.session.append_reply_delta(
+                self._text_content(content, "delta", "text"),
+                **round_scope,
+            )
+            return "append_reply_delta"
+        if name in SPEAKING_START_EVENTS:
+            self.session.start_speaking(**round_scope)
+            return "start_speaking"
+        if name in TTS_CHUNK_EVENTS:
+            self.session.record_stream_event(
+                event_type="tts_chunk",
+                status="tts_chunk_observed",
+                lane="speaking",
+                payload=dict(content),
+                **round_scope,
+            )
+            return "observe_tts_chunk"
+        if name in PLAYBACK_STOP_EVENTS:
+            reason = self._text_content(content, "reason", default="completed")
+            if reason.strip().lower() in COMPLETED_PLAYBACK_REASONS and not self.session.interrupted:
+                if self._is_duplicate_completed_stop(round_id, cancellation_token):
+                    return "duplicate_playback_stop"
+                self.session.complete(status="playback_completed", **round_scope)
+                return "complete_playback"
+            self.session.mark_tts_stopped(reason=reason or "playback_stopped", **round_scope)
+            return "mark_tts_stopped"
+        if name in INTERRUPT_EVENTS:
+            self.session.interrupt(
+                reason=self._text_content(content, "reason", default="user_barge_in"),
+                **round_scope,
+            )
+            return "interrupt"
+        if name in HEARTBEAT_EVENTS:
+            self.session.record_stream_event(
+                event_type="voice_heartbeat",
+                status="voice_heartbeat_observed",
+                lane="listening",
+                payload=dict(content),
+            )
+            return "observe_heartbeat"
+        return "ignored"
+
+    def _is_duplicate_completed_stop(
+        self,
+        round_id: str | None,
+        cancellation_token: str | None,
+    ) -> bool:
+        if self.session.phase != "completed":
+            return False
+        if round_id is not None and round_id != str(self.session.round_id):
+            return False
+        if cancellation_token is not None and cancellation_token != str(self.session.cancellation_token):
+            return False
+        return True
+
+    @staticmethod
+    def _event_payload(event: Mapping[str, object] | EventEnvelope) -> dict[str, object]:
+        if isinstance(event, Mapping):
+            return dict(event)
+        to_dict = getattr(event, "to_dict", None)
+        if callable(to_dict):
+            payload = to_dict()
+            if isinstance(payload, Mapping):
+                return dict(payload)
+        raise TypeError("event must be a mapping or EventEnvelope-like object")
+
+    @staticmethod
+    def _mapping(value: object) -> dict[str, object]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        return {}
+
+    @staticmethod
+    def _first_text(*values: object) -> str | None:
+        for value in values:
+            if value is None:
+                continue
+            text = str(value)
+            if text:
+                return text
+        return None
+
+    @classmethod
+    def _text_content(cls, content: Mapping[str, object], *keys: str, default: str = "") -> str:
+        return cls._first_text(*(content.get(key) for key in keys)) or default
