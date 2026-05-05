@@ -1,6 +1,6 @@
 # eihead Migration Audit Matrix
 
-Status date: 2026-05-04
+Status date: 2026-05-05
 
 This document audits the current eihead split after the standalone repository
 scaffold exists. The target is executable migration guidance only. It does not
@@ -273,6 +273,33 @@ A module is considered native only when all of these are true:
 The final split is accepted only when the Phase 0 baseline can be repeated
 after deploy with equal or better results for voice wake, conversation, vision
 detection, pan-only neck movement, and monitor truthfulness.
+
+## Code-Level Completion vs Honjia Cutover
+
+Code-level completion is not honjia cutover completion. The Wave 3 export now
+uses two separate manifest views:
+
+- `code_completion` is the compact readiness summary. It may say
+  `software_closure: complete` only for the tested P0/P1 software closure.
+- `software_closure` is the detailed gate table. Its `completed` list names
+  code-level P0/P1 items, while `blocked_by_hardware_validation` names honjia
+  checks that still need real-device evidence.
+- `cutover_readiness` remains the deployment/cutover view. It must stay
+  blocked or transitional while honjia hardware validation is missing.
+
+This separation prevents fake completion. A completed software gate means the
+export manifest, docs, runtime/monitor truthfulness contracts, native boundary
+lists, and shim policy are represented and tested. It does not mean realtime
+camera/Hailo, pan-only neck I2C, microphone/ASR, TTS/playback, service cutover,
+reboot persistence, or rollback have passed on honjia.
+
+Do not describe the export as fully detached while `apps.body_runtime`,
+`eibrain.body`, `eibrain.cognition.realtime`, `eibrain.infra`,
+`eibrain.protocol`, `eibrain.verification`, or copied `eiprotocol` shims remain
+runtime dependencies. A full-detachment claim is allowed only after the
+manifest sets `legacy_body_runtime_detached` and
+`full_detachment_claim_allowed` to `true` based on actual import/runtime
+evidence.
 
 ## Machine-Readable Completion Gates
 

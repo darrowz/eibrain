@@ -370,6 +370,109 @@ MIGRATION_NOTES = (
 FAKE_COMPLETION_GUARD = (
     "Report not_wired, unknown, degraded, or blocked until the acceptance gate is verified."
 )
+CODE_COMPLETION_STATE = "code_level_complete_pending_honjia_validation"
+
+SOFTWARE_CLOSURE_COMPLETED = (
+    {
+        "id": "p0_export_manifest_readiness",
+        "priority": "P0",
+        "area": "export",
+        "status": "completed",
+        "evidence": [
+            "EXPORT_MANIFEST.json records code_completion, software_closure, cutover_readiness, and legacy_shim_policy.",
+            "Focused export tests assert code-level completion is not honjia cutover completion.",
+        ],
+    },
+    {
+        "id": "p0_runtime_monitor_truthfulness",
+        "priority": "P0",
+        "area": "runtime_monitor",
+        "status": "completed",
+        "evidence": [
+            "native_runtime_web_files names the exported runtime and monitor API surface.",
+            "monitor_endpoints require real data or explicit not_wired, unknown, degraded, or blocked states.",
+        ],
+    },
+    {
+        "id": "p0_realtime_eye_boundary",
+        "priority": "P0",
+        "area": "eye",
+        "status": "completed",
+        "evidence": [
+            "native_realtime_eye_files exports the GStreamer, Hailo metadata, realtime contracts, and monitor adapter boundaries.",
+            "Static image detection remains compatibility/test-only and cannot satisfy realtime eye completion.",
+        ],
+    },
+    {
+        "id": "p1_voice_diagnostics_boundary",
+        "priority": "P1",
+        "area": "ear_mouth",
+        "status": "completed",
+        "evidence": [
+            "native_realtime_voice_files exports ear, mouth, and voice monitor diagnostic boundaries.",
+            "Closed-loop diagnostics remain offline/quasi-streaming until honjia audio hardware proves the real loop.",
+        ],
+    },
+    {
+        "id": "p1_legacy_shim_policy",
+        "priority": "P1",
+        "area": "legacy_detachment",
+        "status": "completed",
+        "evidence": [
+            "legacy_shim_policy names every copied legacy package as a transitional shim.",
+            "full_detachment_claim_allowed stays false while legacy runtime copies remain required.",
+        ],
+    },
+)
+
+SOFTWARE_CLOSURE_HARDWARE_BLOCKERS = (
+    {
+        "id": "p0_honjia_phase0_parity",
+        "priority": "P0",
+        "area": "cutover",
+        "status": "blocked_by_hardware_validation",
+        "requires": [
+            "Repeat the Phase 0 honjia baseline after export using real voice, vision, neck, monitor, and rollback evidence.",
+        ],
+    },
+    {
+        "id": "p0_realtime_eye_hardware",
+        "priority": "P0",
+        "area": "eye",
+        "status": "blocked_by_hardware_validation",
+        "requires": [
+            "Validate continuous /dev/video0 frames and /dev/hailo0 detections on honjia.",
+            "Record boxes, scores, frame age, parser readiness, stale state, and error state on port 18080.",
+        ],
+    },
+    {
+        "id": "p0_neck_i2c_pan",
+        "priority": "P0",
+        "area": "neck",
+        "status": "blocked_by_hardware_validation",
+        "requires": [
+            "Validate /dev/i2c-1 Raspbot pan/yaw movement, settle behavior, and unsupported tilt truthfulness on honjia.",
+        ],
+    },
+    {
+        "id": "p1_ear_mouth_audio_loop",
+        "priority": "P1",
+        "area": "ear_mouth",
+        "status": "blocked_by_hardware_validation",
+        "requires": [
+            "Validate U4K microphone capture, VAD/ASR turn telemetry, mouth-busy suppression, audible TTS playback, and stop_speech on honjia.",
+        ],
+    },
+    {
+        "id": "p1_service_cutover_reboot_rollback",
+        "priority": "P1",
+        "area": "deploy",
+        "status": "blocked_by_hardware_validation",
+        "requires": [
+            "Start eihead runtime and monitor services on honjia, verify reboot persistence, and prove rollback restores the previous eibrain services.",
+        ],
+    },
+)
 
 NATIVE_COMPLETION_GATES = (
     {
@@ -518,6 +621,20 @@ not hardware-verified real streaming or real streaming LLM/TTS.
 It is still functional-not-complete: the loop has not been wired to real
 streaming LLM/TTS, and the Web monitor should make round/scheduler/interrupt
 state visible without presenting missing streaming stages as complete.
+
+## Code completion vs cutover
+
+Code-level completion is not honjia cutover completion. In
+`EXPORT_MANIFEST.json`, `code_completion.software_closure` is `complete`, but
+`code_completion.honjia_cutover` is `blocked_by_hardware_validation`.
+
+The `software_closure` field lists which Wave 3 P0/P1 software gates are
+complete at code level, which P0/P1 checks still require honjia hardware
+validation, and which legacy shim removals still block any fully detached claim.
+Do not describe this export as fully detached while
+`legacy_body_runtime_detached` or `full_detachment_claim_allowed` is `false`.
+Real cutover still requires recorded honjia parity for realtime eye, pan-only
+neck, ear/mouth audio, services, reboot persistence, and rollback.
 
 The standalone export intentionally includes the native realtime eye adapter and
 monitor payload files:
@@ -889,6 +1006,8 @@ def _write_export_manifest(
         "native_realtime_eye_files": list(NATIVE_REALTIME_EYE_FILES),
         "native_realtime_voice_files": list(NATIVE_REALTIME_VOICE_FILES),
         "native_runtime_web_files": list(NATIVE_RUNTIME_WEB_FILES),
+        "code_completion": _build_code_completion_summary(),
+        "software_closure": _build_software_closure_summary(),
         "cutover_readiness": _build_cutover_readiness_summary(),
         "native_completion_gates": list(NATIVE_COMPLETION_GATES),
         "future_capabilities": list(FUTURE_CAPABILITIES),
@@ -907,10 +1026,65 @@ def _write_export_manifest(
     return MANIFEST_FILENAME
 
 
+def _build_code_completion_summary() -> dict[str, object]:
+    return {
+        "state": CODE_COMPLETION_STATE,
+        "software_closure": "complete",
+        "honjia_cutover": "blocked_by_hardware_validation",
+        "hardware_verified": False,
+        "legacy_body_runtime_detached": False,
+        "full_detachment_claim_allowed": False,
+        "readiness_note": (
+            "Code-level completion is not honjia cutover completion. "
+            "The Wave 3 P0/P1 software closure is represented and tested, "
+            "but honjia cutover remains blocked until hardware validation "
+            "and legacy shim removal gates are recorded."
+        ),
+    }
+
+
+def _build_software_closure_summary() -> dict[str, object]:
+    return {
+        "scope": "Wave 3 P0/P1 software closure",
+        "state": CODE_COMPLETION_STATE,
+        "code_level_complete": True,
+        "honjia_cutover_complete": False,
+        "hardware_verified": False,
+        "legacy_body_runtime_detached": False,
+        "full_detachment_claim_allowed": False,
+        "truthfulness_rule": (
+            "Code-level completion means the software gates are represented and tested; "
+            "honjia cutover remains blocked until real hardware validation records parity."
+        ),
+        "completed": list(SOFTWARE_CLOSURE_COMPLETED),
+        "blocked_by_hardware_validation": list(SOFTWARE_CLOSURE_HARDWARE_BLOCKERS),
+        "blocked_by_legacy_detachment": _build_legacy_detachment_blockers(),
+    }
+
+
+def _build_legacy_detachment_blockers() -> list[dict[str, object]]:
+    blockers: list[dict[str, object]] = []
+    for package in TRANSITIONAL_PACKAGES:
+        package_name = str(package["package"])
+        blockers.append(
+            {
+                "package": package_name,
+                "paths": list(package["paths"]),
+                "status": "blocked_by_legacy_shim_removal",
+                "blocks_full_detachment": True,
+                "removal_gate": LEGACY_SHIM_REMOVAL_GATES[package_name],
+            }
+        )
+    return blockers
+
+
 def _build_cutover_readiness_summary() -> dict[str, object]:
     return {
         "overall_state": "transitional",
         "hardware_verified": False,
+        "code_completion_state": CODE_COMPLETION_STATE,
+        "software_closure_state": "complete",
+        "honjia_cutover": "blocked_by_hardware_validation",
         "completion_policy": "blocked_until_honjia_hardware_acceptance",
         "legacy_body_runtime_detached": False,
         "fake_completion_guard": FAKE_COMPLETION_GUARD,

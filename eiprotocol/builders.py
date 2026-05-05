@@ -10,8 +10,11 @@ import uuid
 from .models import (
     AudioTurn,
     Detection,
+    DialogueFastHypothesis,
+    DialogueStableDecision,
     EventEnvelope,
     ExecutionOutcome,
+    HeadStatusReport,
     PolicyState,
     RealtimeVisionObservation,
     SourceRef,
@@ -328,6 +331,205 @@ def build_asr_event(
     )
 
 
+def build_head_status_report_event(
+    *,
+    source: SourceLike,
+    report: HeadStatusReport | Mapping[str, Any] | None = None,
+    status: str = "",
+    components: Mapping[str, Any] | None = None,
+    reported_at: str = "",
+    summary: str = "",
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 2000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    status_report = _head_status_report(
+        report,
+        status=status,
+        components=components,
+        reported_at=reported_at,
+        summary=summary,
+        metadata=metadata,
+    )
+    return build_event(
+        ids=ids,
+        name="ei.observation.head.status.report",
+        event_type="observation",
+        source=source,
+        target=target,
+        content=status_report.to_content(),
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=False,
+    )
+
+
+def build_dialogue_fast_hypothesis_event(
+    *,
+    source: SourceLike,
+    hypothesis: DialogueFastHypothesis | Mapping[str, Any] | None = None,
+    hypothesis_id: str = "",
+    text: str = "",
+    confidence: float | None = None,
+    basis_event_id: str = "",
+    latency_ms: float | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 800,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    if hypothesis is None and confidence is None:
+        content = {
+            "hypothesisId": hypothesis_id,
+            "text": text,
+            "confidence": None,
+            "basisEventId": basis_event_id,
+            "latencyMs": latency_ms,
+            "metadata": dict(metadata or {}),
+        }
+    else:
+        content = _dialogue_fast_hypothesis(
+            hypothesis,
+            hypothesis_id=hypothesis_id,
+            text=text,
+            confidence=confidence,
+            basis_event_id=basis_event_id,
+            latency_ms=latency_ms,
+            metadata=metadata,
+        ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.dialogue.fast_hypothesis",
+        event_type="dialogue",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
+def build_dialogue_stable_decision_event(
+    *,
+    source: SourceLike,
+    decision: DialogueStableDecision | Mapping[str, Any] | None = None,
+    decision_id: str = "",
+    decision_value: str = "",
+    confidence: float | None = None,
+    text: str = "",
+    actions: Iterable[Mapping[str, Any]] | None = None,
+    stable_since_ms: float | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 3000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    if decision is None and confidence is None:
+        content = {
+            "decisionId": decision_id,
+            "decision": decision_value,
+            "confidence": None,
+            "text": text,
+            "actions": [dict(item) for item in actions or ()],
+            "stableSinceMs": stable_since_ms,
+            "metadata": dict(metadata or {}),
+        }
+    else:
+        content = _dialogue_stable_decision(
+            decision,
+            decision_id=decision_id,
+            decision_value=decision_value,
+            confidence=confidence,
+            text=text,
+            actions=actions,
+            stable_since_ms=stable_since_ms,
+            metadata=metadata,
+        ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.dialogue.decision.stable",
+        event_type="dialogue",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="high",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
 def build_vision_frame_event(
     *,
     source: SourceLike,
@@ -500,6 +702,78 @@ def _detection(value: Detection | Mapping[str, Any]) -> Detection:
     )
 
 
+def _head_status_report(
+    report: HeadStatusReport | Mapping[str, Any] | None,
+    *,
+    status: str,
+    components: Mapping[str, Any] | None,
+    reported_at: str,
+    summary: str,
+    metadata: Mapping[str, Any] | None,
+) -> HeadStatusReport:
+    if isinstance(report, HeadStatusReport):
+        return report
+    if isinstance(report, Mapping):
+        return HeadStatusReport.from_content(report)
+    return HeadStatusReport(
+        status=status,
+        components=dict(components or {}),
+        reported_at=reported_at,
+        summary=summary,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _dialogue_fast_hypothesis(
+    hypothesis: DialogueFastHypothesis | Mapping[str, Any] | None,
+    *,
+    hypothesis_id: str,
+    text: str,
+    confidence: float | None,
+    basis_event_id: str,
+    latency_ms: float | None,
+    metadata: Mapping[str, Any] | None,
+) -> DialogueFastHypothesis:
+    if isinstance(hypothesis, DialogueFastHypothesis):
+        return hypothesis
+    if isinstance(hypothesis, Mapping):
+        return DialogueFastHypothesis.from_content(hypothesis)
+    return DialogueFastHypothesis(
+        hypothesis_id=hypothesis_id,
+        text=text,
+        confidence=float(confidence) if confidence is not None else 0.0,
+        basis_event_id=basis_event_id,
+        latency_ms=latency_ms,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _dialogue_stable_decision(
+    decision: DialogueStableDecision | Mapping[str, Any] | None,
+    *,
+    decision_id: str,
+    decision_value: str,
+    confidence: float | None,
+    text: str,
+    actions: Iterable[Mapping[str, Any]] | None,
+    stable_since_ms: float | None,
+    metadata: Mapping[str, Any] | None,
+) -> DialogueStableDecision:
+    if isinstance(decision, DialogueStableDecision):
+        return decision
+    if isinstance(decision, Mapping):
+        return DialogueStableDecision.from_content(decision)
+    return DialogueStableDecision(
+        decision_id=decision_id,
+        decision=decision_value,
+        confidence=float(confidence) if confidence is not None else 0.0,
+        text=text,
+        actions=[dict(item) for item in actions or ()],
+        stable_since_ms=stable_since_ms,
+        metadata=dict(metadata or {}),
+    )
+
+
 def _raise_if_invalid(event: EventEnvelope) -> None:
     errors = [_issue_to_error(issue) for issue in validate_event_strict(event, known_event_required=True)]
     if errors:
@@ -517,7 +791,10 @@ __all__ = [
     "EventIdFactory",
     "build_action_request_event",
     "build_asr_event",
+    "build_dialogue_fast_hypothesis_event",
+    "build_dialogue_stable_decision_event",
     "build_event",
     "build_execution_outcome_event",
+    "build_head_status_report_event",
     "build_vision_frame_event",
 ]

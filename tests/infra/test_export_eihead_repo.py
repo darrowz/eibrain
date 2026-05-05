@@ -361,6 +361,87 @@ def test_export_manifest_records_cutover_readiness_summary(tmp_path: Path) -> No
         assert endpoint["completion_state"] in {"transitional", "blocked_by_hardware_validation"}
 
 
+def test_export_manifest_records_code_completion_without_cutover_claim(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eihead-standalone"
+
+    module.export_eihead_repo(target, repo_root=REPO_ROOT)
+    manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
+    readme = (target / "README.md").read_text(encoding="utf-8")
+    audit = (target / "docs" / "eihead-migration-audit.md").read_text(encoding="utf-8")
+    checklist = (target / "docs" / "eihead-code-completion-checklist.md").read_text(
+        encoding="utf-8"
+    )
+
+    code_completion = manifest["code_completion"]
+    assert code_completion["state"] == "code_level_complete_pending_honjia_validation"
+    assert code_completion["software_closure"] == "complete"
+    assert code_completion["honjia_cutover"] == "blocked_by_hardware_validation"
+    assert code_completion["hardware_verified"] is False
+    assert code_completion["legacy_body_runtime_detached"] is False
+    assert code_completion["full_detachment_claim_allowed"] is False
+    assert "Code-level completion is not honjia cutover completion" in code_completion["readiness_note"]
+
+    software_closure = manifest["software_closure"]
+    assert software_closure["scope"] == "Wave 3 P0/P1 software closure"
+    assert software_closure["state"] == "code_level_complete_pending_honjia_validation"
+    assert software_closure["code_level_complete"] is True
+    assert software_closure["honjia_cutover_complete"] is False
+    assert software_closure["hardware_verified"] is False
+    assert software_closure["legacy_body_runtime_detached"] is False
+    assert software_closure["full_detachment_claim_allowed"] is False
+    assert software_closure["truthfulness_rule"] == (
+        "Code-level completion means the software gates are represented and tested; "
+        "honjia cutover remains blocked until real hardware validation records parity."
+    )
+
+    completed = {entry["id"]: entry for entry in software_closure["completed"]}
+    assert set(completed) == {
+        "p0_export_manifest_readiness",
+        "p0_runtime_monitor_truthfulness",
+        "p0_realtime_eye_boundary",
+        "p1_voice_diagnostics_boundary",
+        "p1_legacy_shim_policy",
+    }
+    for entry in completed.values():
+        assert entry["status"] == "completed"
+        assert entry["priority"] in {"P0", "P1"}
+        assert entry["evidence"]
+
+    hardware_blockers = {
+        entry["id"]: entry for entry in software_closure["blocked_by_hardware_validation"]
+    }
+    assert set(hardware_blockers) == {
+        "p0_honjia_phase0_parity",
+        "p0_realtime_eye_hardware",
+        "p0_neck_i2c_pan",
+        "p1_ear_mouth_audio_loop",
+        "p1_service_cutover_reboot_rollback",
+    }
+    for entry in hardware_blockers.values():
+        assert entry["status"] == "blocked_by_hardware_validation"
+        assert entry["priority"] in {"P0", "P1"}
+        assert entry["requires"]
+
+    legacy_blockers = {
+        entry["package"]: entry for entry in software_closure["blocked_by_legacy_detachment"]
+    }
+    assert "apps.body_runtime" in legacy_blockers
+    assert "eibrain.body" in legacy_blockers
+    for entry in legacy_blockers.values():
+        assert entry["status"] == "blocked_by_legacy_shim_removal"
+        assert entry["blocks_full_detachment"] is True
+
+    assert "Code-level completion is not honjia cutover completion" in readme
+    assert "software_closure" in readme
+    assert "honjia_cutover` is `blocked_by_hardware_validation" in readme
+    assert "Code-Level Completion vs Honjia Cutover" in audit
+    assert "software_closure" in audit
+    assert "Code-level completion is not honjia cutover completion" in checklist
+    assert "blocked_by_hardware_validation" in checklist
+    assert "fully detached" in checklist
+
+
 def test_export_marks_legacy_shims_as_transitional_not_detached(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eihead-standalone"

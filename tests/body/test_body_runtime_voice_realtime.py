@@ -19,6 +19,12 @@ def test_voice_realtime_default_runtime_does_not_report_wired() -> None:
     assert payload["status"] != "wired"
     assert payload["not_wired"] is True
     assert "not wired" in payload["readiness_message"].lower()
+    assert payload["current_round_id"] is None
+    assert payload["current_cancellation_token"] is None
+    assert payload["scheduler_state"]["state"] == "unknown"
+    assert payload["interruption"]["state"] == "unknown"
+    assert payload["last_interrupt"] is None
+    assert payload["cancellation_chain"] == []
 
 
 def test_voice_realtime_exports_native_payload_consumed_by_eihead_monitoring() -> None:
@@ -56,6 +62,71 @@ def test_voice_realtime_exports_native_payload_consumed_by_eihead_monitoring() -
     assert consumed["latency"]["stage_latency_ms"]["llm"] == 390.0
     assert consumed["latency"]["total_ms"] == 710.0
     assert consumed["last_turn"] == {"transcript": "hello honjia", "reply": "hello"}
+
+
+def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_chain() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eihead.monitoring.voice import build_voice_diagnostics_from_app
+
+    runtime = BodyRuntimeApp()
+    runtime.organs = [_HealthyEar(), _HealthyMouth()]
+    runtime.update_voice_dialogue_state(
+        enabled=True,
+        running=True,
+        phase="barge_in",
+        last_status="interrupted",
+        current_round_id="round-42",
+        current_cancellation_token="cancel-42",
+        scheduler_state={
+            "state": "stale",
+            "round_id": "round-42",
+            "active_round_id": "round-43",
+            "cancellation_token": "cancel-42",
+            "stale": True,
+        },
+        interrupt_active=True,
+        interrupted_round_count=1,
+        last_interrupt={
+            "round_id": "round-42",
+            "reason": "user_barge_in",
+            "stale": True,
+        },
+        realtime_session={
+            "round_id": "round-42",
+            "roundId": "round-42",
+            "cancellation_token": "cancel-42",
+            "cancellationToken": "cancel-42",
+            "phase": "barge_in",
+            "status": "interrupted",
+            "interrupted": True,
+            "complete": False,
+            "cancellation_chain": [
+                {
+                    "target": "generation",
+                    "event_type": "generation_cancelled",
+                    "reason": "user_barge_in",
+                    "round_id": "round-42",
+                    "cancellation_token": "cancel-42",
+                }
+            ],
+        },
+    )
+
+    payload = runtime.voice_realtime()
+    consumed = build_voice_diagnostics_from_app(runtime, timestamp=124.0)
+
+    assert payload["current_round_id"] == "round-42"
+    assert payload["current_cancellation_token"] == "cancel-42"
+    assert payload["scheduler_state"]["state"] == "stale"
+    assert payload["interruption"]["interrupted"] is True
+    assert payload["interruption"]["last_interrupt"]["reason"] == "user_barge_in"
+    assert payload["last_interrupt"]["round_id"] == "round-42"
+    assert payload["cancellation_chain"][0]["event_type"] == "generation_cancelled"
+    assert payload["realtime_session"]["round_id"] == "round-42"
+    assert consumed["round"]["lifecycle"] == "interrupted"
+    assert consumed["scheduler"]["state"] == "stale"
+    assert consumed["interruption"]["last_interrupt"]["reason"] == "user_barge_in"
+    assert consumed["cancellation_chain"][0]["cancellation_token"] == "cancel-42"
 
 
 def test_request_voice_interrupt_clears_busy_dispatches_stop_and_records_state() -> None:

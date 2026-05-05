@@ -12,7 +12,7 @@ from typing import Any, Callable, Mapping
 
 
 NATIVE_PROVIDER_NAMES = ("eye", "ear", "mouth", "neck")
-NATIVE_PROVIDER_STATUSES = {"wired", "unknown", "unavailable"}
+NATIVE_PROVIDER_STATUSES = {"wired", "unknown", "unavailable", "degraded"}
 NativeProviderProbe = Callable[..., Mapping[str, Any] | Any | None]
 
 
@@ -21,6 +21,10 @@ class NativeProviderStatus:
     status: str
     provider: str = ""
     reason: str = ""
+    source: str = ""
+    checked_at: float | None = None
+    last_checked: float | None = None
+    hardware_verified: bool | None = None
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -29,6 +33,14 @@ class NativeProviderStatus:
             payload["provider"] = self.provider
         if self.reason:
             payload["reason"] = self.reason
+        if self.source:
+            payload["source"] = self.source
+        if self.checked_at is not None:
+            payload["checked_at"] = self.checked_at
+        if self.last_checked is not None:
+            payload["last_checked"] = self.last_checked
+        if self.hardware_verified is not None:
+            payload["hardware_verified"] = self.hardware_verified
         if self.details:
             payload["details"] = dict(self.details)
         return payload
@@ -154,6 +166,10 @@ def _normalize_status(raw_status: Any) -> NativeProviderStatus:
             status,
             provider=_string_value(raw_status.get("provider") or raw_status.get("backend")),
             reason=_string_value(raw_status.get("reason")),
+            source=_string_value(raw_status.get("source") or raw_status.get("status_source")),
+            checked_at=_optional_float(raw_status.get("checked_at") or raw_status.get("checked_at_ts")),
+            last_checked=_native_last_checked(raw_status),
+            hardware_verified=_optional_bool(raw_status.get("hardware_verified")),
             details=_details_without_status_fields(raw_status),
         )
     if hasattr(raw_status, "to_dict") and callable(raw_status.to_dict):
@@ -176,11 +192,54 @@ def _details_without_status_fields(raw_status: Mapping[str, Any]) -> dict[str, A
     details = raw_status.get("details")
     if isinstance(details, Mapping):
         return dict(details)
+    status_keys = {
+        "status",
+        "provider",
+        "backend",
+        "reason",
+        "source",
+        "status_source",
+        "checked_at",
+        "checked_at_ts",
+        "last_checked",
+        "last_checked_ts",
+        "hardware_verified",
+    }
     return {
         str(key): value
         for key, value in raw_status.items()
-        if key not in {"status", "provider", "backend", "reason"}
+        if key not in status_keys
     }
+
+
+def _native_last_checked(raw_status: Mapping[str, Any]) -> float | None:
+    last_checked = _optional_float(raw_status.get("last_checked") or raw_status.get("last_checked_ts"))
+    if last_checked is not None:
+        return last_checked
+    return _optional_float(raw_status.get("checked_at") or raw_status.get("checked_at_ts"))
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _string_value(value: Any) -> str:

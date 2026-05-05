@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from eiprotocol import EventEnvelope, PolicyState, SourceRef, TargetRef
+from eiprotocol.builders import (
+    build_dialogue_fast_hypothesis_event,
+    build_dialogue_stable_decision_event,
+    build_head_status_report_event,
+)
 
 from .capabilities import (
     CapabilityManifest as LegacyCapabilityManifest,
@@ -35,6 +41,14 @@ def to_eiprotocol_event(
 ) -> EventEnvelope:
     """Convert a supported legacy protocol message into an eiprotocol event."""
 
+    if isinstance(message, Mapping):
+        return payload_to_eiprotocol_event(
+            message,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
     if isinstance(message, LegacyCapabilityManifest):
         return capability_manifest_to_eiprotocol_event(
             message,
@@ -77,6 +91,159 @@ def to_eiprotocol_event(
         )
 
     raise TypeError(f"Unsupported eiprotocol bridge message: {type(message).__name__}")
+
+
+def payload_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Convert an explicit internal payload kind/name into an eiprotocol event."""
+
+    kind = _first_text(payload.get("name"), payload.get("event_name"), payload.get("kind"), payload.get("type"))
+    if kind in {"ei.observation.head.status.report", "head_status_report", "head_status"}:
+        return head_status_report_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    if kind in {"ei.dialogue.fast_hypothesis", "dialogue_fast_hypothesis", "fast_hypothesis"}:
+        return dialogue_fast_hypothesis_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    if kind in {"ei.dialogue.decision.stable", "dialogue_decision_stable", "stable_decision"}:
+        return dialogue_stable_decision_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    raise TypeError(f"Unsupported eiprotocol bridge payload kind: {kind or 'unknown'}")
+
+
+def head_status_report_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize an eihead /status-style payload into a typed head status event."""
+
+    raw = _coerce_mapping(payload, label="head status payload")
+    node_id = _first_text(raw.get("node_id"), raw.get("head_id"), raw.get("id"), fallback="honjia")
+    trace_id = _first_text(raw.get("trace_id"), raw.get("traceId"))
+    reported_at = _reported_at(raw, fallback=time)
+    resolved_event_id = _resolve_event_id(event_id, "head_status_report", node_id, trace_id, reported_at)
+    return build_head_status_report_event(
+        source=_source_like(source, fallback=_first_text(raw.get("source"), f"eihead.{node_id}"), device_id=node_id),
+        target=_target_like(target, fallback=_first_text(raw.get("target"))),
+        status=_status_value(raw),
+        components=_status_components(raw),
+        reported_at=reported_at,
+        summary=_status_summary(raw),
+        metadata=_status_metadata(raw),
+        event_id=resolved_event_id,
+        request_id=_first_text(request_id, trace_id, resolved_event_id),
+        sequence=_positive_sequence(raw, sequence),
+        time=time or reported_at,
+        trace_id=trace_id,
+        ttl_ms=_optional_int(raw.get("ttlMs", raw.get("ttl_ms")), fallback=2000),
+        mode=_dict_from(raw.get("mode")),
+    )
+
+
+def dialogue_fast_hypothesis_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize an eibrain fast dialogue hypothesis payload into an event."""
+
+    raw = _coerce_mapping(payload, label="dialogue fast hypothesis payload")
+    trace_id = _first_text(raw.get("trace_id"), raw.get("traceId"))
+    hypothesis_id = _first_text(raw.get("hypothesisId"), raw.get("hypothesis_id"))
+    resolved_event_id = _resolve_event_id(event_id, "dialogue_fast_hypothesis", hypothesis_id, trace_id, raw.get("text"))
+    basis_event_id = _first_text(raw.get("basisEventId"), raw.get("basis_event_id"))
+    return build_dialogue_fast_hypothesis_event(
+        source=_source_like(source, fallback=_first_text(raw.get("source"), fallback="eibrain.honxin"), device_id=""),
+        target=_target_like(target, fallback=_first_text(raw.get("target"))),
+        hypothesis_id=hypothesis_id,
+        text=_first_text(raw.get("text")),
+        confidence=_optional_float(raw.get("confidence")),
+        basis_event_id=basis_event_id,
+        latency_ms=_optional_float(raw.get("latencyMs", raw.get("latency_ms"))),
+        metadata=_dict_from(raw.get("metadata")),
+        event_id=resolved_event_id,
+        request_id=_first_text(request_id, trace_id, resolved_event_id),
+        sequence=_positive_sequence(raw, sequence),
+        time=time or DEFAULT_EVENT_TIME,
+        session_id=_first_text(raw.get("sessionId"), raw.get("session_id")),
+        round_id=_first_text(raw.get("roundId"), raw.get("round_id")),
+        correlation_id=_first_text(raw.get("correlationId"), raw.get("correlation_id"), basis_event_id),
+        causation_id=_first_text(raw.get("causationId"), raw.get("causation_id"), basis_event_id),
+        trace_id=trace_id,
+        ttl_ms=_optional_int(raw.get("ttlMs", raw.get("ttl_ms")), fallback=800),
+        mode=_dict_from(raw.get("mode")),
+    )
+
+
+def dialogue_stable_decision_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize an eibrain stable dialogue decision payload into an event."""
+
+    raw = _coerce_mapping(payload, label="dialogue stable decision payload")
+    trace_id = _first_text(raw.get("trace_id"), raw.get("traceId"))
+    decision_id = _first_text(raw.get("decisionId"), raw.get("decision_id"))
+    resolved_event_id = _resolve_event_id(event_id, "dialogue_stable_decision", decision_id, trace_id)
+    return build_dialogue_stable_decision_event(
+        source=_source_like(source, fallback=_first_text(raw.get("source"), fallback="eibrain.honxin"), device_id=""),
+        target=_target_like(target, fallback=_first_text(raw.get("target"))),
+        decision_id=decision_id,
+        decision_value=_first_text(raw.get("decision")),
+        confidence=_optional_float(raw.get("confidence")),
+        text=_first_text(raw.get("text")),
+        actions=_list_of_dicts(raw.get("actions")),
+        stable_since_ms=_optional_float(raw.get("stableSinceMs", raw.get("stable_since_ms"))),
+        metadata=_dict_from(raw.get("metadata")),
+        event_id=resolved_event_id,
+        request_id=_first_text(request_id, trace_id, resolved_event_id),
+        sequence=_positive_sequence(raw, sequence),
+        time=time or DEFAULT_EVENT_TIME,
+        session_id=_first_text(raw.get("sessionId"), raw.get("session_id")),
+        round_id=_first_text(raw.get("roundId"), raw.get("round_id")),
+        correlation_id=_first_text(raw.get("correlationId"), raw.get("correlation_id")),
+        causation_id=_first_text(raw.get("causationId"), raw.get("causation_id")),
+        trace_id=trace_id,
+        ttl_ms=_optional_int(raw.get("ttlMs", raw.get("ttl_ms")), fallback=3000),
+        mode=_dict_from(raw.get("mode")),
+    )
 
 
 def capability_manifest_to_eiprotocol_event(
@@ -406,6 +573,27 @@ def _target_ref(target: str) -> TargetRef | None:
     return TargetRef(domain=domain, instance_id=instance_id)
 
 
+def _source_like(
+    source: str | SourceRef | Mapping[str, Any] | None,
+    *,
+    fallback: str,
+    device_id: str = "",
+) -> SourceRef:
+    if isinstance(source, SourceRef):
+        return source
+    if isinstance(source, Mapping):
+        return SourceRef.from_dict(source)
+    return _source_ref(_first_text(source, fallback), device_id)
+
+
+def _target_like(target: str | TargetRef | Mapping[str, Any] | None, *, fallback: str = "") -> TargetRef | None:
+    if isinstance(target, TargetRef):
+        return target
+    if isinstance(target, Mapping):
+        return TargetRef.from_dict(target)
+    return _target_ref(_first_text(target, fallback))
+
+
 def _split_ref(value: str) -> tuple[str, str, str]:
     parts = [part for part in str(value).split(".") if part]
     domain = parts[0] if parts else ""
@@ -485,13 +673,135 @@ def _health_to_dict(health: HeadHealth) -> dict[str, Any]:
 
 
 def _dict_from(value: object) -> dict[str, Any]:
-    return dict(value) if isinstance(value, dict) else {}
+    return _copy_jsonish(dict(value)) if isinstance(value, Mapping) else {}
+
+
+def _coerce_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a mapping")
+    return _copy_jsonish(dict(value))
+
+
+def _positive_sequence(payload: Mapping[str, Any], explicit: int | None) -> int:
+    if explicit is not None:
+        return int(explicit)
+    sequence = payload.get("sequence")
+    if sequence is None:
+        return 1
+    try:
+        value = int(sequence)
+    except (TypeError, ValueError):
+        return 1
+    return value if value > 0 else 1
+
+
+def _status_value(payload: Mapping[str, Any]) -> str:
+    for key in ("status", "overall_status", "state"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    health = payload.get("health")
+    if isinstance(health, Mapping) and health.get("status"):
+        return str(health["status"])
+    return "unknown"
+
+
+def _status_components(payload: Mapping[str, Any]) -> dict[str, Any]:
+    components = payload.get("components")
+    if isinstance(components, Mapping):
+        return _copy_jsonish(dict(components))
+
+    capabilities = payload.get("capabilities")
+    if isinstance(capabilities, Mapping):
+        return {str(key): _status_component(value) for key, value in capabilities.items()}
+
+    collected: dict[str, Any] = {}
+    for field_name, id_field in (("devices", "device_id"), ("backends", "backend_id")):
+        for item in _component_items(payload.get(field_name), id_field=id_field):
+            key = _first_text(item.get(id_field), item.get("id"), item.get("name"), item.get("kind"))
+            if key:
+                collected[key] = item
+    return collected
+
+
+def _status_component(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return _copy_jsonish(dict(value))
+    return {"status": str(value)}
+
+
+def _component_items(value: object, *, id_field: str) -> list[dict[str, Any]]:
+    if isinstance(value, Mapping):
+        items = []
+        for key, item in value.items():
+            if isinstance(item, Mapping):
+                payload = _copy_jsonish(dict(item))
+            else:
+                payload = {"status": str(item)}
+            payload.setdefault(id_field, str(key))
+            items.append(payload)
+        return items
+    if isinstance(value, list):
+        return [_copy_jsonish(dict(item)) for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _status_summary(payload: Mapping[str, Any]) -> str:
+    summary = payload.get("summary")
+    if isinstance(summary, Mapping):
+        parts = [f"{key}={summary[key]}" for key in sorted(summary)]
+        return ", ".join(parts)
+    return _first_text(summary, payload.get("message"))
+
+
+def _status_metadata(payload: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _dict_from(payload.get("metadata"))
+    for key in ("schema", "command", "runtime", "node_role", "manifest_schema"):
+        if payload.get(key) not in (None, ""):
+            metadata.setdefault(key, payload[key])
+    return metadata
+
+
+def _reported_at(payload: Mapping[str, Any], *, fallback: str | None = None) -> str:
+    for key in ("reportedAt", "reported_at", "capturedAt", "captured_at", "generatedAt", "generated_at"):
+        value = payload.get(key)
+        if value:
+            return str(value)
+    captured_at_ts = payload.get("captured_at_ts")
+    if captured_at_ts is not None:
+        return _timestamp_seconds_to_rfc3339(captured_at_ts)
+    timestamp_ms = payload.get("timestamp_ms", payload.get("timestampMs"))
+    if timestamp_ms is not None:
+        return _timestamp_ms_to_rfc3339(timestamp_ms)
+    return fallback or DEFAULT_EVENT_TIME
+
+
+def _timestamp_seconds_to_rfc3339(value: object) -> str:
+    instant = datetime.fromtimestamp(float(value), tz=UTC)
+    return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _timestamp_ms_to_rfc3339(value: object) -> str:
+    instant = datetime.fromtimestamp(float(value) / 1000.0, tz=UTC)
+    return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _optional_int(value: object, *, fallback: int | None) -> int | None:
+    if value is None or value == "":
+        return fallback
+    return int(value)
 
 
 def _list_of_dicts(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
-    return [dict(item) for item in value if isinstance(item, dict)]
+    return [_copy_jsonish(dict(item)) for item in value if isinstance(item, Mapping)]
 
 
 def _list_of_text(value: object) -> list[str]:
@@ -515,12 +825,26 @@ def _stable_token(value: object) -> str:
     return token or "event"
 
 
+def _copy_jsonish(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _copy_jsonish(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_copy_jsonish(item) for item in value]
+    if isinstance(value, tuple):
+        return [_copy_jsonish(item) for item in value]
+    return value
+
+
 __all__ = [
     "DEFAULT_EVENT_TIME",
     "audio_turn_to_eiprotocol_event",
     "capability_manifest_to_eiprotocol_event",
+    "dialogue_fast_hypothesis_to_eiprotocol_event",
+    "dialogue_stable_decision_to_eiprotocol_event",
     "execution_outcome_to_eiprotocol_event",
     "head_action_to_eiprotocol_event",
+    "head_status_report_to_eiprotocol_event",
+    "payload_to_eiprotocol_event",
     "to_eiprotocol_event",
     "vision_observation_to_eiprotocol_event",
 ]

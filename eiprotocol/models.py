@@ -358,6 +358,122 @@ class AudioTurn:
 
 
 @dataclass(slots=True)
+class HeadStatusReport:
+    status: str
+    components: dict[str, Any] = field(default_factory=dict)
+    reported_at: str = ""
+    summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "components": dict(self.components),
+            "reportedAt": self.reported_at,
+            "summary": self.summary,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "HeadStatusReport":
+        components = data.get("components")
+        metadata = data.get("metadata")
+        return cls(
+            status=str(data.get("status", "") or ""),
+            components=_dict(components if isinstance(components, Mapping) else None),
+            reported_at=str(data.get("reportedAt", data.get("reported_at", "")) or ""),
+            summary=str(data.get("summary", "") or ""),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+
+@dataclass(slots=True)
+class DialogueFastHypothesis:
+    hypothesis_id: str
+    text: str
+    confidence: float
+    basis_event_id: str = ""
+    latency_ms: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "hypothesisId": self.hypothesis_id,
+            "text": self.text,
+            "confidence": float(self.confidence),
+            "basisEventId": self.basis_event_id,
+            "latencyMs": self.latency_ms,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "DialogueFastHypothesis":
+        metadata = data.get("metadata")
+        return cls(
+            hypothesis_id=str(data.get("hypothesisId", data.get("hypothesis_id", "")) or ""),
+            text=str(data.get("text", "") or ""),
+            confidence=float(data.get("confidence", 0.0) or 0.0),
+            basis_event_id=str(data.get("basisEventId", data.get("basis_event_id", "")) or ""),
+            latency_ms=_optional_float(data.get("latencyMs", data.get("latency_ms"))),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="dialogue",
+            name="ei.dialogue.fast_hypothesis",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class DialogueStableDecision:
+    decision_id: str
+    decision: str
+    confidence: float
+    text: str = ""
+    actions: list[dict[str, Any]] = field(default_factory=list)
+    stable_since_ms: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "decisionId": self.decision_id,
+            "decision": self.decision,
+            "confidence": float(self.confidence),
+            "text": self.text,
+            "actions": [dict(item) for item in self.actions],
+            "stableSinceMs": self.stable_since_ms,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "DialogueStableDecision":
+        actions = data.get("actions")
+        metadata = data.get("metadata")
+        return cls(
+            decision_id=str(data.get("decisionId", data.get("decision_id", "")) or ""),
+            decision=str(data.get("decision", "") or ""),
+            confidence=float(data.get("confidence", 0.0) or 0.0),
+            text=str(data.get("text", "") or ""),
+            actions=[dict(item) for item in actions] if isinstance(actions, list) else [],
+            stable_since_ms=_optional_float(data.get("stableSinceMs", data.get("stable_since_ms"))),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="dialogue",
+            name="ei.dialogue.decision.stable",
+            content=self.to_content(),
+            priority="high",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
 class Detection:
     label: str
     score: float
@@ -557,6 +673,10 @@ def _round_event(
         policy=PolicyState(),
         extensions=dict(extensions or {}),
     )
+
+
+def _optional_float(value: Any) -> float | None:
+    return float(value) if value is not None else None
 
 
 def validate_event(event: EventEnvelope | Mapping[str, Any]) -> list[str]:

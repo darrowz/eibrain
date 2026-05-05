@@ -31,6 +31,31 @@ from .native_providers import (
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
 DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS = 2.0
 DEFAULT_PTZ_MIN_ANGLE_DELTA = 2.0
+REALTIME_VISION_ATTRS = (
+    "eye_realtime",
+    "vision_realtime",
+    "realtime_vision",
+    "latest_eye_realtime",
+    "latest_vision_realtime",
+    "latest_realtime_vision",
+)
+APP_REALTIME_VISION_ATTRS = (
+    "eye_realtime",
+    "realtime_vision",
+    "latest_eye_realtime",
+    "latest_vision_realtime",
+    "latest_realtime_vision",
+)
+REALTIME_VISION_CONTAINER_KEYS = ("eye", "vision", "realtime_vision", "body_runtime")
+CAPABILITY_NATIVE_PROVIDER_MAP = {
+    "camera": "eye",
+    "vision_backend": "eye",
+    "microphone": "ear",
+    "asr": "ear",
+    "speaker": "mouth",
+    "tts": "mouth",
+    "neck": "neck",
+}
 
 
 @dataclass(slots=True)
@@ -86,14 +111,23 @@ class HeadRuntimeApp:
         )
 
     def snapshot(self) -> dict[str, Any]:
-        body_snapshot = self._body_snapshot()
+        body_snapshot, body_snapshot_check = self._body_snapshot_or_error()
+        native_providers = dict(self.native_providers or {})
+        checks, check_details, status = _runtime_check_summary(
+            delegate_name=self.delegate_name,
+            native_providers=native_providers,
+            body_snapshot_check=body_snapshot_check,
+        )
         return {
             "runtime": "eihead",
             "node_role": "head",
-            "status": "ok",
+            "ok": status == "ok",
+            "status": status,
             "config_path": self.config_path,
             "delegate": self.delegate_name,
-            "native_providers": dict(self.native_providers or {}),
+            "checks": checks,
+            "check_details": check_details,
+            "native_providers": native_providers,
             "body_runtime": body_snapshot,
         }
 
@@ -103,10 +137,31 @@ class HeadRuntimeApp:
             **self.snapshot(),
         }
 
+    def health(self) -> dict[str, Any]:
+        snapshot = self.snapshot()
+        body_runtime = snapshot.get("body_runtime", {})
+        payload: dict[str, Any] = {
+            "ok": snapshot.get("ok") is True,
+            "status": _string_or_default(snapshot.get("status"), "unknown"),
+            "runtime": "eihead",
+            "node_role": "head",
+            "source": "snapshot",
+            "checked_at_ts": float(time.time()),
+            "checks": snapshot.get("checks", {}),
+            "check_details": snapshot.get("check_details", {}),
+            "native_providers": snapshot.get("native_providers", {}),
+        }
+        if isinstance(body_runtime, Mapping) and "node_id" in body_runtime:
+            payload["node_id"] = body_runtime["node_id"]
+        return payload
+
     def capabilities(self) -> dict[str, Any]:
         body_snapshot = self._body_snapshot()
         node_id = _string_or_default(body_snapshot.get("node_id"), "honjia")
-        manifest = CapabilityRegistry({"node_id": node_id}).manifest()
+        manifest = CapabilityRegistry(
+            {"node_id": node_id},
+            probe=_capability_live_probe_from_native_providers(self.native_providers or {}),
+        ).manifest()
         status_snapshot = build_status_snapshot(manifest)
         return {
             "command": "capabilities",
@@ -129,18 +184,8 @@ class HeadRuntimeApp:
         """
 
         now_ts = float(time.time())
-        for attr_name in (
-            "eye_realtime",
-            "vision_realtime",
-            "realtime_vision",
-            "latest_eye_realtime",
-            "latest_vision_realtime",
-            "latest_realtime_vision",
-        ):
-            if not hasattr(self.body_runtime, attr_name):
-                continue
-            source = getattr(self.body_runtime, attr_name)
-            payload = _resolve_realtime_payload_candidate(source() if callable(source) else source)
+        for candidate in self._realtime_vision_candidates():
+            payload = _resolve_realtime_payload_candidate(candidate)
             if _is_realtime_vision_payload(
                 payload,
                 now_ts=now_ts,
@@ -531,19 +576,37 @@ class HeadRuntimeApp:
         return {
             "command": "verify",
             "runtime": "eihead",
-            "status": "ok",
-            "checks": {
-                "head_runtime_import": "ok",
-                "body_runtime_delegate": "ok",
-                "body_runtime_snapshot": "ok",
-                "native_provider_boundaries": "ok",
-            },
+            "ok": snapshot.get("ok") is True,
+            "status": _string_or_default(snapshot.get("status"), "unknown"),
+            "checks": snapshot.get("checks", {}),
+            "check_details": snapshot.get("check_details", {}),
             "organ_count": organ_count,
             "config_path": self.config_path,
             "delegate": self.delegate_name,
             "native_providers": snapshot.get("native_providers", {}),
             "body_runtime": body_runtime,
         }
+
+    def _body_snapshot_or_error(self) -> tuple[dict[str, Any], dict[str, Any]]:
+        try:
+            return self._body_snapshot(), {"status": "ok"}
+        except Exception as exc:
+            error = {
+                "type": exc.__class__.__name__,
+                "message": str(exc),
+            }
+            return (
+                {
+                    "status": "blocked",
+                    "reason": "body_runtime_snapshot_failed",
+                    "error": error,
+                },
+                {
+                    "status": "blocked",
+                    "reason": "body_runtime_snapshot_failed",
+                    "error": error,
+                },
+            )
 
     def _body_snapshot(self) -> dict[str, Any]:
         if not hasattr(self.body_runtime, "snapshot"):
@@ -552,6 +615,18 @@ class HeadRuntimeApp:
         if not isinstance(snapshot, Mapping):
             raise TypeError("body_runtime.snapshot() must return a mapping")
         return dict(snapshot)
+
+    def _realtime_vision_candidates(self) -> list[Any]:
+        candidates: list[Any] = []
+        candidates.extend(_attr_payload_candidates(self, APP_REALTIME_VISION_ATTRS))
+        candidates.extend(_native_provider_realtime_candidates(self.native_providers or {}))
+        candidates.extend(_attr_payload_candidates(self.body_runtime, REALTIME_VISION_ATTRS))
+        try:
+            body_snapshot = self._body_snapshot()
+        except Exception:
+            body_snapshot = {}
+        candidates.extend(_mapping_realtime_candidates(body_snapshot))
+        return candidates
 
     def _normalize_action(
         self,
@@ -746,6 +821,195 @@ class HeadRuntimeApp:
             "delegated": delegated,
             "details": dict(details or {}),
         }
+
+
+def _runtime_check_summary(
+    *,
+    delegate_name: str,
+    native_providers: Mapping[str, Any],
+    body_snapshot_check: Mapping[str, Any],
+) -> tuple[dict[str, str], dict[str, Any], str]:
+    delegate_check, delegate_details = _delegate_check(delegate_name)
+    native_check, native_details = _native_provider_check(native_providers)
+    body_check = _string_or_default(body_snapshot_check.get("status"), "unknown")
+    checks = {
+        "head_runtime_import": "ok",
+        "body_runtime_delegate": delegate_check,
+        "body_runtime_snapshot": body_check,
+        "native_provider_boundaries": native_check,
+    }
+    check_details = {
+        "body_runtime_delegate": delegate_details,
+        "body_runtime_snapshot": dict(body_snapshot_check),
+        "native_provider_boundaries": native_details,
+    }
+    return checks, check_details, _overall_runtime_status(checks.values())
+
+
+def _delegate_check(delegate_name: str) -> tuple[str, dict[str, Any]]:
+    if delegate_name == DEFAULT_BODY_RUNTIME_DELEGATE:
+        return (
+            "degraded",
+            {
+                "delegate": delegate_name,
+                "reason": "legacy_body_runtime_delegate_active",
+            },
+        )
+    if not delegate_name:
+        return "unknown", {"delegate": delegate_name, "reason": "delegate_unknown"}
+    return "ok", {"delegate": delegate_name}
+
+
+def _native_provider_check(native_providers: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+    provider_states: dict[str, str] = {}
+    non_wired: dict[str, str] = {}
+    for provider_name, provider_payload in native_providers.items():
+        provider_state = _provider_status(provider_payload)
+        provider_states[str(provider_name)] = provider_state
+        if provider_state != "wired":
+            non_wired[str(provider_name)] = provider_state
+
+    if non_wired:
+        return (
+            "degraded",
+            {
+                "reason": "native_provider_not_wired",
+                "providers": provider_states,
+                "non_wired": non_wired,
+            },
+        )
+    return "ok", {"providers": provider_states}
+
+
+def _provider_status(provider_payload: Any) -> str:
+    if isinstance(provider_payload, Mapping):
+        return _string_or_default(provider_payload.get("status"), "unknown").strip().lower() or "unknown"
+    return "unknown"
+
+
+def _overall_runtime_status(checks: Any) -> str:
+    states = {_string_or_default(state, "unknown").strip().lower() for state in checks}
+    if states & {"blocked", "error", "failed"}:
+        return "blocked"
+    if states & {"degraded", "unknown", "unavailable"}:
+        return "degraded"
+    return "ok"
+
+
+def _attr_payload_candidates(source_object: Any, attr_names: tuple[str, ...]) -> list[Any]:
+    candidates: list[Any] = []
+    for attr_name in attr_names:
+        if not hasattr(source_object, attr_name):
+            continue
+        source = getattr(source_object, attr_name)
+        candidates.append(source() if callable(source) else source)
+    return candidates
+
+
+def _native_provider_realtime_candidates(native_providers: Mapping[str, Any]) -> list[Any]:
+    candidates: list[Any] = []
+    eye_provider = native_providers.get("eye") if isinstance(native_providers, Mapping) else None
+    if isinstance(eye_provider, Mapping):
+        candidates.extend(_mapping_realtime_candidates(eye_provider))
+    return candidates
+
+
+def _mapping_realtime_candidates(payload: Any) -> list[Any]:
+    if not isinstance(payload, Mapping):
+        return []
+    candidates: list[Any] = []
+
+    for attr_name in REALTIME_VISION_ATTRS:
+        if attr_name in payload:
+            candidates.append(payload[attr_name])
+    if "realtime" in payload:
+        candidates.append(payload["realtime"])
+
+    details = payload.get("details")
+    if isinstance(details, Mapping):
+        candidates.append(details)
+        candidates.extend(_mapping_realtime_candidates(details))
+
+    for container_key in REALTIME_VISION_CONTAINER_KEYS:
+        container = payload.get(container_key)
+        if container_key == "realtime_vision" and container is not None:
+            candidates.append(container)
+        if isinstance(container, Mapping):
+            candidates.append(container)
+            candidates.extend(_mapping_realtime_candidates(container))
+
+    organs = payload.get("organs")
+    if isinstance(organs, Mapping):
+        for organ_key in ("eye", "vision"):
+            organ_payload = organs.get(organ_key)
+            if isinstance(organ_payload, Mapping):
+                candidates.append(organ_payload)
+                candidates.extend(_mapping_realtime_candidates(organ_payload))
+    return candidates
+
+
+def _capability_live_probe_from_native_providers(native_providers: Mapping[str, Any]):
+    providers = dict(native_providers or {})
+
+    def probe(name: str, *, config: dict[str, Any], static_status: dict[str, Any]) -> dict[str, Any] | None:
+        provider_name = CAPABILITY_NATIVE_PROVIDER_MAP.get(name)
+        if provider_name is None:
+            return None
+        provider_payload = providers.get(provider_name)
+        if not isinstance(provider_payload, Mapping):
+            return None
+
+        native_status = _provider_status(provider_payload)
+        hardware_verified = _bool_or_none(provider_payload.get("hardware_verified")) is True
+        capability_status = _capability_status_from_native_provider(native_status, hardware_verified=hardware_verified)
+        details: dict[str, Any] = {
+            "native_provider": provider_name,
+            "native_status": native_status,
+        }
+        native_details = provider_payload.get("details")
+        if isinstance(native_details, Mapping):
+            details.update({f"native_{key}": value for key, value in native_details.items()})
+
+        return {
+            "status": capability_status,
+            "source": _string_or_default(provider_payload.get("source"), "native_provider"),
+            "reason": _string_or_default(
+                provider_payload.get("reason"),
+                "native_provider_status",
+            ),
+            "checked_at": _optional_float(provider_payload.get("checked_at")),
+            "last_checked": _optional_float(provider_payload.get("last_checked")),
+            "hardware_verified": hardware_verified,
+            "provider": provider_payload.get("provider"),
+            "details": details,
+            "native_provider_status": native_status,
+            "static_status": static_status.get("status"),
+            "config_kind": config.get("kind"),
+        }
+
+    return probe
+
+
+def _capability_status_from_native_provider(native_status: str, *, hardware_verified: bool) -> str:
+    if native_status == "wired":
+        return "live" if hardware_verified else "online"
+    if native_status in {"degraded", "unavailable", "unknown"}:
+        return native_status
+    return "unknown"
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _load_optional_eihead_config(path: str) -> Any | None:

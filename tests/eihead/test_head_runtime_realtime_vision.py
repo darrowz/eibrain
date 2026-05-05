@@ -35,6 +35,68 @@ class MappingRealtimeRuntime(FakeBodyRuntime):
     }
 
 
+class AppHookHeadRuntime(HeadRuntimeApp):
+    def eye_realtime(self) -> dict[str, object]:
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime",
+            "primary_mode": True,
+            "stream_id": "app-hook",
+            "status": "tracking",
+        }
+
+
+class SnapshotEyeRealtimeRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "node_id": "honjia-test",
+            "organs": {
+                "eye": {
+                    "realtime_vision": {
+                        "kind": "realtime_vision_observation",
+                        "mode": "realtime_stream",
+                        "primary_mode": True,
+                        "stream_id": "snapshot-eye",
+                        "status": "tracking",
+                    }
+                }
+            },
+        }
+
+
+class SnapshotBodyRuntimeRealtimeRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "node_id": "honjia-test",
+            "body_runtime": {
+                "vision_realtime": {
+                    "kind": "realtime_vision_observation",
+                    "mode": "realtime",
+                    "primary_mode": True,
+                    "stream_id": "snapshot-body-runtime",
+                    "status": "tracking",
+                }
+            },
+        }
+
+
+class SnapshotStaticCompatRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "node_id": "honjia-test",
+            "organs": {
+                "eye": {
+                    "realtime_vision": {
+                        "kind": "vision_observation",
+                        "mode": "compat/static",
+                        "frame_id": "still-1",
+                        "status": "tracking",
+                    }
+                }
+            },
+        }
+
+
 class ToDictRealtimePayload:
     def to_dict(self) -> dict[str, object]:
         return {
@@ -269,6 +331,75 @@ def test_head_runtime_passes_through_realtime_mapping() -> None:
     assert runtime.vision_realtime() == MappingRealtimeRuntime.eye_realtime
 
 
+def test_head_runtime_accepts_app_level_eye_realtime_hook() -> None:
+    runtime = AppHookHeadRuntime(body_runtime=FakeBodyRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime",
+        "primary_mode": True,
+        "stream_id": "app-hook",
+        "status": "tracking",
+    }
+
+
+def test_head_runtime_accepts_native_provider_eye_realtime_payload() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        native_providers={
+            "eye": {
+                "status": "wired",
+                "details": {
+                    "realtime_vision": {
+                        "kind": "realtime_vision_observation",
+                        "mode": "realtime",
+                        "primary_mode": True,
+                        "stream_id": "native-eye",
+                        "status": "tracking",
+                    }
+                },
+            },
+            "ear": {"status": "wired"},
+            "mouth": {"status": "wired"},
+            "neck": {"status": "wired"},
+        },
+        neck_servo_adapter=object(),
+    )
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime",
+        "primary_mode": True,
+        "stream_id": "native-eye",
+        "status": "tracking",
+    }
+
+
+def test_head_runtime_accepts_snapshot_eye_realtime_payload() -> None:
+    runtime = HeadRuntimeApp(body_runtime=SnapshotEyeRealtimeRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime_stream",
+        "primary_mode": True,
+        "stream_id": "snapshot-eye",
+        "status": "tracking",
+    }
+
+
+def test_head_runtime_accepts_snapshot_body_runtime_realtime_payload() -> None:
+    runtime = HeadRuntimeApp(body_runtime=SnapshotBodyRuntimeRealtimeRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime",
+        "primary_mode": True,
+        "stream_id": "snapshot-body-runtime",
+        "status": "tracking",
+    }
+
+
 def test_head_runtime_passes_through_realtime_to_dict_payload() -> None:
     runtime = HeadRuntimeApp(body_runtime=ToDictRealtimeRuntime(), config_path="config/test.yaml")
 
@@ -280,6 +411,12 @@ def test_head_runtime_passes_through_realtime_to_dict_payload() -> None:
 
 def test_head_runtime_does_not_promote_legacy_vision_state_snapshot_to_realtime() -> None:
     runtime = HeadRuntimeApp(body_runtime=LegacyVisionStateRuntime(), config_path="config/test.yaml")
+
+    assert runtime.vision_realtime() is None
+
+
+def test_head_runtime_does_not_promote_snapshot_static_compat_payload_to_realtime() -> None:
+    runtime = HeadRuntimeApp(body_runtime=SnapshotStaticCompatRuntime(), config_path="config/test.yaml")
 
     assert runtime.vision_realtime() is None
 

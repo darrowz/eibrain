@@ -63,6 +63,16 @@ class FallbackHealthApp(FakeHeadApp):
     health = None
 
 
+class DegradedStatusFallbackApp(FallbackHealthApp):
+    def status(self) -> dict[str, Any]:
+        return {
+            "status": "degraded",
+            "runtime": "eihead",
+            "node_id": "honjia-test",
+            "checks": {"native_provider_boundaries": "degraded"},
+        }
+
+
 class EventHeadApp(FakeHeadApp):
     def __init__(self) -> None:
         super().__init__()
@@ -99,6 +109,39 @@ class RecordingBodyRuntime:
                 )
             ]
         return []
+
+
+class FailingSnapshotBodyRuntime:
+    def snapshot(self) -> dict[str, object]:
+        raise RuntimeError("snapshot boom")
+
+
+class SnapshotRealtimeBodyRuntime:
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "node_id": "honjia-test",
+            "organs": {
+                "eye": {
+                    "realtime_vision": {
+                        "kind": "realtime_vision_observation",
+                        "mode": "realtime_stream",
+                        "primary_mode": True,
+                        "stream_id": "front-main",
+                        "status": "tracking",
+                        "frame_id": "live-1",
+                    }
+                }
+            },
+        }
+
+
+def wired_native_providers() -> dict[str, dict[str, str]]:
+    return {
+        "eye": {"status": "wired"},
+        "ear": {"status": "wired"},
+        "mouth": {"status": "wired"},
+        "neck": {"status": "wired"},
+    }
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -307,6 +350,48 @@ def test_health_can_return_service_unavailable_json() -> None:
     assert payload["node_id"] == "honjia-test"
 
 
+def test_health_treats_degraded_payload_as_service_unavailable_without_ok_flag() -> None:
+    app = FakeHeadApp(health_payload={"status": "degraded", "node_id": "honjia-test"})
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, payload = read_error_json(f"{base_url}/health")
+
+    assert status_code == 503
+    assert payload["status"] == "degraded"
+    assert payload["node_id"] == "honjia-test"
+
+
+def test_health_fallback_treats_degraded_status_as_service_unavailable() -> None:
+    app = DegradedStatusFallbackApp()
+
+    with running_server(app, clock=lambda: 456.0) as (base_url, _server, _thread):
+        status_code, payload = read_error_json(f"{base_url}/health")
+
+    assert status_code == 503
+    assert payload["ok"] is False
+    assert payload["status"] == "degraded"
+    assert payload["source"] == "status"
+    assert payload["checked_at_ts"] == 456.0
+
+
+def test_health_reports_blocked_when_runtime_body_snapshot_fails() -> None:
+    app = HeadRuntimeApp(
+        body_runtime=FailingSnapshotBodyRuntime(),
+        config_path="config/test.yaml",
+        delegate_name="eihead.native",
+        native_providers=wired_native_providers(),
+        neck_servo_adapter=object(),
+    )
+
+    with running_server(app) as (base_url, _server, _thread):
+        status_code, payload = read_error_json(f"{base_url}/health")
+
+    assert status_code == 503
+    assert payload["ok"] is False
+    assert payload["status"] == "blocked"
+    assert payload["checks"]["body_runtime_snapshot"] == "blocked"
+
+
 def test_health_falls_back_to_status_when_health_method_is_absent() -> None:
     app = FallbackHealthApp()
 
@@ -318,6 +403,34 @@ def test_health_falls_back_to_status_when_health_method_is_absent() -> None:
     assert payload["source"] == "status"
     assert payload["checked_at_ts"] == 123.456
     assert payload["node_id"] == "honjia-test"
+
+
+def test_realtime_vision_api_uses_runtime_snapshot_eye_payload() -> None:
+    app = HeadRuntimeApp(body_runtime=SnapshotRealtimeBodyRuntime(), config_path="config/test.yaml")
+
+    with running_server(app, clock=lambda: 789.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["schema"] == "eihead.monitor.vision_realtime.v1"
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "vision_realtime"
+    assert payload["observation"]["stream_id"] == "front-main"
+    assert payload["frame_id"] == "live-1"
+
+
+def test_realtime_vision_api_reports_not_wired_without_realtime_payload() -> None:
+    app = HeadRuntimeApp(body_runtime=RecordingBodyRuntime(), config_path="config/test.yaml")
+
+    with running_server(app, clock=lambda: 790.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "not_wired"
+    assert payload["wired"] is False
+    assert payload["not_wired"] is True
+    assert payload["observation"] is None
 
 
 def test_server_wrapper_shutdown_stops_serve_forever_cleanly() -> None:

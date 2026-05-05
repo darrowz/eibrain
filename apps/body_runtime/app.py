@@ -377,6 +377,11 @@ class BodyRuntimeApp:
 
     def voice_realtime(self) -> dict[str, object]:
         dialogue = self._voice_dialogue_payload()
+        realtime_session = self._voice_realtime_session_payload(dialogue)
+        round_info = self._voice_round_payload(dialogue, realtime_session)
+        scheduler_state = self._voice_scheduler_state_payload(dialogue)
+        interruption = self._voice_interruption_payload(dialogue, realtime_session)
+        cancellation_chain = self._voice_cancellation_chain_payload(dialogue, realtime_session)
         recent_events = self._recent_voice_events()
         ear = self._voice_organ_payload("ear", recent_events=recent_events)
         mouth = self._voice_organ_payload("mouth", recent_events=recent_events)
@@ -408,6 +413,17 @@ class BodyRuntimeApp:
             "mouth": mouth,
             "dialogue": dialogue,
             "voice_dialogue": dialogue,
+            "realtime_session": realtime_session,
+            "round": round_info,
+            "current_round_id": round_info["current_round_id"],
+            "current_cancellation_token": round_info["current_cancellation_token"],
+            "scheduler_state": scheduler_state,
+            "interruption": interruption,
+            "last_interrupt": interruption["last_interrupt"],
+            "interrupt_count": interruption["interrupt_count"],
+            "interrupted_round_count": interruption["interrupted_round_count"],
+            "interrupt_active": interruption["active"],
+            "cancellation_chain": cancellation_chain,
             "latency": latency,
             "last_stage_latency_ms": dict(latency.get("stage_latency_ms", {}) or {}),
             "last_latency_s": dict(latency.get("stage_latency_s", {}) or {}),
@@ -1207,6 +1223,208 @@ class BodyRuntimeApp:
             return {"transcript": transcript, "reply": reply}
         return None
 
+    def _voice_realtime_session_payload(self, dialogue: dict[str, object]) -> dict[str, object] | None:
+        raw = self._first_present(dialogue, "realtime_session", "latest_realtime_session")
+        if raw is None:
+            return None
+        if hasattr(raw, "snapshot") and callable(raw.snapshot):
+            raw = raw.snapshot()
+        ready = self._json_ready(raw)
+        return dict(ready) if isinstance(ready, dict) and ready else None
+
+    def _voice_round_payload(
+        self,
+        dialogue: dict[str, object],
+        realtime_session: dict[str, object] | None,
+    ) -> dict[str, object]:
+        round_id = self._first_present(dialogue, "current_round_id", "round_id")
+        if round_id in (None, ""):
+            round_id = self._first_present(realtime_session, "current_round_id", "round_id", "roundId")
+        cancellation_token = self._first_present(dialogue, "current_cancellation_token", "cancellation_token")
+        if cancellation_token in (None, ""):
+            cancellation_token = self._first_present(
+                realtime_session,
+                "current_cancellation_token",
+                "cancellation_token",
+                "cancellationToken",
+            )
+        phase = self._first_text(
+            dialogue.get("phase"),
+            self._first_present(realtime_session, "phase"),
+        )
+        last_status = self._first_text(
+            dialogue.get("last_status"),
+            dialogue.get("status"),
+            self._first_present(realtime_session, "last_status", "status"),
+        )
+        normalized_status = self._normalized_text(last_status)
+        interrupted = (
+            normalized_status in {"interrupted", "interrupt", "cancelled", "canceled"}
+            or self._truthy(dialogue.get("interrupted"))
+            or self._truthy(self._first_present(realtime_session, "interrupted"))
+        )
+        complete = self._truthy(self._first_present(realtime_session, "complete")) or normalized_status in {
+            "completed",
+            "complete",
+            "done",
+            "finished",
+        }
+        has_round = round_id not in (None, "")
+        lifecycle = (
+            "interrupted"
+            if interrupted
+            else "completed"
+            if complete
+            else "active"
+            if has_round
+            else "unknown"
+        )
+        return {
+            "current_round_id": self._json_ready(round_id) if has_round else None,
+            "current_cancellation_token": (
+                self._json_ready(cancellation_token) if cancellation_token not in (None, "") else None
+            ),
+            "has_cancellation_token": cancellation_token not in (None, ""),
+            "phase": phase,
+            "last_status": last_status,
+            "active": lifecycle == "active",
+            "complete": bool(complete),
+            "interrupted": bool(interrupted),
+            "lifecycle": lifecycle,
+            "state": "active" if has_round else "unknown",
+        }
+
+    def _voice_scheduler_state_payload(self, dialogue: dict[str, object]) -> dict[str, object]:
+        raw = self._first_present(dialogue, "scheduler_state", "scheduler")
+        details = self._json_ready(raw) if raw is not None else None
+        payload: dict[str, object] = {}
+        if isinstance(details, dict):
+            payload.update(details)
+            state = self._first_text(payload.get("state"), payload.get("status"), payload.get("phase"))
+        else:
+            state = self._first_text(details)
+            if details is not None:
+                payload["value"] = details
+        normalized = self._normalized_text(state)
+        stale = self._truthy(payload.get("stale")) or normalized == "stale"
+        not_wired = self._truthy(payload.get("not_wired")) or normalized in {
+            "not_wired",
+            "missing",
+            "unavailable",
+            "disabled",
+            "offline",
+        }
+        component_state = self._voice_scheduler_component_state(
+            state=state,
+            stale=stale,
+            not_wired=not_wired,
+        )
+        payload["state"] = state or ("not_wired" if not_wired else "unknown")
+        payload["component_state"] = component_state
+        payload["wired"] = component_state == "wired"
+        payload["not_wired"] = component_state == "not_wired"
+        payload["stale"] = bool(stale)
+        return payload
+
+    @staticmethod
+    def _voice_scheduler_component_state(*, state: str, stale: bool, not_wired: bool) -> str:
+        normalized = BodyRuntimeApp._normalized_text(state)
+        if not_wired:
+            return "not_wired"
+        if stale or normalized in {"stale", "blocked", "error", "failed", "unhealthy"}:
+            return "degraded"
+        if normalized in {"ok", "healthy", "ready", "running", "active", "scheduled", "idle"}:
+            return "wired"
+        return "unknown"
+
+    def _voice_interruption_payload(
+        self,
+        dialogue: dict[str, object],
+        realtime_session: dict[str, object] | None,
+    ) -> dict[str, object]:
+        interrupt_count = self._int_or_none(self._first_present(dialogue, "interrupt_count", "interruption_count", "interrupts"))
+        interrupted_round_count = self._int_or_none(dialogue.get("interrupted_round_count"))
+        last_interrupt_raw = self._first_present(dialogue, "last_interrupt", "interruption", "interrupt")
+        last_interrupt = self._json_ready(last_interrupt_raw) if last_interrupt_raw is not None else None
+        last_status = self._normalized_text(self._first_text(dialogue.get("last_status"), dialogue.get("status")))
+        interrupt_active_raw = dialogue.get("interrupt_active")
+        interrupt_active = self._truthy(interrupt_active_raw)
+        stale = self._truthy(self._mapping_value(last_interrupt, "stale")) or self._truthy(dialogue.get("interrupt_stale"))
+        session_interrupted = self._truthy(self._first_present(realtime_session, "interrupted"))
+        interrupted = (
+            interrupt_active
+            or self._truthy(dialogue.get("interrupted"))
+            or session_interrupted
+            or last_status in {"interrupted", "interrupt", "cancelled", "canceled"}
+        )
+        if last_interrupt is None and session_interrupted:
+            last_interrupt = {
+                "round_id": self._first_present(realtime_session, "round_id", "roundId"),
+                "cancellation_token": self._first_present(
+                    realtime_session,
+                    "cancellation_token",
+                    "cancellationToken",
+                ),
+                "reason": self._first_present(realtime_session, "interrupt_reason"),
+            }
+        has_history = bool(
+            last_interrupt is not None
+            or (interrupt_count is not None and interrupt_count > 0)
+            or (interrupted_round_count is not None and interrupted_round_count > 0)
+        )
+        has_interrupt_signal = bool(
+            interrupt_active_raw is not None
+            or interrupt_count is not None
+            or interrupted_round_count is not None
+            or last_interrupt is not None
+            or dialogue.get("interrupted") is not None
+            or self._first_present(realtime_session, "interrupted") is not None
+        )
+        no_interrupts_seen = (
+            has_interrupt_signal
+            and interrupt_active is False
+            and not interrupted
+            and last_interrupt is None
+            and (interrupt_count == 0 or interrupt_count is None)
+            and (interrupted_round_count == 0 or interrupted_round_count is None)
+        )
+        state = (
+            "stale"
+            if stale
+            else "interrupted"
+            if interrupted
+            else "history"
+            if has_history
+            else "clear"
+            if no_interrupts_seen
+            else "unknown"
+        )
+        component_state = "degraded" if stale or interrupted else "wired" if state == "clear" else "unknown"
+        return {
+            "state": state,
+            "status": state,
+            "component_state": component_state,
+            "active": bool(interrupt_active),
+            "interrupted": bool(interrupted),
+            "stale": bool(stale),
+            "clear": state == "clear",
+            "has_history": bool(has_history),
+            "interrupt_count": interrupt_count,
+            "interrupted_round_count": interrupted_round_count,
+            "last_interrupt": last_interrupt,
+        }
+
+    def _voice_cancellation_chain_payload(
+        self,
+        dialogue: dict[str, object],
+        realtime_session: dict[str, object] | None,
+    ) -> list[object]:
+        raw = self._first_present(dialogue, "cancellation_chain")
+        if raw is None:
+            raw = self._first_present(realtime_session, "cancellation_chain")
+        ready = self._json_ready(raw)
+        return list(ready) if isinstance(ready, list) else []
+
     def _voice_overall_status(
         self,
         *,
@@ -1315,6 +1533,37 @@ class BodyRuntimeApp:
         if isinstance(value, (str, int, float, bool)) or value is None:
             return value
         return str(value)
+
+    @staticmethod
+    def _first_present(mapping: dict[str, object] | None, *keys: str) -> object:
+        if not isinstance(mapping, dict):
+            return None
+        for key in keys:
+            if key in mapping:
+                return mapping[key]
+        return None
+
+    @staticmethod
+    def _mapping_value(mapping: object, key: str) -> object:
+        if isinstance(mapping, dict):
+            return mapping.get(key)
+        return None
+
+    @staticmethod
+    def _int_or_none(value: object) -> int | None:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _truthy(value: object) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value != 0
+        text = BodyRuntimeApp._normalized_text(value)
+        return text in {"1", "true", "yes", "y", "on", "active", "interrupted", "cancelled", "canceled"}
 
     def _refresh_interaction_mode(
         self,

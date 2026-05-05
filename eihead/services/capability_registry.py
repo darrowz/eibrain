@@ -21,11 +21,15 @@ if TYPE_CHECKING:
 CapabilityConfig = Mapping[str, Any]
 PathExists = Callable[[str], bool]
 Clock = Callable[[], float]
+CapabilityLiveProbe = Callable[..., Mapping[str, Any] | Any | None]
 
+LIVE = "live"
 ONLINE = "online"
+UNKNOWN = "unknown"
+UNAVAILABLE = "unavailable"
 OFFLINE = "offline"
 DEGRADED = "degraded"
-VALID_STATUSES = {ONLINE, OFFLINE, DEGRADED}
+VALID_STATUSES = {LIVE, ONLINE, UNKNOWN, UNAVAILABLE, OFFLINE, DEGRADED}
 EIPROTOCOL_MANIFEST_EVENT = "ei.capability.manifest.report"
 
 
@@ -115,11 +119,13 @@ class CapabilityRegistry:
         *,
         node_id: str | None = None,
         path_exists: PathExists | None = None,
+        probe: CapabilityLiveProbe | None = None,
         clock: Clock | None = None,
     ) -> None:
         self._config = _normalize_config(config or {})
         self.node_id = node_id or str(self._config.get("node_id") or "honjia")
         self._path_exists = path_exists or os.path.exists
+        self._live_probe = probe
         self._clock = clock or time.time
 
     @classmethod
@@ -128,9 +134,10 @@ class CapabilityRegistry:
         config: CapabilityConfig | None = None,
         *,
         path_exists: PathExists | None = None,
+        probe: CapabilityLiveProbe | None = None,
         clock: Clock | None = None,
     ) -> "CapabilityRegistry":
-        return cls(config, path_exists=path_exists, clock=clock)
+        return cls(config, path_exists=path_exists, probe=probe, clock=clock)
 
     def capability_names(self) -> list[str]:
         configured = set(_capability_section(self._config))
@@ -143,17 +150,30 @@ class CapabilityRegistry:
         started = self._clock()
 
         status, error, path_details = self._resolve_status(name, merged)
-        finished = self._clock()
-        latency_ms = round(max(finished - started, 0.0) * 1000, 3)
-        last_ok_ts = finished if status in {ONLINE, DEGRADED} else _optional_float(merged.get("last_ok_ts"))
+        static_checked_at = self._clock()
+        latency_ms = round(max(static_checked_at - started, 0.0) * 1000, 3)
+        last_ok_ts = (
+            static_checked_at
+            if status in {LIVE, ONLINE, DEGRADED}
+            else _optional_float(merged.get("last_ok_ts"))
+        )
 
         details = dict(merged.get("details") or {})
         details.update(path_details)
+        source = _pop_internal_detail(details, "status_source", "static_config")
+        reason = _pop_internal_detail(details, "status_reason", error or "declared_without_live_probe")
+        _apply_status_truth_metadata(
+            details,
+            source=source,
+            checked_at=static_checked_at,
+            reason=reason,
+            hardware_verified=False,
+        )
         _copy_optional(details, merged, "backend")
         _copy_optional(details, merged, "provider")
         _copy_optional(details, merged, "model")
 
-        return CapabilityProbeResult(
+        static_result = CapabilityProbeResult(
             name=name,
             kind=str(merged.get("kind") or default["kind"]),
             status=status,
@@ -162,6 +182,18 @@ class CapabilityRegistry:
             error=error,
             limits=dict(merged.get("limits") or {}),
             details=details,
+        )
+        live_probe_payload = self._probe_live_status(name, merged, static_result)
+        if live_probe_payload is None:
+            return static_result
+        live_checked_at = self._clock()
+        return _capability_result_from_live_probe(
+            name=name,
+            kind=str(merged.get("kind") or default["kind"]),
+            static_result=static_result,
+            payload=live_probe_payload,
+            checked_at=live_checked_at,
+            latency_ms=round(max(live_checked_at - started, 0.0) * 1000, 3),
         )
 
     def manifest(self) -> dict[str, Any]:
@@ -195,41 +227,93 @@ class CapabilityRegistry:
 
     def _resolve_status(self, name: str, config: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
         if config.get("enabled") is False:
-            return OFFLINE, "disabled", {"paths": _paths_from_config(config), "available_paths": []}
+            return OFFLINE, "disabled", {
+                "paths": _paths_from_config(config),
+                "available_paths": [],
+                "_status_source": "config_disabled",
+                "_status_reason": "disabled",
+            }
 
         explicit_status = config.get("status")
         explicit_error = config.get("error")
         if explicit_status is not None:
+            reason = _optional_str(config.get("reason")) or _optional_str(explicit_error) or "explicit_status"
             return _coerce_status(str(explicit_status)), _optional_str(explicit_error), {
                 "paths": _paths_from_config(config),
                 "available_paths": list(config.get("available_paths") or []),
+                "_status_source": "static_config",
+                "_status_reason": reason,
             }
 
         paths = _paths_from_config(config)
         if paths:
             available = [path for path in paths if self._path_exists(path)]
             if len(available) == len(paths):
-                return ONLINE, None, {"paths": paths, "available_paths": available}
-            if available:
-                return DEGRADED, _path_error(name, paths, available), {
+                return UNKNOWN, "all_declared_paths_exist_unverified", {
                     "paths": paths,
                     "available_paths": available,
+                    "_status_source": "path_exists",
+                    "_status_reason": "all_declared_paths_exist_unverified",
                 }
-            return OFFLINE, _path_error(name, paths, available), {"paths": paths, "available_paths": []}
+            if available:
+                error = _path_error(name, paths, available)
+                return DEGRADED, error, {
+                    "paths": paths,
+                    "available_paths": available,
+                    "_status_source": "path_exists",
+                    "_status_reason": error,
+                }
+            error = _path_error(name, paths, available)
+            return OFFLINE, error, {
+                "paths": paths,
+                "available_paths": [],
+                "_status_source": "path_exists",
+                "_status_reason": error,
+            }
 
         if config.get("enabled") is True or _has_declaration(config):
-            return ONLINE, None, {"paths": [], "available_paths": []}
+            return UNKNOWN, "declared_without_live_probe", {
+                "paths": [],
+                "available_paths": [],
+                "_status_source": "static_config",
+                "_status_reason": "declared_without_live_probe",
+            }
 
-        return OFFLINE, "not_configured", {"paths": [], "available_paths": []}
+        return OFFLINE, "not_configured", {
+            "paths": [],
+            "available_paths": [],
+            "_status_source": "not_configured",
+            "_status_reason": "not_configured",
+        }
+
+    def _probe_live_status(
+        self,
+        name: str,
+        config: Mapping[str, Any],
+        static_result: CapabilityProbeResult,
+    ) -> Mapping[str, Any] | Any | None:
+        if self._live_probe is None:
+            return None
+        try:
+            return self._live_probe(name, config=dict(config), static_status=static_result.to_dict())
+        except Exception as exc:  # pragma: no cover - defensive for real injected probes.
+            return {
+                "status": DEGRADED,
+                "source": "live_probe",
+                "reason": "probe_error",
+                "error": str(exc),
+                "hardware_verified": False,
+            }
 
 
 def manifest_from_config(
     config: CapabilityConfig | None = None,
     *,
     path_exists: PathExists | None = None,
+    probe: CapabilityLiveProbe | None = None,
     clock: Clock | None = None,
 ) -> dict[str, Any]:
-    return CapabilityRegistry.from_config(config, path_exists=path_exists, clock=clock).manifest()
+    return CapabilityRegistry.from_config(config, path_exists=path_exists, probe=probe, clock=clock).manifest()
 
 
 def manifest_to_json(manifest: Mapping[str, Any]) -> str:
@@ -290,6 +374,102 @@ def manifest_to_eiprotocol_event(
     )
 
 
+def _capability_result_from_live_probe(
+    *,
+    name: str,
+    kind: str,
+    static_result: CapabilityProbeResult,
+    payload: Mapping[str, Any] | Any,
+    checked_at: float,
+    latency_ms: float,
+) -> CapabilityProbeResult:
+    data = _capability_probe_payload(payload)
+    status = _coerce_status(str(data.get("status") or static_result.status), fallback=UNKNOWN)
+    details = dict(static_result.details)
+    probe_details = data.get("details")
+    if isinstance(probe_details, Mapping):
+        details.update(dict(probe_details))
+    details.update(_probe_payload_extra_details(data))
+
+    source = _optional_str(data.get("source") or data.get("status_source")) or "live_probe"
+    probe_checked_at = _first_optional_float(
+        data.get("checked_at"),
+        data.get("checked_at_ts"),
+        data.get("last_checked"),
+        data.get("last_checked_ts"),
+    )
+    resolved_checked_at = probe_checked_at if probe_checked_at is not None else checked_at
+    reason = _optional_str(data.get("reason") or data.get("error")) or "live_probe"
+    hardware_verified = _optional_bool(data.get("hardware_verified"))
+    if hardware_verified is None:
+        hardware_verified = status != UNKNOWN
+    _apply_status_truth_metadata(
+        details,
+        source=source,
+        checked_at=resolved_checked_at,
+        reason=reason,
+        hardware_verified=hardware_verified,
+    )
+
+    error = _optional_str(data.get("error"))
+    if error is None and status in {UNKNOWN, UNAVAILABLE, OFFLINE, DEGRADED}:
+        error = reason
+
+    last_ok_ts = _first_optional_float(data.get("last_ok_ts"), data.get("last_ok"))
+    if last_ok_ts is None:
+        last_ok_ts = resolved_checked_at if status in {LIVE, ONLINE, DEGRADED} else static_result.last_ok_ts
+
+    limits = dict(static_result.limits)
+    probe_limits = data.get("limits")
+    if isinstance(probe_limits, Mapping):
+        limits.update(dict(probe_limits))
+
+    return CapabilityProbeResult(
+        name=name,
+        kind=str(data.get("kind") or kind),
+        status=status,
+        latency_ms=_optional_float(data.get("latency_ms")) or latency_ms,
+        last_ok_ts=last_ok_ts,
+        error=error,
+        limits=limits,
+        details=details,
+    )
+
+
+def _capability_probe_payload(payload: Mapping[str, Any] | Any) -> dict[str, Any]:
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    if isinstance(payload, CapabilityProbeResult):
+        return payload.to_dict()
+    if hasattr(payload, "to_dict") and callable(payload.to_dict):
+        data = payload.to_dict()
+        if isinstance(data, Mapping):
+            return dict(data)
+    return {"status": payload}
+
+
+def _probe_payload_extra_details(payload: Mapping[str, Any]) -> dict[str, Any]:
+    ignored = {
+        "status",
+        "kind",
+        "latency_ms",
+        "last_ok_ts",
+        "last_ok",
+        "error",
+        "limits",
+        "details",
+        "source",
+        "status_source",
+        "checked_at",
+        "checked_at_ts",
+        "last_checked",
+        "last_checked_ts",
+        "reason",
+        "hardware_verified",
+    }
+    return {str(key): value for key, value in payload.items() if key not in ignored}
+
+
 def _normalize_config(config: CapabilityConfig) -> dict[str, Any]:
     normalized = dict(config)
     if "capabilities" not in normalized:
@@ -328,9 +508,9 @@ def _paths_from_config(config: Mapping[str, Any]) -> list[str]:
     return [str(path) for path in paths]
 
 
-def _coerce_status(status: str) -> str:
+def _coerce_status(status: str, *, fallback: str = DEGRADED) -> str:
     normalized = status.strip().lower()
-    return normalized if normalized in VALID_STATUSES else DEGRADED
+    return normalized if normalized in VALID_STATUSES else fallback
 
 
 def _path_error(name: str, paths: list[str], available: list[str]) -> str:
@@ -345,6 +525,28 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _first_optional_float(*values: Any) -> float | None:
+    for value in values:
+        number = _optional_float(value)
+        if number is not None:
+            return number
+    return None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _optional_str(value: Any) -> str | None:
@@ -362,6 +564,27 @@ def _has_declaration(config: Mapping[str, Any]) -> bool:
 def _copy_optional(target: dict[str, Any], source: Mapping[str, Any], key: str) -> None:
     if key in source:
         target[key] = source[key]
+
+
+def _pop_internal_detail(details: dict[str, Any], name: str, default: str | None = None) -> str:
+    value = details.pop(f"_{name}", default)
+    return _optional_str(value) or _optional_str(default) or ""
+
+
+def _apply_status_truth_metadata(
+    details: dict[str, Any],
+    *,
+    source: str,
+    checked_at: float,
+    reason: str | None,
+    hardware_verified: bool,
+) -> None:
+    details["source"] = source
+    details["checked_at"] = checked_at
+    details["last_checked"] = checked_at
+    details["hardware_verified"] = hardware_verified
+    if reason:
+        details["reason"] = reason
 
 
 def _eiprotocol_capability_lists(manifest: Mapping[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -493,10 +716,20 @@ def _overall_status(manifest: Mapping[str, Any]) -> str:
         for capability in capabilities.values()
         if isinstance(capability, Mapping)
     }
-    if OFFLINE in statuses:
+    if not statuses:
+        return OFFLINE
+    if statuses <= {OFFLINE, UNAVAILABLE, UNKNOWN}:
+        if UNAVAILABLE in statuses:
+            return UNAVAILABLE
+        if UNKNOWN in statuses:
+            return UNKNOWN
+        return OFFLINE
+    if statuses & {OFFLINE, UNAVAILABLE, UNKNOWN}:
         return DEGRADED
     if DEGRADED in statuses:
         return DEGRADED
+    if LIVE in statuses:
+        return LIVE
     return ONLINE
 
 
@@ -525,8 +758,11 @@ __all__ = [
     "DEGRADED",
     "EIPROTOCOL_MANIFEST_EVENT",
     "DEFAULT_CAPABILITIES",
+    "LIVE",
     "OFFLINE",
     "ONLINE",
+    "UNKNOWN",
+    "UNAVAILABLE",
     "manifest_from_config",
     "manifest_to_eiprotocol_event",
     "manifest_to_json",

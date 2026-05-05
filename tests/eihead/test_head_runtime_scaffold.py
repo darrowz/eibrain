@@ -24,6 +24,11 @@ class FakeBodyRuntime:
         }
 
 
+class FailingSnapshotBodyRuntime:
+    def snapshot(self) -> dict[str, object]:
+        raise RuntimeError("camera bus unavailable")
+
+
 class RealtimeVisionBodyRuntime(FakeBodyRuntime):
     def vision_realtime(self) -> dict[str, object]:
         return {
@@ -105,6 +110,15 @@ class SnapshotVoiceBodyRuntime(FakeBodyRuntime):
 
 def make_fake_head_runtime(config_path: str) -> HeadRuntimeApp:
     return HeadRuntimeApp(body_runtime=FakeBodyRuntime(), config_path=config_path)
+
+
+def wired_native_providers() -> dict[str, dict[str, str]]:
+    return {
+        "eye": {"status": "wired", "provider": "fake-eye"},
+        "ear": {"status": "wired", "provider": "fake-ear"},
+        "mouth": {"status": "wired", "provider": "fake-mouth"},
+        "neck": {"status": "wired", "provider": "fake-neck"},
+    }
 
 
 def test_from_config_path_uses_legacy_body_config_for_eihead_config(tmp_path: Path) -> None:
@@ -191,6 +205,65 @@ def test_head_runtime_imports_and_wraps_body_snapshot() -> None:
     assert snapshot["delegate"] == "apps.body_runtime.BodyRuntimeApp"
     assert snapshot["body_runtime"]["node_id"] == "honjia-test"
     assert snapshot["body_runtime"]["organ_count"] == 4
+
+
+def test_snapshot_and_verify_report_degraded_when_native_provider_is_unknown() -> None:
+    providers = wired_native_providers()
+    providers["eye"] = {"status": "unknown", "reason": "probe_not_configured"}
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        delegate_name="eihead.native",
+        native_providers=providers,
+        neck_servo_adapter=object(),
+    )
+
+    snapshot = runtime.snapshot()
+    verify_payload = runtime.verify()
+
+    assert snapshot["ok"] is False
+    assert snapshot["status"] == "degraded"
+    assert snapshot["checks"]["native_provider_boundaries"] == "degraded"
+    assert verify_payload["ok"] is False
+    assert verify_payload["status"] == "degraded"
+    assert verify_payload["checks"]["native_provider_boundaries"] == "degraded"
+
+
+def test_verify_reports_degraded_while_legacy_body_delegate_is_still_active() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        native_providers=wired_native_providers(),
+        neck_servo_adapter=object(),
+    )
+
+    verify_payload = runtime.verify()
+
+    assert verify_payload["ok"] is False
+    assert verify_payload["status"] == "degraded"
+    assert verify_payload["checks"]["body_runtime_delegate"] == "degraded"
+    assert verify_payload["check_details"]["body_runtime_delegate"]["reason"] == "legacy_body_runtime_delegate_active"
+
+
+def test_snapshot_and_verify_block_when_body_snapshot_raises() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FailingSnapshotBodyRuntime(),
+        config_path="config/test.yaml",
+        delegate_name="eihead.native",
+        native_providers=wired_native_providers(),
+        neck_servo_adapter=object(),
+    )
+
+    snapshot = runtime.snapshot()
+    verify_payload = runtime.verify()
+
+    assert snapshot["ok"] is False
+    assert snapshot["status"] == "blocked"
+    assert snapshot["checks"]["body_runtime_snapshot"] == "blocked"
+    assert snapshot["body_runtime"]["reason"] == "body_runtime_snapshot_failed"
+    assert snapshot["body_runtime"]["error"]["type"] == "RuntimeError"
+    assert verify_payload["status"] == "blocked"
+    assert verify_payload["checks"]["body_runtime_snapshot"] == "blocked"
 
 
 def test_head_runtime_realtime_vision_hook_is_explicit_and_does_not_fake_static_frames() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 
 def _round_trip_event(event):
@@ -12,6 +13,21 @@ def _round_trip_event(event):
     assert restored.to_dict() == payload
     assert validate_event(restored) == []
     return restored, payload
+
+
+def _assert_strict_round_trip_and_route(event: Any, expected_route: str) -> dict[str, Any]:
+    from eiprotocol import classify_event
+    from eiprotocol.codec import dumps_event, loads_event
+    from eiprotocol.validation import validate_event_strict
+
+    payload = event.to_dict()
+
+    assert validate_event_strict(payload, known_event_required=True) == []
+    assert loads_event(dumps_event(event)).to_dict() == payload
+    route = classify_event(event)
+    assert route["status"] == "routed"
+    assert route["route"] == expected_route
+    return payload
 
 
 def test_bridge_capability_manifest_to_eiprotocol_envelope() -> None:
@@ -234,3 +250,91 @@ def test_bridge_execution_outcome_to_eiprotocol_envelope() -> None:
     assert payload["content"]["actionId"] == "action-1"
     assert payload["content"]["success"] is True
     assert payload["content"]["details"] == {"final_angle": 92}
+
+
+def test_wave3_bridge_converts_internal_head_status_payload_to_typed_event() -> None:
+    from eibrain.protocol.eiprotocol_bridge import head_status_report_to_eiprotocol_event
+
+    event = head_status_report_to_eiprotocol_event(
+        {
+            "node_id": "honjia",
+            "overall_status": "degraded",
+            "captured_at_ts": 1_714_800_090.0,
+            "capabilities": {
+                "camera.front": {"status": "online", "metrics": {"fps": 29}},
+                "mouth.tts": {"status": "degraded", "message": "queue backing up"},
+            },
+            "summary": {"online": 1, "degraded": 1, "offline": 0, "total": 2},
+            "trace_id": "trace-head-status",
+        },
+        target="eibrain.honxin",
+        event_id="evt_head_status_bridge",
+        request_id="req_head_status_bridge",
+        sequence=7,
+        time="2026-05-04T10:31:30.000+08:00",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "head_status_report")
+    assert payload["source"]["domain"] == "eihead"
+    assert payload["source"]["instanceId"] == "honjia"
+    assert payload["source"]["deviceId"] == "honjia"
+    assert payload["target"]["domain"] == "eibrain"
+    assert payload["content"]["status"] == "degraded"
+    assert payload["content"]["components"]["mouth.tts"]["status"] == "degraded"
+    assert payload["content"]["reportedAt"] == "2024-05-04T05:21:30.000Z"
+
+
+def test_wave3_bridge_converts_internal_dialogue_payloads_to_typed_events() -> None:
+    from eibrain.protocol.eiprotocol_bridge import (
+        dialogue_fast_hypothesis_to_eiprotocol_event,
+        dialogue_stable_decision_to_eiprotocol_event,
+    )
+
+    fast = dialogue_fast_hypothesis_to_eiprotocol_event(
+        {
+            "hypothesis_id": "hyp-1",
+            "text": "The user is asking about snacks.",
+            "confidence": 0.69,
+            "basis_event_id": "evt_asr_partial",
+            "latency_ms": 88,
+            "session_id": "ses-1",
+            "round_id": "rnd-1",
+            "trace_id": "trace-dialogue",
+        },
+        target="eihead.honjia",
+        event_id="evt_fast_bridge",
+        request_id="req_fast_bridge",
+        sequence=8,
+        time="2026-05-04T10:32:00.420+08:00",
+    )
+    stable = dialogue_stable_decision_to_eiprotocol_event(
+        {
+            "decision_id": "decision-1",
+            "decision": "respond",
+            "confidence": 0.94,
+            "text": "Fuzhou fish balls are a classic choice.",
+            "actions": [{"type": "speak", "text": "Fuzhou fish balls are a classic choice."}],
+            "stable_since_ms": 310,
+            "session_id": "ses-1",
+            "round_id": "rnd-1",
+            "trace_id": "trace-dialogue",
+        },
+        target="eihead.honjia",
+        event_id="evt_stable_bridge",
+        request_id="req_stable_bridge",
+        sequence=9,
+        time="2026-05-04T10:32:01.700+08:00",
+    )
+
+    fast_payload = _assert_strict_round_trip_and_route(fast, "dialogue_fast_hypothesis")
+    stable_payload = _assert_strict_round_trip_and_route(stable, "dialogue_decision_stable")
+    assert fast_payload["source"]["domain"] == "eibrain"
+    assert fast_payload["target"]["domain"] == "eihead"
+    assert fast_payload["roundId"] == "rnd-1"
+    assert fast_payload["content"]["hypothesisId"] == "hyp-1"
+    assert fast_payload["content"]["basisEventId"] == "evt_asr_partial"
+    assert stable_payload["roundId"] == "rnd-1"
+    assert stable_payload["content"]["decisionId"] == "decision-1"
+    assert stable_payload["content"]["actions"] == [
+        {"type": "speak", "text": "Fuzhou fish balls are a classic choice."}
+    ]

@@ -8,13 +8,14 @@ from eihead.services import (
     DEGRADED,
     OFFLINE,
     ONLINE,
+    UNKNOWN,
     manifest_from_config,
     manifest_to_eiprotocol_event,
     manifest_to_json,
 )
 
 
-def test_manifest_detects_default_device_paths_with_injected_probe() -> None:
+def test_manifest_marks_default_device_paths_as_unverified_without_live_probe() -> None:
     existing_paths = {"/dev/video0", "/dev/hailo0", "/dev/i2c-1"}
 
     registry = CapabilityRegistry(
@@ -27,12 +28,14 @@ def test_manifest_detects_default_device_paths_with_injected_probe() -> None:
 
     assert manifest["schema"] == "eihead.capability_manifest.v1"
     assert manifest["node_id"] == "honjia"
-    assert manifest["capabilities"]["camera"]["status"] == ONLINE
-    assert manifest["capabilities"]["hailo"]["status"] == ONLINE
-    assert manifest["capabilities"]["i2c"]["status"] == ONLINE
-    assert manifest["capabilities"]["neck"]["status"] == ONLINE
+    assert manifest["capabilities"]["camera"]["status"] == UNKNOWN
+    assert manifest["capabilities"]["hailo"]["status"] == UNKNOWN
+    assert manifest["capabilities"]["i2c"]["status"] == UNKNOWN
+    assert manifest["capabilities"]["neck"]["status"] == UNKNOWN
+    assert manifest["capabilities"]["camera"]["details"]["hardware_verified"] is False
+    assert manifest["capabilities"]["camera"]["details"]["reason"] == "all_declared_paths_exist_unverified"
     assert manifest["capabilities"]["camera"]["latency_ms"] >= 0
-    assert manifest["capabilities"]["camera"]["last_ok_ts"] is not None
+    assert manifest["capabilities"]["camera"]["last_ok_ts"] is None
 
 
 def test_manifest_supports_declarative_software_capabilities() -> None:
@@ -67,7 +70,7 @@ def test_manifest_supports_declarative_software_capabilities() -> None:
     tts = manifest["capabilities"]["tts"]
     vision = manifest["capabilities"]["vision_backend"]
 
-    assert asr["status"] == ONLINE
+    assert asr["status"] == UNKNOWN
     assert asr["details"]["provider"] == "sherpa-onnx"
     assert asr["limits"]["streaming"] is True
     assert tts["status"] == DEGRADED
@@ -125,7 +128,7 @@ def test_manifest_and_snapshot_are_json_serializable() -> None:
     manifest_json = manifest_to_json(registry.manifest())
     snapshot_json = snapshot_to_json(build_status_snapshot(registry, clock=lambda: 501.0))
 
-    assert json.loads(manifest_json)["capabilities"]["asr"]["status"] == ONLINE
+    assert json.loads(manifest_json)["capabilities"]["asr"]["status"] == UNKNOWN
     assert json.loads(snapshot_json)["overall_status"] == DEGRADED
 
 

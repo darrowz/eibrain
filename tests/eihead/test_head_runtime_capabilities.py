@@ -100,7 +100,75 @@ def test_capabilities_returns_status_snapshot_shape_without_hardware() -> None:
     assert payload["node_id"] == "honjia-test"
     assert payload["body_runtime_node_id"] == "honjia-test"
     assert payload["summary"]["total"] == len(payload["capabilities"])
+    assert payload["overall_status"] != "online"
     assert payload["capabilities"]["neck"]["limits"]["tilt_deg"] is None
+
+
+def test_capabilities_marks_static_path_checks_as_unverified_status_source() -> None:
+    runtime = HeadRuntimeApp(body_runtime=_BodyRuntime(), config_path="config/test.yaml")
+
+    payload = runtime.capabilities()
+
+    for capability in payload["capabilities"].values():
+        details = capability["details"]
+        assert details["hardware_verified"] is False
+        assert "checked_at" in details
+        assert "last_checked" in details
+        assert details["source"] in {
+            "path_exists",
+            "static_config",
+            "config_disabled",
+            "not_configured",
+            "native_provider",
+        }
+
+    assert payload["capabilities"]["camera"]["status"] == "unknown"
+    assert payload["capabilities"]["camera"]["details"]["source"] == "native_provider"
+    assert payload["capabilities"]["asr"]["details"]["reason"] == "native_provider_status"
+    assert payload["capabilities"]["asr"]["details"]["native_provider"] == "ear"
+
+
+def test_capabilities_prefers_native_provider_truth_over_static_registry() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=_BodyRuntime(),
+        config_path="config/test.yaml",
+        neck_servo_adapter=object(),
+        native_providers={
+            "eye": {
+                "status": "wired",
+                "provider": "fake-eye-adapter",
+                "source": "native-eye-probe",
+                "checked_at": 111.25,
+                "hardware_verified": True,
+                "details": {"fps": 30},
+            },
+            "ear": {"status": "unknown", "reason": "ear_probe_not_ready"},
+            "mouth": {"status": "degraded", "reason": "tts_queue_backpressure"},
+            "neck": {
+                "status": "wired",
+                "provider": "fake-neck-servo",
+                "reason": "adapter_injected",
+                "hardware_verified": False,
+            },
+        },
+    )
+
+    payload = runtime.capabilities()
+
+    camera = payload["capabilities"]["camera"]
+    assert camera["status"] == "live"
+    assert camera["details"]["source"] == "native-eye-probe"
+    assert camera["details"]["hardware_verified"] is True
+    assert camera["details"]["native_provider"] == "eye"
+    assert camera["details"]["native_fps"] == 30
+
+    neck = payload["capabilities"]["neck"]
+    assert neck["status"] == "online"
+    assert neck["details"]["hardware_verified"] is False
+    assert neck["details"]["native_provider"] == "neck"
+
+    assert payload["capabilities"]["microphone"]["status"] == "unknown"
+    assert payload["capabilities"]["speaker"]["status"] == "degraded"
 
 
 def test_handle_action_speak_delegates_to_body_runtime_dispatch() -> None:

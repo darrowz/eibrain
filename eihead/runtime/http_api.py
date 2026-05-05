@@ -9,10 +9,24 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from eihead.monitoring.realtime_vision import realtime_vision_payload_from_app
+
 
 JsonObject = dict[str, Any]
 Clock = Callable[[], float]
 DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024
+UNHEALTHY_STATES = {
+    "blocked",
+    "degraded",
+    "error",
+    "failed",
+    "not_wired",
+    "offline",
+    "stale",
+    "unavailable",
+    "unhealthy",
+    "unknown",
+}
 
 
 class HeadHttpApiError(RuntimeError):
@@ -141,6 +155,8 @@ def create_handler(
                     return HTTPStatus.OK, self._call_mapping("status")
                 if path == "/capabilities":
                     return HTTPStatus.OK, self._call_mapping("capabilities")
+                if path in {"/api/vision/realtime", "/api/eye/realtime"}:
+                    return HTTPStatus.OK, realtime_vision_payload_from_app(runtime_app, timestamp=now())
                 if path in {"/actions", "/events"}:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
@@ -154,7 +170,13 @@ def create_handler(
                     return HTTPStatus.OK, self._handle_action()
                 if path == "/events":
                     return HTTPStatus.OK, self._handle_event()
-                if path in {"/health", "/status", "/capabilities"}:
+                if path in {
+                    "/health",
+                    "/status",
+                    "/capabilities",
+                    "/api/vision/realtime",
+                    "/api/eye/realtime",
+                }:
                     raise HeadHttpApiError(
                         HTTPStatus.METHOD_NOT_ALLOWED,
                         "method_not_allowed",
@@ -175,6 +197,8 @@ def create_handler(
             else:
                 status_payload = self._call_mapping("status")
                 payload = _health_from_status(status_payload, now())
+            if not _is_healthy(payload) and "ok" not in payload:
+                payload = {**payload, "ok": False}
             return (HTTPStatus.OK if _is_healthy(payload) else HTTPStatus.SERVICE_UNAVAILABLE), payload
 
         def _handle_action(self) -> JsonObject:
@@ -383,7 +407,7 @@ def _as_json_object(payload: Any, source: str) -> JsonObject:
 
 def _health_from_status(status_payload: Mapping[str, Any], timestamp: float) -> JsonObject:
     state = str(status_payload.get("status", "ok")).lower()
-    ok = status_payload.get("ok") is not False and state not in {"error", "failed", "offline", "unhealthy"}
+    ok = status_payload.get("ok") is not False and state not in UNHEALTHY_STATES
     payload: JsonObject = {
         "ok": ok,
         "status": "ok" if ok else state,
@@ -391,7 +415,7 @@ def _health_from_status(status_payload: Mapping[str, Any], timestamp: float) -> 
         "source": "status",
         "checked_at_ts": timestamp,
     }
-    for key in ("node_id", "node_role"):
+    for key in ("node_id", "node_role", "checks", "check_details", "native_providers"):
         if key in status_payload:
             payload[key] = status_payload[key]
     return payload
@@ -401,7 +425,7 @@ def _is_healthy(payload: Mapping[str, Any]) -> bool:
     state = str(payload.get("status", "ok")).lower()
     if payload.get("ok") is False:
         return False
-    return state not in {"error", "failed", "offline", "unhealthy"}
+    return state not in UNHEALTHY_STATES
 
 
 def _http_phrase(status_code: int) -> str:

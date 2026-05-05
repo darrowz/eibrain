@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from eihead.runtime.app import HeadRuntimeApp
+from eihead.runtime.native_providers import build_native_provider_statuses
 
 
 class FakeBodyRuntime:
@@ -128,4 +129,37 @@ def test_direct_runtime_construction_marks_uninjected_neck_unavailable() -> None
     assert native_providers["neck"] == {
         "status": "unavailable",
         "reason": "neck_servo_adapter_missing",
+    }
+
+
+def test_native_provider_probe_can_report_degraded_with_truthful_metadata() -> None:
+    def probe(provider_name: str, *, config: Any, environ: dict[str, str]) -> dict[str, object]:
+        if provider_name == "eye":
+            return {
+                "status": "degraded",
+                "provider": "fake-eye-adapter",
+                "source": "fake-native-live-probe",
+                "checked_at": 5678.5,
+                "reason": "low_frame_rate",
+                "hardware_verified": True,
+                "details": {"fps": 2},
+            }
+        return {"status": "unknown", "source": "fake-native-live-probe", "reason": "not_checked"}
+
+    statuses = build_native_provider_statuses(
+        config=None,
+        environ={},
+        probe=probe,
+        neck_servo_adapter=FakeNeckAdapter(),
+    )
+
+    assert statuses["eye"] == {
+        "status": "degraded",
+        "provider": "fake-eye-adapter",
+        "reason": "low_frame_rate",
+        "source": "fake-native-live-probe",
+        "checked_at": 5678.5,
+        "last_checked": 5678.5,
+        "hardware_verified": True,
+        "details": {"fps": 2},
     }
