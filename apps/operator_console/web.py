@@ -457,6 +457,12 @@ class MonitoringWebServer:
     </section>
 
     <section class="card" style="margin-top: 16px;">
+      <h2>Memory trace</h2>
+      <div class="mini-grid" id="memory-trace-summary"></div>
+      <div class="subfunction-list" id="memory-trace-events" style="margin-top: 14px;"></div>
+    </section>
+
+    <section class="card" style="margin-top: 16px;">
       <h2>Neck fusion control</h2>
       <div class="mini-grid" id="neck-control-summary"></div>
       <div class="subfunction-list" id="neck-control-events" style="margin-top: 14px;"></div>
@@ -824,13 +830,14 @@ class MonitoringWebServer:
       const memory = report.memory_diagnostics || {{}};
       const selected = memory.selected_records || [];
       const composition = memory.source_composition || {{}};
-      const bySource = composition.by_source || {{}};
+      const bySource = composition.by_source || composition || {{}};
       const sourceSummary = Object.entries(bySource).map(([source, count]) => `${{source}}:${{count}}`).join(' · ') || 'No sources selected yet';
       const writeback = memory.last_writeback || {{}};
       document.getElementById('memory-summary').innerHTML = [
         ['Task', memory.task_type || '—'],
         ['Profile', memory.recall_profile || '—'],
         ['Selected', String(memory.selected_count ?? selected.length ?? 0)],
+        ['Traces', String(memory.memory_trace_count ?? 0)],
         ['Writeback', writeback.status || '—'],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
@@ -838,11 +845,45 @@ class MonitoringWebServer:
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Recall filters</strong><span class="health-tag ${{memory.recall_profile ? 'healthy' : 'waiting'}}">${{memory.recall_profile || 'waiting'}}</span></div><div class="metric-label">allowed=${{(memory.allowed_sources || []).join(', ') || '—'}} · blocked=${{(memory.blocked_sources || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Modalities / organs</strong><span class="health-tag healthy">policy</span></div><div class="metric-label">types=${{(memory.allowed_memory_types || []).join(', ') || '—'}} · modalities=${{(memory.preferred_modalities || []).join(', ') || '—'}} · organs=${{(memory.organs || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Source composition</strong><span class="health-tag ${{memory.selected_count ? 'healthy' : 'waiting'}}">${{memory.selected_count ?? 0}}</span></div><div class="metric-label">${{sourceSummary}}</div></div>`);
+      if (memory.latest_trace_round_id) {{
+        items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Latest closed-loop trace</strong><span class="health-tag ${{healthClass(memory.latest_trace_status || 'waiting')}}">${{memory.latest_trace_status || 'waiting'}}</span></div><div class="metric-label">round=${{memory.latest_trace_round_id}} · traces=${{memory.memory_trace_count ?? 0}}</div></div>`);
+      }}
       selected.slice(0, 4).forEach((record) => {{
         items.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{record.title || record.record_id || 'memory'}}</strong><span class="health-tag healthy">${{record.kind || 'record'}}</span></div><div class="metric-label">${{record.source || 'unknown source'}} · ${{record.record_id || ''}}</div></div>`);
       }});
-      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last writeback</strong><span class="health-tag ${{healthClass(writeback.status || 'waiting_for_data')}}">${{writeback.status || 'waiting'}}</span></div><div class="metric-label">${{writeback.source || '—'}} · ${{writeback.memory_type || '—'}} · ${{writeback.modality || '—'}}/${{writeback.organ || '—'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last writeback</strong><span class="health-tag ${{healthClass(writeback.status || 'waiting_for_data')}}">${{writeback.status || 'waiting'}}</span></div><div class="metric-label">${{writeback.source || '—'}} · ${{writeback.memory_type || '—'}} · ${{writeback.modality || '—'}}/${{writeback.organ || '—'}} · record=${{writeback.record_id || '—'}}</div></div>`);
       document.getElementById('memory-events').innerHTML = items.join('');
+    }}
+
+    function renderMemoryTrace(report) {{
+      const panel = report.memory_trace_panel || {{}};
+      const latest = panel.latest || {{}};
+      const traces = panel.items || [];
+      document.getElementById('memory-trace-summary').innerHTML = [
+        ['Closed-loop traces', String(panel.count ?? 0)],
+        ['Latest round', latest.round_id || '—'],
+        ['Recall', String(latest.recall_count ?? 0)],
+        ['Writeback', String(latest.writeback_count ?? 0)],
+        ['Errors', String(latest.error_count ?? 0)],
+      ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
+
+      const items = [];
+      traces.forEach((trace) => {{
+        const sourceSummary = Object.entries(trace.source_composition || {{}}).map(([source, count]) => `${{source}}:${{count}}`).join(' · ') || 'no selected sources';
+        items.push(`<div class="subfunction-item"><div class="sub-top"><strong>${{trace.round_id || 'memory round'}}</strong><span class="health-tag ${{healthClass(trace.status || 'waiting')}}">${{trace.status || 'waiting'}}</span></div><div class="metric-label">session=${{trace.session_id || '—'}} · recall=${{trace.recall_count ?? 0}} · writeback=${{trace.writeback_count ?? 0}} · errors=${{trace.error_count ?? 0}} · ${{sourceSummary}}</div></div>`);
+        (trace.recall_items || []).slice(0, 3).forEach((item) => {{
+          items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Recall</strong><span class="health-tag ${{item.selected_count ? 'healthy' : 'waiting'}}">${{item.selected_count ?? 0}}</span></div><div class="metric-label">query=${{item.query || '—'}} · ${{item.summary || 'no summary'}}</div></div>`);
+        }});
+        (trace.writeback_items || []).slice(0, 3).forEach((item) => {{
+          items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Writeback</strong><span class="health-tag ${{healthClass(item.status || 'waiting')}}">${{item.status || 'waiting'}}</span></div><div class="metric-label">${{item.source || '—'}} · ${{item.memory_type || item.type || '—'}} · record=${{item.record_id || '—'}} · ${{item.summary || ''}}</div></div>`);
+        }});
+        (trace.errors || []).slice(0, 2).forEach((error) => {{
+          items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Trace error</strong><span class="health-tag unavailable">error</span></div><div class="metric-label">${{error.error || error.summary || JSON.stringify(error)}}</div></div>`);
+        }});
+      }});
+      document.getElementById('memory-trace-events').innerHTML = items.length
+        ? items.join('')
+        : '<div class="muted">No closed-loop memory traces yet</div>';
     }}
 
     function renderNeckControl(report) {{
@@ -888,7 +929,14 @@ class MonitoringWebServer:
     }}
 
     function renderTimeline(report) {{
-      const events = report.recent_traces || [];
+      const memoryEvents = (report.memory_trace_panel?.items || []).map((trace) => ({{
+        kind: 'memory_trace',
+        status: trace.status || 'ok',
+        source: 'eibrain.memory',
+        session_id: trace.session_id || trace.round_id || 'n/a',
+        recorded_at_ts: report.generated_at_ts,
+      }}));
+      const events = [...memoryEvents, ...(report.recent_traces || [])].slice(0, 8);
       document.getElementById('recent-events').innerHTML = events.length
         ? events.map((event) => `
             <div class="timeline-item">
@@ -920,6 +968,7 @@ class MonitoringWebServer:
       renderAudio(report);
       renderDialogue(report);
       renderMemory(report);
+      renderMemoryTrace(report);
       renderNeckControl(report);
       renderVision(report);
       renderProbes(report);

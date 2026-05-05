@@ -59,6 +59,53 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "['Intent count', String(neck.intent_count ?? 0)]" in html
 
 
+def test_monitoring_web_renders_memory_trace_panel() -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    class _Runtime:
+        def snapshot(self):
+            return {"node_id": "honjia", "degradation_mode": "normal", "capabilities": {}, "organs": {}}
+
+        def recent_events(self):
+            return []
+
+        def latest_visual_frame_path(self):
+            return None
+
+    class _CognitiveRuntime:
+        def snapshot(self):
+            return {
+                "current": {
+                    "memory_traces": [
+                        {
+                            "schema": "eibrain.memory.closed_loop_trace.v1",
+                            "round_id": "round-web",
+                            "recall": {"count": 1, "items": [{"query": "偏好", "summary": "short"}]},
+                            "writeback": {"count": 1, "items": [{"status": "ok", "diagnostics": {"record_id": "mem_web"}}]},
+                            "errors": [],
+                        }
+                    ]
+                }
+            }
+
+    server = MonitoringWebServer(runtime=_Runtime(), cognitive_runtime=_CognitiveRuntime(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.port}/metrics.json") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}") as response:
+            html = response.read().decode("utf-8")
+    finally:
+        server.stop()
+
+    assert payload["memory_trace_panel"]["count"] == 1
+    assert payload["memory_trace_panel"]["latest"]["round_id"] == "round-web"
+    assert "Memory trace" in html
+    assert "memory-trace-summary" in html
+    assert "memory-trace-events" in html
+    assert "function renderMemoryTrace(report)" in html
+
+
 def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
     from apps.operator_console.web import MonitoringWebServer
 

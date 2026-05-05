@@ -262,6 +262,64 @@ def test_operator_console_exposes_memory_ownership_diagnostics() -> None:
     assert memory["last_query"] == "介绍下你自己"
 
 
+def test_operator_console_exposes_realtime_memory_traces_for_monitoring() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    trace = {
+        "schema": "eibrain.memory.closed_loop_trace.v1",
+        "round_id": "round-42",
+        "session_id": "session-1",
+        "actor_id": "darrow",
+        "recall": {
+            "count": 1,
+            "items": [
+                {
+                    "query": "用户偏好简短回复",
+                    "summary": "Prefer short spoken replies.",
+                    "selected_count": 1,
+                    "selected_records": [{"record_id": "mem_1", "title": "Reply style", "source": "eibrain.preference"}],
+                    "source_composition": {"eibrain.preference": 1},
+                }
+            ],
+        },
+        "writeback": {
+            "count": 1,
+            "items": [
+                {
+                    "status": "ok",
+                    "summary": "用户偏好更短的语音回复。",
+                    "source": "eibrain.semantic_candidate",
+                    "memory_type": "semantic_candidate",
+                    "diagnostics": {"record_id": "mem_2"},
+                }
+            ],
+        },
+        "errors": [],
+    }
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={"current": {"memory_traces": [trace]}, "scheduler": {"memory_trace_count": 1}},
+        traces=[],
+    )
+
+    memory = report["memory_diagnostics"]
+    panel = report["memory_trace_panel"]
+
+    assert memory["memory_trace_count"] == 1
+    assert memory["latest_trace_round_id"] == "round-42"
+    assert memory["selected_count"] == 1
+    assert memory["selected_records"][0]["record_id"] == "mem_1"
+    assert memory["last_writeback"]["record_id"] == "mem_2"
+    assert panel["count"] == 1
+    assert panel["latest"]["round_id"] == "round-42"
+    assert panel["latest"]["recall_count"] == 1
+    assert panel["latest"]["writeback_count"] == 1
+    assert panel["latest"]["error_count"] == 0
+    assert panel["items"][0]["recall_items"][0]["query"] == "用户偏好简短回复"
+    assert panel["items"][0]["writeback_items"][0]["record_id"] == "mem_2"
+
+
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

@@ -82,7 +82,11 @@ class OperatorConsoleApp:
             cognitive_snapshot=cognitive_snapshot,
         )
         neck_control_diagnostics = self._build_neck_control_diagnostics(body_snapshot=body_snapshot)
-        memory_diagnostics = self._build_memory_diagnostics(cognitive_snapshot)
+        memory_trace_panel = self._build_memory_trace_panel(cognitive_snapshot)
+        memory_diagnostics = self._build_memory_diagnostics(
+            cognitive_snapshot,
+            memory_trace_panel=memory_trace_panel,
+        )
         summary = self._build_summary(
             capabilities=capabilities,
             warnings=warnings,
@@ -108,6 +112,7 @@ class OperatorConsoleApp:
             "dialogue_diagnostics": dialogue_diagnostics,
             "neck_control_diagnostics": neck_control_diagnostics,
             "memory_diagnostics": memory_diagnostics,
+            "memory_trace_panel": memory_trace_panel,
             "organ_cards": organ_cards,
             "latency_metrics": latency_metrics,
             "event_breakdown": self._build_event_breakdown(traces),
@@ -822,10 +827,20 @@ class OperatorConsoleApp:
         }
 
     @classmethod
-    def _build_memory_diagnostics(cls, cognitive_snapshot: dict[str, object]) -> dict[str, object]:
+    def _build_memory_diagnostics(
+        cls,
+        cognitive_snapshot: dict[str, object],
+        *,
+        memory_trace_panel: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         diagnostics = cognitive_snapshot.get("memory_diagnostics", {})
         if not isinstance(diagnostics, dict):
             diagnostics = {}
+        if memory_trace_panel is None:
+            memory_trace_panel = cls._build_memory_trace_panel(cognitive_snapshot)
+        latest_trace = memory_trace_panel.get("latest", {}) if isinstance(memory_trace_panel, dict) else {}
+        if not isinstance(latest_trace, dict):
+            latest_trace = {}
         recall = cls._first_dict(
             diagnostics,
             cognitive_snapshot,
@@ -879,6 +894,8 @@ class OperatorConsoleApp:
                 default=[],
             )
         )
+        if not selected_records:
+            selected_records = cls._as_record_list(latest_trace.get("selected_records", []))
         source_composition = cls._normalize_source_composition(
             cls._first_present(
                 diagnostics,
@@ -889,12 +906,17 @@ class OperatorConsoleApp:
             ),
             selected_records=selected_records,
         )
+        if not source_composition and isinstance(latest_trace.get("source_composition"), dict):
+            source_composition = cls._normalize_source_composition(
+                latest_trace.get("source_composition"),
+                selected_records=selected_records,
+            )
         selected_count = cls._first_present(
             diagnostics,
             recall,
             cognitive_snapshot,
             keys=("selected_count", "recall_selected_count"),
-            default=len(selected_records),
+            default=latest_trace.get("selected_count", len(selected_records)),
         )
         if not isinstance(selected_count, int):
             selected_count = len(selected_records)
@@ -906,8 +928,11 @@ class OperatorConsoleApp:
                 default={},
             )
         )
+        if not last_writeback and isinstance(latest_trace.get("latest_writeback"), dict):
+            last_writeback = cls._normalize_writeback(latest_trace.get("latest_writeback"))
+        memory_trace_count = int(memory_trace_panel.get("count", 0)) if isinstance(memory_trace_panel, dict) else 0
         return {
-            "enabled": bool(diagnostics or recall or query or task_context or selected_records or source_composition or last_writeback),
+            "enabled": bool(diagnostics or recall or query or task_context or selected_records or source_composition or last_writeback or memory_trace_count),
             "provider": cls._first_present(
                 diagnostics,
                 cognitive_snapshot,
@@ -948,7 +973,123 @@ class OperatorConsoleApp:
             "selected_records": selected_records,
             "source_composition": source_composition,
             "last_writeback": last_writeback,
+            "memory_trace_count": memory_trace_count,
+            "latest_trace_round_id": latest_trace.get("round_id", ""),
+            "latest_trace_status": latest_trace.get("status", ""),
+            "latest_trace": latest_trace,
         }
+
+    @classmethod
+    def _build_memory_trace_panel(cls, cognitive_snapshot: dict[str, object]) -> dict[str, object]:
+        traces = [cls._normalize_memory_trace(trace) for trace in cls._extract_memory_traces(cognitive_snapshot)]
+        traces = [trace for trace in traces if trace]
+        scheduler = cognitive_snapshot.get("scheduler", {})
+        scheduler_count = 0
+        if isinstance(scheduler, dict) and isinstance(scheduler.get("memory_trace_count"), int):
+            scheduler_count = int(scheduler["memory_trace_count"])
+        count = max(len(traces), scheduler_count)
+        latest = traces[-1] if traces else {}
+        recent = list(reversed(traces[-5:]))
+        return {
+            "enabled": bool(count),
+            "count": count,
+            "latest": latest,
+            "items": recent,
+        }
+
+    @classmethod
+    def _extract_memory_traces(cls, cognitive_snapshot: dict[str, object]) -> list[dict[str, object]]:
+        containers: list[dict[str, object]] = [cognitive_snapshot]
+        for key in ("current", "memory_diagnostics"):
+            value = cognitive_snapshot.get(key, {})
+            if isinstance(value, dict):
+                containers.append(value)
+        traces: list[dict[str, object]] = []
+        for container in containers:
+            for key in ("memory_traces", "closed_loop_traces", "memory_trace_history"):
+                value = container.get(key)
+                if isinstance(value, list):
+                    traces.extend(dict(item) for item in value if isinstance(item, dict))
+        return traces
+
+    @classmethod
+    def _normalize_memory_trace(cls, trace: dict[str, object]) -> dict[str, object]:
+        recall = trace.get("recall", {})
+        if not isinstance(recall, dict):
+            recall = {}
+        writeback = trace.get("writeback", {})
+        if not isinstance(writeback, dict):
+            writeback = {}
+        recall_items = [cls._normalize_recall_trace_item(item) for item in cls._as_list(recall.get("items", []))]
+        recall_items = [item for item in recall_items if item]
+        writeback_items = [cls._normalize_writeback_trace_item(item) for item in cls._as_list(writeback.get("items", []))]
+        writeback_items = [item for item in writeback_items if item]
+        selected_records: list[dict[str, object]] = []
+        source_composition: dict[str, int] = {}
+        for item in recall_items:
+            selected_records.extend(cls._as_record_list(item.get("selected_records", [])))
+            for source, count in cls._normalize_source_composition(
+                item.get("source_composition", {}),
+                selected_records=[],
+            ).items():
+                source_composition[source] = source_composition.get(source, 0) + count
+        if not source_composition:
+            source_composition = cls._normalize_source_composition({}, selected_records=selected_records)
+        errors = cls._as_record_list(trace.get("errors", []))
+        recall_count = cls._trace_count(recall, fallback=len(recall_items))
+        writeback_count = cls._trace_count(writeback, fallback=sum(1 for item in writeback_items if item.get("status") != "skipped"))
+        error_count = len(errors)
+        latest_writeback = writeback_items[0] if writeback_items else {}
+        return {
+            "schema": trace.get("schema", ""),
+            "round_id": trace.get("round_id", ""),
+            "session_id": trace.get("session_id", ""),
+            "actor_id": trace.get("actor_id", ""),
+            "status": "error" if error_count else ("ok" if recall_count or writeback_count else "waiting"),
+            "recall_count": recall_count,
+            "writeback_count": writeback_count,
+            "error_count": error_count,
+            "selected_count": sum(int(item.get("selected_count", 0)) for item in recall_items if isinstance(item.get("selected_count"), int)),
+            "selected_records": selected_records,
+            "source_composition": source_composition,
+            "recall_items": recall_items,
+            "writeback_items": writeback_items,
+            "latest_writeback": latest_writeback,
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _trace_count(section: dict[str, object], *, fallback: int) -> int:
+        value = section.get("count")
+        return int(value) if isinstance(value, int) else fallback
+
+    @classmethod
+    def _normalize_recall_trace_item(cls, value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            return {}
+        selected_records = cls._as_record_list(value.get("selected_records", []))
+        return {
+            "query": value.get("query", ""),
+            "summary": value.get("summary", ""),
+            "selected_count": value.get("selected_count", len(selected_records)),
+            "selected_records": selected_records,
+            "source_composition": cls._normalize_source_composition(
+                value.get("source_composition", {}),
+                selected_records=selected_records,
+            ),
+        }
+
+    @classmethod
+    def _normalize_writeback_trace_item(cls, value: object) -> dict[str, object]:
+        if not isinstance(value, dict):
+            return {}
+        diagnostics = value.get("diagnostics", {})
+        if not isinstance(diagnostics, dict):
+            diagnostics = {}
+        normalized = cls._normalize_writeback({**diagnostics, **value})
+        normalized["record_id"] = value.get("record_id") or diagnostics.get("record_id") or normalized.get("record_id", "")
+        normalized["summary"] = value.get("summary", normalized.get("summary", ""))
+        return normalized
 
     @staticmethod
     def _build_neck_control_diagnostics(*, body_snapshot: dict[str, object]) -> dict[str, object]:
@@ -1090,11 +1231,21 @@ class OperatorConsoleApp:
     def _normalize_writeback(value: object) -> dict[str, object]:
         if not isinstance(value, dict):
             return {}
+        if not any(
+            value.get(key)
+            for key in ("source", "type", "memory_type", "status", "summary", "record_id", "modality", "organ")
+        ):
+            return {}
+        memory_type = value.get("memory_type") or value.get("type", "")
         return {
             "source": value.get("source", ""),
-            "type": value.get("type") or value.get("memory_type", ""),
+            "type": memory_type,
+            "memory_type": memory_type,
+            "modality": value.get("modality", ""),
+            "organ": value.get("organ", ""),
             "status": value.get("status", ""),
             "summary": value.get("summary", ""),
+            "record_id": value.get("record_id", ""),
             "updated_at_ts": value.get("updated_at_ts") or value.get("written_at_ts"),
         }
 
