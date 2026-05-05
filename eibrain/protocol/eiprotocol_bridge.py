@@ -9,6 +9,7 @@ from typing import Any
 from eiprotocol import EventEnvelope, PolicyState, SourceRef, TargetRef
 from eiprotocol.builders import (
     EventIdFactory,
+    build_event,
     build_dialogue_cancellation_applied_event,
     build_dialogue_fast_hypothesis_event,
     build_dialogue_stable_decision_event,
@@ -382,6 +383,88 @@ def scheduler_snapshot_to_eiprotocol_events(
             )
         )
         sequence += 1
+
+    for trace_index, trace in enumerate(_memory_trace_items(raw=raw, current=current, scheduler=scheduler)):
+        trace_round_id = _first_text(trace.get("roundId"), trace.get("round_id"), round_id)
+        trace_session_id = _first_text(trace.get("sessionId"), trace.get("session_id"), common["session_id"])
+        trace_schema = _first_text(trace.get("schema"), trace.get("trace_schema"))
+        trace_id = _first_text(trace.get("traceId"), trace.get("trace_id"), f"{trace_round_id}:memory:{trace_index}" if trace_round_id else "")
+        recall = _mapping_from_any(trace.get("recall")) or {}
+        recall_items = _mapping_items(recall.get("items"))
+        for recall_index, recall_item in enumerate(recall_items):
+            query = _first_text(recall_item.get("query"), recall_item.get("text"), recall_item.get("summary"))
+            results = _memory_trace_selected_records(recall_item)
+            if not query and not results:
+                continue
+            events.append(
+                build_event(
+                    ids=ids,
+                    name="ei.memory.recall.result",
+                    event_type="memory",
+                    source=brain_source,
+                    target=memory_target,
+                    content={
+                        "traceSchema": trace_schema,
+                        "traceRoundId": trace_round_id,
+                        "query": query,
+                        "summary": _first_text(recall_item.get("summary")),
+                        "selectedCount": _optional_int(recall_item.get("selectedCount", recall_item.get("selected_count")), fallback=len(results)),
+                        "sourceComposition": _dict_from(recall_item.get("sourceComposition", recall_item.get("source_composition"))),
+                        "results": results,
+                        "errors": _mapping_items(trace.get("errors")),
+                        "recallItem": recall_item,
+                    },
+                    sequence=sequence,
+                    session_id=trace_session_id,
+                    round_id=trace_round_id,
+                    trace_id=trace_id,
+                    correlation_id=_first_text(recall_item.get("correlationId"), recall_item.get("correlation_id"), trace_id),
+                    causation_id=_first_text(recall_item.get("causationId"), recall_item.get("causation_id")),
+                    time=time or DEFAULT_EVENT_TIME,
+                    priority="normal",
+                    ttl_ms=5000,
+                )
+            )
+            sequence += 1
+
+        writeback = _mapping_from_any(trace.get("writeback")) or {}
+        writeback_items = _mapping_items(writeback.get("items"))
+        for write_index, write_item in enumerate(writeback_items):
+            if _first_text(write_item.get("status")) == "skipped":
+                continue
+            memory_id = _memory_trace_writeback_id(write_item)
+            if not memory_id:
+                continue
+            events.append(
+                build_event(
+                    ids=ids,
+                    name="ei.memory.write.committed",
+                    event_type="memory",
+                    source=brain_source,
+                    target=memory_target,
+                    content={
+                        "memoryId": memory_id,
+                        "traceSchema": trace_schema,
+                        "traceRoundId": trace_round_id,
+                        "status": _first_text(write_item.get("status"), "ok"),
+                        "summary": _first_text(write_item.get("summary")),
+                        "source": _first_text(write_item.get("source")),
+                        "memoryType": _first_text(write_item.get("memoryType"), write_item.get("memory_type"), write_item.get("type")),
+                        "writebackIndex": write_index,
+                        "writeback": write_item,
+                    },
+                    sequence=sequence,
+                    session_id=trace_session_id,
+                    round_id=trace_round_id,
+                    trace_id=trace_id,
+                    correlation_id=_first_text(write_item.get("correlationId"), write_item.get("correlation_id"), trace_id),
+                    causation_id=_first_text(write_item.get("causationId"), write_item.get("causation_id")),
+                    time=time or DEFAULT_EVENT_TIME,
+                    priority="normal",
+                    ttl_ms=5000,
+                )
+            )
+            sequence += 1
 
     plan = _first_mapping(
         current,
@@ -1201,6 +1284,54 @@ def _prefetch_items(
         for item in candidates
         if _first_text(item.get("query"), item.get("text")) and _first_text(item.get("source"), item.get("kind"))
     ]
+
+
+def _memory_trace_items(
+    *,
+    raw: Mapping[str, Any],
+    current: Mapping[str, Any],
+    scheduler: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    traces: list[dict[str, Any]] = []
+    for source in (current, raw, scheduler):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("memory_traces", "closed_loop_traces", "memory_trace_history"):
+            traces.extend(_mapping_items(source.get(key)))
+    return traces
+
+
+def _memory_trace_selected_records(recall_item: Mapping[str, Any]) -> list[dict[str, Any]]:
+    records = _mapping_items(
+        recall_item.get("selectedRecords")
+        or recall_item.get("selected_records")
+        or recall_item.get("records")
+        or recall_item.get("results")
+    )
+    if records:
+        return records
+    memories = recall_item.get("relevant_memories")
+    if isinstance(memories, list):
+        return [
+            {"record_id": f"memory_{index + 1}", "summary": str(memory), "source": "unknown"}
+            for index, memory in enumerate(memories)
+            if memory not in (None, "")
+        ]
+    return []
+
+
+def _memory_trace_writeback_id(write_item: Mapping[str, Any]) -> str:
+    diagnostics = _mapping_from_any(write_item.get("diagnostics")) or {}
+    return _first_text(
+        write_item.get("memoryId"),
+        write_item.get("memory_id"),
+        write_item.get("recordId"),
+        write_item.get("record_id"),
+        diagnostics.get("memoryId"),
+        diagnostics.get("memory_id"),
+        diagnostics.get("recordId"),
+        diagnostics.get("record_id"),
+    )
 
 
 def _mapping_items(value: object) -> list[dict[str, Any]]:
