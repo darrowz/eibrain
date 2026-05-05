@@ -198,6 +198,26 @@ class _InterruptOnAckPublishBody(_Body):
             self.loop.request_interrupt(reason="test_barge_in_before_ack_dispatch")
 
 
+class _PlaybackBargeInBody(_Body):
+    def __init__(self, transcripts: list[str]) -> None:
+        super().__init__(transcripts)
+        self.speaking = True
+        self.probe_calls = []
+
+    def is_speaking(self) -> bool:
+        return self.speaking
+
+    def probe_barge_in(self, *, session_id: str, actor_id: str):
+        self.probe_calls.append({"session_id": session_id, "actor_id": actor_id})
+        return {"detected": True, "reason": "playback_vad"}
+
+    def dispatch_actions(self, actions):
+        self.dispatched.extend(actions)
+        if any(isinstance(action, StopSpeechAction) for action in actions):
+            self.speaking = False
+        return [type("Outcome", (), {"status": "ok"})()]
+
+
 def _start_loop(body: _Body, cognition: _Cognition, **kwargs):
     from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
 
@@ -336,6 +356,61 @@ def test_voice_dialogue_loop_processes_one_turn() -> None:
     assert body.voice_dialogue_state["last_completed_turn"]["stage_latency_ms"]["total"] >= 0
 
 
+def test_voice_dialogue_loop_updates_voice_chain_benchmark_after_completed_turns() -> None:
+    body = _Body(["你好", "继续说"])
+    cognition = _Cognition(reply="你好，我在。")
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: int(body.voice_dialogue_state.get("turn_count", 0) or 0) >= 2, timeout_s=2.0)
+    loop.stop()
+
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert benchmark["turnCount"] == body.voice_dialogue_state["turn_count"]
+    assert benchmark["roundLeakCount"] == 0
+    assert "asrFinalMs" in benchmark["metrics"]
+    assert "firstAudioMs" in benchmark["metrics"]
+    assert "interruptStopMs" not in benchmark["metrics"]
+    assert benchmark["bottleneck"]["field"] is not None
+    for trace in benchmark["recentTraces"]:
+        assert {"asrFinalMs", "firstAudioMs", "roundLeak"} <= set(trace)
+        assert "interruptStopMs" not in trace
+
+
+def test_voice_dialogue_loop_replaces_duplicate_voice_chain_trace_for_same_round_status() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime.turn import RealtimeTurnManager
+
+    body = _Body([])
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=_Cognition(),
+        realtime_turn_manager=RealtimeTurnManager(),
+        session_id="session-123",
+        actor_id="actor-456",
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+    turn = loop._start_round(reason="wake_ack")
+
+    loop._publish_state(
+        phase="idle",
+        last_status="wake_acknowledged",
+        turn=turn,
+        last_stage_latency_ms={"listen_asr": 10.0, "think": 20.0, "total": 30.0},
+    )
+    loop._publish_state(
+        phase="idle",
+        last_status="wake_acknowledged",
+        turn=turn,
+        last_stage_latency_ms={"listen_asr": 10.0, "think": 25.0, "total": 35.0},
+    )
+
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert benchmark["turnCount"] == 1
+    assert len(benchmark["recentTraces"]) == 1
+    assert benchmark["recentTraces"][0]["firstAudioMs"] == 35.0
+
+
 def test_voice_dialogue_loop_uses_streaming_facade_for_closed_loop_diagnostics() -> None:
     body = _Body(["你好"])
     cognition = _StreamingCognition(deltas=["你", "好"], reply="你好")
@@ -471,6 +546,27 @@ def test_voice_dialogue_loop_attaches_round_metadata_to_turn_lifecycle() -> None
     assert reply_update["last_completed_turn"]["cancellation_token"] == reply_update["cancellation_token"]
 
 
+def test_voice_dialogue_loop_detects_barge_in_while_speaking() -> None:
+    body = _PlaybackBargeInBody([""])
+    cognition = _Cognition()
+    loop = _start_loop(
+        body,
+        cognition,
+        initial_conversation_active=True,
+        session_id="session-123",
+        actor_id="actor-456",
+    )
+
+    _wait_until(lambda: any(isinstance(action, StopSpeechAction) for action in body.dispatched))
+    loop.stop()
+
+    assert body.probe_calls == [{"session_id": "session-123", "actor_id": "actor-456"}]
+    assert any(isinstance(action, StopSpeechAction) for action in body.dispatched)
+    interrupt_update = _first_update(body, last_status="interrupted")
+    assert interrupt_update["interruption"]["reason"] == "playback_vad"
+    assert not any(update.get("last_status") == "playback_active" for update in body.updates)
+
+
 def test_voice_dialogue_loop_request_interrupt_marks_round_and_tolerates_missing_stop_support() -> None:
     from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
     from eibrain.cognition.realtime.turn import RealtimeTurnManager
@@ -501,6 +597,36 @@ def test_voice_dialogue_loop_request_interrupt_marks_round_and_tolerates_missing
     assert interrupt_update["interrupt_to_tts_stop_ms"] is None
     assert interrupt_update["tts_stop_confirmed"] is False
     assert interrupt_update["interruption"]["tts_stop_within_300ms"] is False
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert benchmark["turnCount"] == 1
+    assert "interruptStopMs" not in benchmark["metrics"]
+    assert "interruptStopMs" not in benchmark["recentTraces"][-1]
+    assert benchmark["recentTraces"][-1]["roundLeak"] is False
+
+
+def test_voice_dialogue_loop_request_interrupt_counts_confirmed_tts_stop_latency() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime.turn import RealtimeTurnManager
+
+    body = _Body([""])
+    cognition = _Cognition()
+    turn_manager = RealtimeTurnManager()
+    turn_manager.start_round(reason="test")
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=cognition,
+        realtime_turn_manager=turn_manager,
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+
+    loop.request_interrupt(reason="user_barge_in")
+
+    interrupt_update = _first_update(body, last_status="interrupted")
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert interrupt_update["tts_stop_confirmed"] is True
+    assert benchmark["metrics"]["interruptStopMs"]["count"] == 1
+    assert benchmark["recentTraces"][-1]["interruptStopMs"] == interrupt_update["interrupt_to_tts_stop_ms"]
 
 
 def test_voice_dialogue_loop_request_interrupt_surfaces_stop_failure() -> None:
@@ -585,6 +711,10 @@ def test_voice_dialogue_loop_does_not_dispatch_actions_from_stale_round() -> Non
     )
     stale_update = _first_update(body, last_status="stale_round_blocked")
     assert stale_update["stale_round"]["round_id"] != stale_update["current_round_id"]
+    benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    assert benchmark["roundLeakCount"] == 1
+    assert benchmark["recentTraces"][-1]["status"] == "stale_round_blocked"
+    assert benchmark["recentTraces"][-1]["roundLeak"] is True
 
 
 def test_voice_dialogue_loop_gates_real_actions_not_synthetic_plan() -> None:

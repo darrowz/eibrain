@@ -13,6 +13,7 @@ Completed:
 - Realtime cognitive scheduler with round id, cancellation token, lanes, blackboard state, and scheduler snapshots.
 - Fast think, memory prefetch, slow reasoner, response arbiter, interruption controller, persona runtime, emotion context, speech/action planner, and proactive activity manager modules.
 - Voice loop integration for ASR partial/final, microfeedback telemetry, interrupt cancellation chain, arbiter-gated speech/action dispatch, degraded reply status, and first-speech latency.
+- Voice chain second wave code-level closer: truthful ear telemetry field wiring, a voice-chain benchmark summary utility, and a playback-time barge-in probe/seam for interrupting during speech playback.
 - eiprotocol MVP events for realtime cognition, including emotion context, memory prefetch, speech/action plan, proactive activity, and cancellation-applied events.
 - eihead Web monitoring projection for voice realtime state, scheduler lanes, interruption, cancellation chain, speech/action plans, and latency gates.
 - Regression coverage across cognition, body runtime, eihead monitor, eiprotocol fixtures/builders/bridge, and standalone eiprotocol export.
@@ -20,8 +21,27 @@ Completed:
 Remaining non-code or hardware-gated work:
 
 - Honjia on-device soak validation with real microphone, speaker, camera, Hailo, and gimbal hardware.
+- U4K microphone echo validation, AEC/NS tuning, MiniMax TTS stop actual latency measurement, playback barge-in false-trigger-rate measurement, and continuous-dialogue first-packet latency measurement on honjia.
 - Runtime benchmark tuning against the target metrics under live network and MiniMax/Qwen provider latency.
 - Real video inference and continuous visual tracking are still planned as the next dedicated hardware phase.
+
+## Voice Chain Second Wave Boundary
+
+This wave makes the honjia voice chain code-level closer to a JoyInside-like realtime experience, but it is not an on-device AEC/free-conversation validation signoff. The completed scope is:
+
+- Truthful ear telemetry: monitoring can now report capture, ASR decode, and ASR elapsed timing from the ear processor instead of optimistic or mismatched fields.
+- Voice-chain benchmark: offline trace summaries can expose ASR final, first token, first audio, interrupt stop, round leak, p95, threshold, and bottleneck signals.
+- Playback-time barge-in probe/seam: the loop has a hook for detecting user speech while TTS playback is active and requesting interrupt without dispatching stale replies.
+- Monitor semantics: benchmark `turnCount` counts retained terminal traces after `(roundId, status)` de-duplication, while `roundLeakCount` specifically flags stale-round leakage. Unconfirmed TTS stop attempts remain visible as interruption events but do not create fake `interruptStopMs` latency.
+
+Hardware validation required before claiming live JoyInside-equivalent behavior:
+
+- U4K microphone echo under honjia speaker playback.
+- AEC/NS effectiveness in the real room and device placement.
+- MiniMax TTS stop actual latency from interrupt request to audible stop.
+- False trigger rate for playback-time barge-in under household noise, TTS self-leak, and normal operator movement.
+- Continuous-dialogue first-packet latency across repeated turns, not only isolated offline traces.
+- Capture-backend timing on honjia, especially any backend that lacks `read_voice_window` and can only expose chunk-based probing.
 
 ## Ten Audit Rounds
 

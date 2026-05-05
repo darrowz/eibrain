@@ -89,6 +89,10 @@ The listener is configured in `monitoring.host` / `monitoring.port`.
 
 For the current honxin split-port deployment, keep `18080` for the proxy and run the local monitor on `18081` using `config/eibrain.honjia.local.yaml` plus `deploy/systemd/eibrain-monitor.service`.
 
+## Voice Chain Validation Boundary
+
+The second-wave voice-chain work is a code-level closer: truthful ear telemetry, a voice-chain benchmark, and a playback-time barge-in probe/seam are documented for honjia. Hardware validation is still required before calling the live experience JoyInside-equivalent, including U4K microphone echo, AEC/NS quality, MiniMax TTS stop latency, false-trigger rate, and continuous-dialogue first-packet latency.
+
 ## Model Defaults
 
 - text LLM defaults to `MiniMax-M2.7-highspeed`

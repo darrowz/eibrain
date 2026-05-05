@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from array import array
 import time
 
 from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
@@ -68,6 +69,40 @@ def test_voice_realtime_exports_native_payload_consumed_by_eihead_monitoring() -
     assert consumed["latency"]["stage_latency_ms"]["llm"] == 390.0
     assert consumed["latency"]["total_ms"] == 710.0
     assert consumed["last_turn"] == {"transcript": "hello honjia", "reply": "hello"}
+
+
+def test_voice_realtime_exposes_voice_chain_benchmark_in_dialogue_payload() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eihead.monitoring.voice import build_voice_diagnostics_from_app
+
+    benchmark = {
+        "turnCount": 2,
+        "roundLeakCount": 0,
+        "roundLeakRate": 0.0,
+        "metrics": {
+            "asrFinalMs": {"count": 2, "avg": 120.0, "p95": 140.0, "threshold": 800.0, "pass": True},
+            "firstAudioMs": {"count": 2, "avg": 420.0, "p95": 450.0, "threshold": 2000.0, "pass": True},
+            "interruptStopMs": {"count": 2, "avg": 0.0, "p95": 0.0, "threshold": 300.0, "pass": True},
+        },
+        "bottleneck": {"field": "firstAudioMs", "label": "first_audio", "p95": 450.0, "threshold": 2000.0, "ratio": 0.225},
+    }
+    runtime = BodyRuntimeApp()
+    runtime.update_voice_dialogue_state(
+        enabled=True,
+        running=True,
+        phase="idle",
+        last_status="reply_ready",
+        last_completed_turn={"transcript": "hello", "reply": "hello"},
+        last_stage_latency_ms={"listen_asr": 100.0, "think": 200.0, "speak": 50.0, "total": 350.0},
+        voice_chain_benchmark=benchmark,
+    )
+
+    payload = runtime.voice_realtime()
+    consumed = build_voice_diagnostics_from_app(runtime, timestamp=126.0)
+
+    assert payload["dialogue"]["voice_chain_benchmark"] == benchmark
+    assert payload["voice_dialogue"]["voice_chain_benchmark"] == benchmark
+    assert consumed["observation"]["dialogue"]["voice_chain_benchmark"] == benchmark
 
 
 def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_chain() -> None:
@@ -248,6 +283,86 @@ def test_request_voice_interrupt_failure_keeps_busy_gate_truthful() -> None:
     assert runtime.voice_dialogue_state["last_status"] == "interrupt_degraded"
 
 
+def test_probe_barge_in_detects_short_voice_window_and_records_event() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.ear_processor = _ProbeEarProcessor([_pcm_chunk(12000)])
+
+    result = runtime.probe_barge_in(session_id="session-1", actor_id="user-1")
+
+    assert result["detected"] is True
+    assert result["status"] == "detected"
+    assert result["reason"] == "voice_activity_above_threshold"
+    assert result["rms_level"] > 0.015
+    assert result["capture_elapsed_ms"] >= 0.0
+    event = runtime.recent_events()[-1]
+    assert event["kind"] == "voice_barge_in_probe"
+    assert event["source"] == "body_runtime.voice_barge_in_probe"
+    assert event["status"] == "detected"
+    assert event["session_id"] == "session-1"
+    assert event["details"]["actor_id"] == "user-1"
+    assert event["details"]["detected"] is True
+
+
+def test_probe_barge_in_uses_low_latency_voice_window_budget() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.ear_processor = _ProbeEarProcessor([_pcm_chunk(12000)])
+
+    runtime.probe_barge_in(session_id="session-1", actor_id="user-1")
+
+    capture = runtime.ear_processor.capture
+    assert capture.last_max_duration_s <= 0.25
+
+
+def test_probe_barge_in_ignores_low_rms_window() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.ear_processor = _ProbeEarProcessor([_pcm_chunk(1)])
+
+    result = runtime.probe_barge_in(session_id="session-1", actor_id="user-1")
+
+    assert result["detected"] is False
+    assert result["status"] == "clear"
+    assert result["reason"] == "below_threshold"
+    assert result["rms_level"] < 0.015
+    assert runtime.recent_events()[-1]["kind"] == "voice_barge_in_probe"
+    assert runtime.recent_events()[-1]["details"]["detected"] is False
+
+
+def test_probe_barge_in_returns_false_without_audio_chunks() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+    runtime.ear_processor = _ProbeEarProcessor([])
+
+    result = runtime.probe_barge_in(session_id="session-1", actor_id="user-1")
+
+    assert result["detected"] is False
+    assert result["status"] == "no_audio"
+    assert result["reason"] == "no_audio_captured"
+    assert result["rms_level"] == 0.0
+    assert result["dbfs"] == -120.0
+    assert runtime.recent_events()[-1]["status"] == "no_audio"
+
+
+def test_probe_barge_in_reports_not_wired_when_ear_processor_cannot_be_built() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    runtime = BodyRuntimeApp()
+
+    result = runtime.probe_barge_in(session_id="session-1", actor_id="user-1")
+
+    assert result["detected"] is False
+    assert result["status"] == "not_wired"
+    assert "ear organ not configured" in result["reason"]
+    assert runtime.recent_events()[-1]["kind"] == "voice_barge_in_probe"
+    assert runtime.recent_events()[-1]["status"] == "not_wired"
+
+
 def test_voice_realtime_stopped_dialogue_with_history_is_not_fake_wired() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
 
@@ -270,6 +385,61 @@ def test_voice_realtime_stopped_dialogue_with_history_is_not_fake_wired() -> Non
     assert payload["dialogue"]["state"] == "not_wired"
     assert payload["dialogue"]["status"] == "stopped"
     assert "historical" in payload["dialogue"]["readiness_message"]
+
+
+def test_ear_processor_event_reports_processor_latency_fields() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _EarProcessor:
+        capture = object()
+        recognizer = object()
+        last_capture_elapsed_ms = 12.5
+        last_decode_elapsed_ms = 34.5
+        last_transcribe_elapsed_ms = 56.5
+
+        def transcribe_window(self, *, chunk_count: int, session_id: str, actor_id: str) -> AudioTranscriptFinal:
+            return AudioTranscriptFinal(
+                ts=1.0,
+                source="ear.asr",
+                text=f"heard {chunk_count}",
+                session_id=session_id,
+                actor_id=actor_id,
+            )
+
+    runtime = BodyRuntimeApp()
+    runtime.ear_processor = _EarProcessor()
+
+    runtime.transcribe_audio_window(chunk_count=3, session_id="session-1", actor_id="user-1")
+
+    details = runtime.recent_events()[-1]["details"]
+    assert details["capture_elapsed_ms"] == 12.5
+    assert details["asr_decode_elapsed_ms"] == 34.5
+    assert details["asr_elapsed_ms"] == 56.5
+
+
+def _pcm_chunk(level: int, *, sample_count: int = 160) -> bytes:
+    return array("h", [level] * sample_count).tobytes()
+
+
+class _ProbeEarProcessor:
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.capture = _ProbeCapture(chunks)
+        self.recognizer = object()
+
+
+class _ProbeCapture:
+    sample_rate = 16000
+    channels = 1
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self.chunks = list(chunks)
+        self.last_chunks: list[bytes] = []
+
+    def read_voice_window(self, max_duration_s: int) -> list[bytes]:
+        self.last_max_duration_s = max_duration_s
+        self.last_chunks = list(self.chunks)
+        return list(self.chunks)
 
 
 class _HealthyEar:

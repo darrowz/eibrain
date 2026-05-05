@@ -10,6 +10,7 @@ from typing import Any
 from typing import TYPE_CHECKING, Iterable
 
 from apps.body_runtime.app import BodyRuntimeApp
+from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
 from eibrain.cognition.realtime import (
     FastThinkEngine,
     InterruptionController,
@@ -35,6 +36,19 @@ _ACTION_CAPABILITY_BY_KIND = {
     "play_speech_action": "speech.play",
     "stop_speech_action": "speech.stop",
     "move_head_action": "head.move",
+}
+_VOICE_CHAIN_BENCHMARK_TRACE_LIMIT = 20
+_VOICE_CHAIN_BENCHMARK_TERMINAL_STATUSES = {
+    "reply_ready",
+    "reply_degraded",
+    "no_reply",
+    "no_transcript",
+    "waiting_for_wake_word",
+    "wake_acknowledged",
+    "sleep_acknowledged",
+    "short_transcript_ignored",
+    "interrupted",
+    "stale_round_blocked",
 }
 
 
@@ -276,6 +290,7 @@ class VoiceDialogueLoop:
         self._interrupted_round_count = 0
         self._last_microfeedback: dict[str, object] | None = None
         self._realtime_session: object | None = None
+        self._voice_chain_benchmark_traces: list[dict[str, object]] = []
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -522,6 +537,122 @@ class VoiceDialogueLoop:
             "realtime_latency_ms": latency_ms,
         }
 
+    def _voice_chain_benchmark_for_payload(self, payload: dict[str, object]) -> dict[str, object] | None:
+        trace = self._voice_chain_trace_from_payload(payload)
+        if trace is None:
+            return None
+        trace_key = self._voice_chain_trace_key(trace)
+        if trace_key is None:
+            self._voice_chain_benchmark_traces.append(trace)
+        else:
+            for index, existing in enumerate(self._voice_chain_benchmark_traces):
+                if self._voice_chain_trace_key(existing) == trace_key:
+                    self._voice_chain_benchmark_traces[index] = trace
+                    break
+            else:
+                self._voice_chain_benchmark_traces.append(trace)
+        if len(self._voice_chain_benchmark_traces) > _VOICE_CHAIN_BENCHMARK_TRACE_LIMIT:
+            del self._voice_chain_benchmark_traces[:-_VOICE_CHAIN_BENCHMARK_TRACE_LIMIT]
+        summary = summarize_voice_chain(self._voice_chain_benchmark_traces)
+        summary["traceLimit"] = _VOICE_CHAIN_BENCHMARK_TRACE_LIMIT
+        summary["recentTraces"] = [dict(item) for item in self._voice_chain_benchmark_traces]
+        return summary
+
+    @staticmethod
+    def _voice_chain_trace_key(trace: dict[str, object]) -> tuple[str, str] | None:
+        round_id = str(trace.get("roundId") or "")
+        status = str(trace.get("status") or "")
+        if not round_id or not status:
+            return None
+        return round_id, status
+
+    def _voice_chain_trace_from_payload(self, payload: dict[str, object]) -> dict[str, object] | None:
+        status = str(payload.get("last_status") or "").lower()
+        if status not in _VOICE_CHAIN_BENCHMARK_TERMINAL_STATUSES:
+            return None
+        stage_latency_ms = self._numeric_mapping(payload.get("last_stage_latency_ms"))
+        if not stage_latency_ms:
+            stage_latency_ms = {
+                key: round(value * 1000.0, 3)
+                for key, value in self._numeric_mapping(payload.get("last_latency_s")).items()
+            }
+        realtime_latency_ms = self._numeric_mapping(payload.get("realtime_latency_ms"))
+        interruption = payload.get("interruption")
+        interruption_payload = interruption if isinstance(interruption, dict) else {}
+        tts_stop_confirmed = bool(payload.get("tts_stop_confirmed") or interruption_payload.get("tts_stop_confirmed"))
+        interrupt_stop_ms = (
+            self._first_number(
+                payload.get("interrupt_to_tts_stop_ms"),
+                interruption_payload.get("interrupt_to_tts_stop_ms"),
+            )
+            if tts_stop_confirmed
+            else None
+        )
+        interrupted = status == "interrupted" or bool(payload.get("interrupt_active"))
+        stale_round_payload = payload.get("stale_round")
+        round_leak = status == "stale_round_blocked" or isinstance(stale_round_payload, dict)
+        if not stage_latency_ms and not realtime_latency_ms and interrupt_stop_ms is None and not round_leak and not interrupted:
+            return None
+        asr_final_ms = self._first_number(
+            realtime_latency_ms.get("final_asr"),
+            realtime_latency_ms.get("asr_final"),
+            stage_latency_ms.get("listen_asr"),
+            stage_latency_ms.get("asr"),
+        )
+        first_audio_ms = self._first_number(
+            realtime_latency_ms.get("first_speech"),
+            realtime_latency_ms.get("first_audio"),
+            realtime_latency_ms.get("firstAudioMs"),
+            stage_latency_ms.get("first_audio"),
+            stage_latency_ms.get("firstAudioMs"),
+        )
+        if first_audio_ms is None and ("listen_asr" in stage_latency_ms or "think" in stage_latency_ms):
+            first_audio_ms = stage_latency_ms.get("listen_asr", 0.0) + stage_latency_ms.get("think", 0.0)
+        if first_audio_ms is None:
+            first_audio_ms = self._first_number(stage_latency_ms.get("total"))
+        trace: dict[str, object] = {
+            "roundId": payload.get("round_id") or payload.get("current_round_id") or "",
+            "cancellationToken": payload.get("cancellation_token") or payload.get("current_cancellation_token") or "",
+            "status": payload.get("last_status") or "",
+            "interrupted": interrupted,
+            "roundLeak": round_leak,
+        }
+        if asr_final_ms is not None:
+            trace["asrFinalMs"] = asr_final_ms
+        if first_audio_ms is not None:
+            trace["firstAudioMs"] = first_audio_ms
+        if interrupt_stop_ms is not None:
+            trace["interruptStopMs"] = interrupt_stop_ms
+        return trace
+
+    @staticmethod
+    def _numeric_mapping(value: object) -> dict[str, float]:
+        if not isinstance(value, dict):
+            return {}
+        result: dict[str, float] = {}
+        for key, item in value.items():
+            number = VoiceDialogueLoop._number_or_none(item)
+            if number is not None:
+                result[str(key)] = number
+        return result
+
+    @staticmethod
+    def _first_number(*values: object) -> float | None:
+        for value in values:
+            number = VoiceDialogueLoop._number_or_none(value)
+            if number is not None:
+                return number
+        return None
+
+    @staticmethod
+    def _number_or_none(value: object) -> float | None:
+        if isinstance(value, bool):
+            return None
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return None
+
     @staticmethod
     def _closed_loop_state(
         snapshot: dict[str, object],
@@ -697,6 +828,16 @@ class VoiceDialogueLoop:
             return first_status, error
         return "not_supported", ""
 
+    def _maybe_interrupt_during_playback(self) -> bool:
+        probe = getattr(self.body_runtime, "probe_barge_in", None)
+        if not callable(probe):
+            return False
+        result = probe(session_id=self.session_id, actor_id=self.actor_id)
+        if isinstance(result, dict) and result.get("detected"):
+            self.request_interrupt(reason=str(result.get("reason") or "playback_barge_in"))
+            return True
+        return False
+
     def _actions_allowed_for_turn(
         self,
         turn: TurnBlackboard,
@@ -815,6 +956,9 @@ class VoiceDialogueLoop:
         if last_status not in {"interrupted", "stale_round_blocked"}:
             payload.setdefault("interrupt_active", False)
         payload.update(updates)
+        benchmark = self._voice_chain_benchmark_for_payload(payload)
+        if benchmark is not None:
+            payload["voice_chain_benchmark"] = benchmark
         payload.setdefault("last_reply", self.body_runtime.voice_dialogue_state.get("last_reply", ""))
         self.body_runtime.update_voice_dialogue_state(**payload)
 
@@ -1047,6 +1191,8 @@ class VoiceDialogueLoop:
         while not self._stop_event.is_set():
             try:
                 if self.body_runtime.is_speaking():
+                    if self._maybe_interrupt_during_playback():
+                        continue
                     self._publish_state(
                         phase="speaking",
                         last_status="playback_active",

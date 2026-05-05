@@ -24,6 +24,11 @@ from eibrain.protocol.actions import Action, MoveHeadAction
 from eibrain.protocol.observations import AudioTranscriptFinal
 
 
+_DEFAULT_BARGE_IN_PROBE_WINDOW_S = 0.25
+_MIN_BARGE_IN_PROBE_WINDOW_S = 0.05
+_MAX_BARGE_IN_PROBE_WINDOW_S = 0.5
+
+
 class BodyRuntimeApp:
     def __init__(self, *, config: EIBrainConfig | None = None) -> None:
         self.config = config or EIBrainConfig()
@@ -294,6 +299,159 @@ class BodyRuntimeApp:
     def is_speaking(self) -> bool:
         return time.time() < self._speech_busy_until
 
+    def probe_barge_in(self, *, session_id: str, actor_id: str) -> dict[str, object]:
+        if self.ear_processor is None:
+            try:
+                self.ear_processor = self.build_default_ear_processor()
+            except Exception as exc:  # pragma: no cover - defensive runtime boundary
+                result = {
+                    "detected": False,
+                    "status": "not_wired",
+                    "reason": str(exc),
+                    "session_id": session_id,
+                    "actor_id": actor_id,
+                    "rms_level": 0.0,
+                    "dbfs": -120.0,
+                    "capture_elapsed_ms": 0.0,
+                }
+                self.record_runtime_event(
+                    kind="voice_barge_in_probe",
+                    source="body_runtime.voice_barge_in_probe",
+                    status="not_wired",
+                    session_id=session_id,
+                    details=result,
+                )
+                return result
+
+        capture = getattr(self.ear_processor, "capture", None)
+        if capture is None:
+            result = {
+                "detected": False,
+                "status": "not_wired",
+                "reason": "ear_processor capture is not wired",
+                "session_id": session_id,
+                "actor_id": actor_id,
+                "rms_level": 0.0,
+                "dbfs": -120.0,
+                "capture_elapsed_ms": 0.0,
+            }
+            self.record_runtime_event(
+                kind="voice_barge_in_probe",
+                source="body_runtime.voice_barge_in_probe",
+                status="not_wired",
+                session_id=session_id,
+                details=result,
+            )
+            return result
+
+        probe_window_s = float(
+            getattr(capture, "barge_in_probe_duration_s", _DEFAULT_BARGE_IN_PROBE_WINDOW_S)
+            or _DEFAULT_BARGE_IN_PROBE_WINDOW_S
+        )
+        probe_window_s = min(
+            _MAX_BARGE_IN_PROBE_WINDOW_S,
+            max(_MIN_BARGE_IN_PROBE_WINDOW_S, probe_window_s),
+        )
+        capture_reader = getattr(capture, "read_voice_window", None)
+        capture_method = "read_voice_window"
+        capture_arg: float | int = probe_window_s
+        if not callable(capture_reader):
+            capture_reader = getattr(capture, "read_window", None)
+            capture_method = "read_window"
+            capture_arg = probe_window_s
+        if not callable(capture_reader):
+            capture_reader = getattr(capture, "read_chunks", None)
+            capture_method = "read_chunks"
+            capture_arg = 1
+        if not callable(capture_reader):
+            result = {
+                "detected": False,
+                "status": "not_wired",
+                "reason": "ear capture has no readable audio window",
+                "session_id": session_id,
+                "actor_id": actor_id,
+                "rms_level": 0.0,
+                "dbfs": -120.0,
+                "capture_elapsed_ms": 0.0,
+            }
+            self.record_runtime_event(
+                kind="voice_barge_in_probe",
+                source="body_runtime.voice_barge_in_probe",
+                status="not_wired",
+                session_id=session_id,
+                details=result,
+            )
+            return result
+
+        started = time.perf_counter()
+        try:
+            chunks = list(capture_reader(capture_arg))
+        except Exception as exc:  # pragma: no cover - hardware/runtime boundary
+            elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+            result = {
+                "detected": False,
+                "status": "capture_error",
+                "reason": str(exc),
+                "session_id": session_id,
+                "actor_id": actor_id,
+                "rms_level": 0.0,
+                "dbfs": -120.0,
+                "capture_elapsed_ms": elapsed_ms,
+                "capture_method": capture_method,
+                "probe_window_s": probe_window_s,
+            }
+            self.record_runtime_event(
+                kind="voice_barge_in_probe",
+                source="body_runtime.voice_barge_in_probe",
+                status="capture_error",
+                session_id=session_id,
+                details=result,
+            )
+            return result
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 2)
+
+        channels = int(getattr(capture, "channels", 1) or 1)
+        stats = pcm_signal_stats(chunks, channels=channels)
+        rms_level = float(stats.get("rms_level", 0.0) or 0.0)
+        dbfs = float(stats.get("dbfs", -120.0) or -120.0)
+        voice_activity = bool(stats.get("voice_activity", False))
+        rms_threshold = max(0.015, float(getattr(capture, "vad_rms_threshold", 0.015) or 0.015))
+        dbfs_threshold = float(getattr(capture, "barge_in_min_dbfs", -42.0) or -42.0)
+        detected = bool(chunks) and voice_activity and rms_level >= rms_threshold and dbfs >= dbfs_threshold
+        status = "detected" if detected else ("no_audio" if not chunks else "clear")
+        reason = (
+            "voice_activity_above_threshold"
+            if detected
+            else ("no_audio_captured" if not chunks else "below_threshold")
+        )
+        result = {
+            "detected": detected,
+            "status": status,
+            "reason": reason,
+            "session_id": session_id,
+            "actor_id": actor_id,
+            "rms_level": rms_level,
+            "dbfs": dbfs,
+            "voice_activity": voice_activity,
+            "rms_threshold": rms_threshold,
+            "dbfs_threshold": dbfs_threshold,
+            "capture_elapsed_ms": elapsed_ms,
+            "capture_method": capture_method,
+            "probe_window_s": probe_window_s,
+            "chunk_count": len(chunks),
+            "payload_bytes": sum(len(chunk) for chunk in chunks),
+            "sample_rate": getattr(capture, "sample_rate", None),
+            "channels": channels,
+        }
+        self.record_runtime_event(
+            kind="voice_barge_in_probe",
+            source="body_runtime.voice_barge_in_probe",
+            status=status,
+            session_id=session_id,
+            details=result,
+        )
+        return result
+
     def _empty_transcript(self, *, session_id: str, actor_id: str, status: str) -> AudioTranscriptFinal:
         observation = AudioTranscriptFinal(
             ts=time.time(),
@@ -350,11 +508,11 @@ class BodyRuntimeApp:
                     "vad_threshold": getattr(capture, "last_vad_threshold", None),
                     "vad_noise_floor": getattr(capture, "last_vad_noise_floor", None),
                     "vad_error": getattr(capture, "last_vad_error", ""),
-                    "capture_elapsed_ms": getattr(capture, "last_capture_ms", None),
+                    "capture_elapsed_ms": getattr(self.ear_processor, "last_capture_elapsed_ms", None),
                     "capture_chunk_count": getattr(capture, "last_capture_chunk_count", None),
                     "captured_at_ts": time.time(),
-                    "asr_elapsed_ms": elapsed_ms,
-                    "asr_decode_elapsed_ms": getattr(self.ear_processor, "last_asr_decode_ms", None),
+                    "asr_elapsed_ms": getattr(self.ear_processor, "last_transcribe_elapsed_ms", elapsed_ms),
+                    "asr_decode_elapsed_ms": getattr(self.ear_processor, "last_decode_elapsed_ms", None),
                 },
             }
         )
