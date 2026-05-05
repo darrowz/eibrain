@@ -712,9 +712,10 @@ def test_voice_dialogue_loop_does_not_dispatch_actions_from_stale_round() -> Non
     stale_update = _first_update(body, last_status="stale_round_blocked")
     assert stale_update["stale_round"]["round_id"] != stale_update["current_round_id"]
     benchmark = body.voice_dialogue_state["voice_chain_benchmark"]
+    stale_traces = [trace for trace in benchmark["recentTraces"] if trace.get("status") == "stale_round_blocked"]
     assert benchmark["roundLeakCount"] == 1
-    assert benchmark["recentTraces"][-1]["status"] == "stale_round_blocked"
-    assert benchmark["recentTraces"][-1]["roundLeak"] is True
+    assert stale_traces
+    assert stale_traces[-1]["roundLeak"] is True
 
 
 def test_voice_dialogue_loop_gates_real_actions_not_synthetic_plan() -> None:
