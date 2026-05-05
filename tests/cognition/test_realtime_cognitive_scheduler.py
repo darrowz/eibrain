@@ -9,6 +9,8 @@ from eibrain.cognition.realtime import (
     RealtimeCognitiveScheduler,
     SlowReasoner,
 )
+from eibrain.cognition.realtime.memory import MemoryOrchestrator
+from eibrain.memory.contracts import MemoryResult
 
 
 def _clock():
@@ -198,3 +200,56 @@ def test_scheduler_interrupt_blocks_old_token_from_committing_stable_decision() 
     assert interrupt["start_new_round"]["round_id"] != old_round_id
     assert snapshot["history"][old_round_id]["cancellation"]["cancelled"] is True
     assert snapshot["history"][old_round_id]["stable_decisions"] == []
+
+
+def test_scheduler_explicitly_commits_memory_candidates_and_exposes_trace() -> None:
+    class MemorySpy:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.queries = []
+            self.episodes = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(
+                summary="User prefers concise replies.",
+                relevant_memories=["Preference: concise replies"],
+                recall_diagnostics={"selected_count": 1},
+            )
+
+        def remember_episode(self, **kwargs):
+            self.episodes.append(dict(kwargs))
+            self.last_writeback_status = {"status": "ok", "source": kwargs.get("source")}
+
+    memory = MemorySpy()
+    scheduler = RealtimeCognitiveScheduler(
+        clock=_clock(),
+        memory_orchestrator=MemoryOrchestrator(memory_service=memory),
+    )
+    scheduler.observe_partial("帮我记一下")
+    turn = scheduler.current_turn()
+    assert turn is not None
+    scheduler.memory_orchestrator.build_recall_request(
+        turn,
+        query="用户偏好简短回复",
+        reason="prefetch_context_for_fast_lane",
+    )
+    scheduler.memory_orchestrator.build_writeback_proposal(
+        turn,
+        query="用户要求记住简短回复偏好",
+        reason="user_explicit_memory_candidate",
+        summary="用户偏好简短回复。",
+        metadata={"memory_type": "semantic_candidate", "source": "eibrain.semantic_candidate"},
+    )
+
+    trace = scheduler.commit_memory_candidates(session_id="s1", actor_id="user-1")
+    snapshot = scheduler.snapshot()
+
+    assert trace["recall"]["count"] == 1
+    assert trace["writeback"]["count"] == 1
+    assert trace["errors"] == []
+    assert memory.queries[0].query == "用户偏好简短回复"
+    assert memory.episodes[0]["summary"] == "用户偏好简短回复。"
+    assert snapshot["current"]["memory_traces"] == [trace]
+    assert snapshot["scheduler"]["memory_trace_count"] == 1

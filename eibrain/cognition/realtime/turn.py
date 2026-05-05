@@ -49,6 +49,7 @@ class TurnBlackboard:
     intent_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     emotion_state: dict[str, Any] = field(default_factory=dict)
     memory_candidates: list[dict[str, Any]] = field(default_factory=list)
+    memory_traces: list[dict[str, Any]] = field(default_factory=list)
     tool_candidates: list[dict[str, Any]] = field(default_factory=list)
     persona_state: dict[str, Any] = field(default_factory=dict)
     safety_state: dict[str, Any] = field(default_factory=dict)

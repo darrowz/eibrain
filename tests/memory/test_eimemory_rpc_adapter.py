@@ -199,6 +199,8 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
         outcome={"success": True, "status": "planned", "action_count": 1},
     )
 
+    assert adapter.last_writeback_status["status"] == "ok"
+    assert adapter.last_writeback_status["record_id"] == "mem_1"
     assert captured["body"] == {
         "method": "memory.ingest",
         "params": {

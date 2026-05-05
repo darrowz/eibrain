@@ -11,6 +11,7 @@ from .activity import ProactiveActivityManager
 from .arbiter import ResponseArbiter
 from .fast import FastThinkEngine
 from .interruption import InterruptionController
+from .memory import MemoryOrchestrator
 from .slow import SlowReasoner
 from .turn import (
     RealtimeTurnManager,
@@ -34,6 +35,7 @@ class RealtimeCognitiveScheduler:
         activity_manager: ProactiveActivityManager | None = None,
         arbiter: ResponseArbiter | None = None,
         interruption_controller: InterruptionController | None = None,
+        memory_orchestrator: MemoryOrchestrator | None = None,
     ) -> None:
         self._clock = clock or time.time
         self.turn_manager = turn_manager or RealtimeTurnManager(clock=self._clock)
@@ -42,6 +44,7 @@ class RealtimeCognitiveScheduler:
         self.activity_manager = activity_manager or ProactiveActivityManager()
         self.arbiter = arbiter or ResponseArbiter()
         self.interruption_controller = interruption_controller or InterruptionController()
+        self.memory_orchestrator = memory_orchestrator or MemoryOrchestrator()
 
     def observe_partial(
         self,
@@ -226,6 +229,25 @@ class RealtimeCognitiveScheduler:
             reason=reason,
         )
 
+    def commit_memory_candidates(
+        self,
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
+        default_modality: str = "audio_text",
+        default_organ: str = "ear",
+    ) -> dict[str, Any]:
+        turn = self._active_turn(reason="memory_commit")
+        return self.memory_orchestrator.commit_candidates(
+            turn,
+            session_id=session_id,
+            actor_id=actor_id,
+            task_context=task_context,
+            default_modality=default_modality,
+            default_organ=default_organ,
+        )
+
     def snapshot(self) -> dict[str, Any]:
         payload = self.turn_manager.status_payload()
         current = payload.get("current") or {}
@@ -235,6 +257,7 @@ class RealtimeCognitiveScheduler:
             "fast_hypothesis_count": len(current.get("fast_hypotheses") or []),
             "stable_decision_count": len(current.get("stable_decisions") or []),
             "memory_candidate_count": len(current.get("memory_candidates") or []),
+            "memory_trace_count": len(current.get("memory_traces") or []),
         }
         return payload
 

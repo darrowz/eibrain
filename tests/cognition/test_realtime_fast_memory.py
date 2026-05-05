@@ -19,6 +19,7 @@ def _duck_turn() -> SimpleNamespace:
         fast_hypotheses=[],
         intent_hypotheses=[],
         memory_candidates=[],
+        memory_traces=[],
     )
 
 
@@ -143,3 +144,121 @@ def test_memory_orchestrator_builds_writeback_proposal_as_inert_candidate() -> N
     assert proposal["external_call"] is False
     assert proposal["requires_commit"] is True
     assert turn.memory_candidates == [proposal]
+
+
+def test_memory_orchestrator_commits_recall_and_writeback_candidates_with_trace() -> None:
+    from eibrain.memory.contracts import MemoryResult
+
+    class MemorySpy:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.queries = []
+            self.episodes = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(
+                summary="Prefer concise spoken replies.",
+                relevant_memories=["Reply Style: Prefer concise spoken replies."],
+                recall_diagnostics={
+                    "selected_count": 1,
+                    "selected_records": [{"record_id": "mem_1", "title": "Reply Style"}],
+                    "source_composition": {"eibrain.preference": 1},
+                },
+            )
+
+        def remember_episode(self, **kwargs):
+            self.episodes.append(dict(kwargs))
+            self.last_writeback_status = {
+                "status": "ok",
+                "source": kwargs.get("source"),
+                "memory_type": kwargs.get("memory_type"),
+            }
+
+    turn = _duck_turn()
+    memory = MemorySpy()
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    orchestrator.build_recall_request(
+        turn,
+        query="用户提到简短回复偏好",
+        channels=["voice"],
+        priority="realtime",
+        reason="prefetch_context_for_fast_lane",
+        metadata={"task_type": "brain.respond"},
+    )
+    orchestrator.build_writeback_proposal(
+        turn,
+        query="用户明确要求记住偏好",
+        channels=["voice"],
+        priority="normal",
+        reason="user_explicit_memory_candidate",
+        summary="用户偏好更短的语音回复。",
+        metadata={
+            "memory_type": "semantic_candidate",
+            "source": "eibrain.semantic_candidate",
+            "modality": "audio_text",
+            "organ": "ear",
+            "tags": ["semantic_candidate", "voice"],
+            "outcome": {"success": True, "status": "planned"},
+            "content": {"event_type": "dialogue"},
+            "meta": {"trace_id": "trace-memory-1", "identity_memory": False},
+        },
+    )
+
+    trace = orchestrator.commit_candidates(turn, session_id="s1", actor_id="user-1")
+
+    assert trace["schema"] == "eibrain.memory.closed_loop_trace.v1"
+    assert trace["round_id"] == "round-fast-1"
+    assert trace["external_call"] is True
+    assert trace["recall"]["count"] == 1
+    assert trace["recall"]["items"][0]["summary"] == "Prefer concise spoken replies."
+    assert trace["recall"]["items"][0]["selected_count"] == 1
+    assert trace["writeback"]["count"] == 1
+    assert trace["writeback"]["items"][0]["status"] == "ok"
+    assert trace["errors"] == []
+    assert memory.queries[0].query == "用户提到简短回复偏好"
+    assert memory.queries[0].session_id == "s1"
+    assert memory.queries[0].actor_id == "user-1"
+    assert memory.queries[0].task_context["task_type"] == "brain.respond"
+    assert memory.queries[0].task_context["reason"] == "prefetch_context_for_fast_lane"
+    assert memory.episodes[0]["summary"] == "用户偏好更短的语音回复。"
+    assert memory.episodes[0]["memory_type"] == "semantic_candidate"
+    assert memory.episodes[0]["source"] == "eibrain.semantic_candidate"
+    assert memory.episodes[0]["modality"] == "audio_text"
+    assert memory.episodes[0]["organ"] == "ear"
+    assert memory.episodes[0]["tags"] == ["semantic_candidate", "voice"]
+    assert turn.memory_traces == [trace]
+
+
+def test_memory_orchestrator_skips_non_committable_writeback_candidates() -> None:
+    class MemorySpy:
+        def __init__(self) -> None:
+            self.episodes = []
+
+        def remember_episode(self, **kwargs):
+            self.episodes.append(dict(kwargs))
+
+    turn = _duck_turn()
+    memory = MemorySpy()
+    proposal = MemoryOrchestrator(memory_service=memory).build_writeback_proposal(
+        turn,
+        query="短期工作记忆，不应持久化",
+        reason="working_memory_only",
+        summary="这只是本轮短期上下文。",
+        requires_commit=False,
+    )
+
+    trace = MemoryOrchestrator(memory_service=memory).commit_candidates(turn, session_id="s1")
+
+    assert proposal["requires_commit"] is False
+    assert memory.episodes == []
+    assert trace["writeback"]["items"] == [
+        {
+            "candidate_index": 0,
+            "kind": "writeback_proposal",
+            "status": "skipped",
+            "reason": "requires_commit_false",
+            "summary": "这只是本轮短期上下文。",
+        }
+    ]

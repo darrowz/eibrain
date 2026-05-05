@@ -90,7 +90,7 @@ class EIMemoryRPCAdapter:
         if links is not None:
             params["links"] = [dict(item) for item in links]
         try:
-            self._post_json(payload)
+            response = self._post_json(payload)
             self.last_writeback_status = self._writeback_status(
                 status="ok",
                 source=source,
@@ -99,6 +99,7 @@ class EIMemoryRPCAdapter:
                 organ=organ,
                 title=title or "Embodied episode",
                 meta=meta,
+                response=response,
             )
             self._observe_failed_outcome(
                 outcome=outcome,
@@ -319,6 +320,7 @@ class EIMemoryRPCAdapter:
         organ: str,
         title: str,
         meta: dict[str, object] | None,
+        response: dict[str, object] | None = None,
         error: str = "",
     ) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -331,6 +333,10 @@ class EIMemoryRPCAdapter:
         }
         if error:
             payload["error"] = error
+        result = dict((response or {}).get("result", {}) or {})
+        record_id = result.get("record_id") or result.get("id")
+        if record_id:
+            payload["record_id"] = str(record_id)
         metadata = dict(meta or {})
         for key in (
             "trace_id",
