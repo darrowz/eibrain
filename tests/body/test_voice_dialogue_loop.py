@@ -463,6 +463,8 @@ def test_voice_dialogue_loop_attaches_round_metadata_to_turn_lifecycle() -> None
 
     assert transcribed_update["scheduler_state"]["asr_final"] == "你好"
     assert transcribed_update["microfeedback"]["deadline_ms"] <= 500
+    assert 0 <= transcribed_update["microfeedback"]["elapsed_ms"] <= transcribed_update["microfeedback"]["deadline_ms"]
+    assert transcribed_update["microfeedback"]["within_deadline"] is True
     assert transcribed_update["microfeedback"]["text"]
     assert transcribed_update["last_transcript"] == "你好"
     assert reply_update["last_completed_turn"]["round_id"] == reply_update["round_id"]
@@ -495,6 +497,10 @@ def test_voice_dialogue_loop_request_interrupt_marks_round_and_tolerates_missing
     assert interrupt_update["current_round_id"] != old_turn.round_id
     assert interrupt_update["current_cancellation_token"] != old_turn.cancellation_token
     assert interrupt_update["stop_speech_status"] == "unsupported"
+    assert 0 <= interrupt_update["stop_dispatch_elapsed_ms"] <= 300
+    assert interrupt_update["interrupt_to_tts_stop_ms"] is None
+    assert interrupt_update["tts_stop_confirmed"] is False
+    assert interrupt_update["interruption"]["tts_stop_within_300ms"] is False
 
 
 def test_voice_dialogue_loop_request_interrupt_surfaces_stop_failure() -> None:
@@ -525,6 +531,30 @@ def test_voice_dialogue_loop_request_interrupt_surfaces_stop_failure() -> None:
     interrupt_update = _first_update(body, last_status="interrupted")
     assert interrupt_update["stop_speech_status"] == "stop_failed"
     assert interrupt_update["stop_speech_error"] == "device busy"
+    assert 0 <= interrupt_update["stop_dispatch_elapsed_ms"] <= 300
+    assert interrupt_update["interrupt_to_tts_stop_ms"] is None
+    assert interrupt_update["tts_stop_confirmed"] is False
+
+
+def test_voice_dialogue_loop_reports_degraded_when_reply_dispatch_fails() -> None:
+    class _DegradedSpeechBody(_Body):
+        def dispatch_actions(self, actions):
+            self.dispatched.extend(actions)
+            if any(isinstance(action, PlaySpeechAction) for action in actions):
+                return [type("Outcome", (), {"status": "error", "details": {"error": "speaker failed"}})()]
+            return super().dispatch_actions(actions)
+
+    body = _DegradedSpeechBody(["你好"])
+    cognition = _Cognition(reply="我在。")
+    loop = _start_loop(body, cognition, initial_conversation_active=True)
+
+    _wait_until(lambda: any(update.get("last_status") == "reply_degraded" for update in body.updates))
+    loop.stop()
+
+    degraded_update = _first_update(body, last_status="reply_degraded")
+    assert degraded_update["last_error"] == "speech_dispatch_degraded"
+    assert degraded_update["last_completed_turn"]["status"] == "degraded"
+    assert not any(update.get("last_status") == "reply_ready" for update in body.updates)
 
 
 def test_voice_dialogue_loop_does_not_dispatch_actions_from_stale_round() -> None:
@@ -555,6 +585,83 @@ def test_voice_dialogue_loop_does_not_dispatch_actions_from_stale_round() -> Non
     )
     stale_update = _first_update(body, last_status="stale_round_blocked")
     assert stale_update["stale_round"]["round_id"] != stale_update["current_round_id"]
+
+
+def test_voice_dialogue_loop_gates_real_actions_not_synthetic_plan() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime import RealtimeTurnManager
+
+    class _CapturingArbiter:
+        def __init__(self) -> None:
+            self.plans = []
+
+        def allow_speaking(self, manager, turn, plan):
+            self.plans.append(plan)
+            return True
+
+    body = _Body([""])
+    turn_manager = RealtimeTurnManager()
+    turn = turn_manager.start_round(reason="test")
+    turn_manager.finalize_asr(
+        round_id=turn.round_id,
+        cancellation_token=turn.cancellation_token,
+        asr_text="介绍下你自己",
+    )
+    arbiter = _CapturingArbiter()
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=_Cognition(),
+        realtime_turn_manager=turn_manager,
+        response_arbiter=arbiter,
+    )
+    action = PlaySpeechAction(
+        ts=1.0,
+        source="test",
+        session_id="s1",
+        actor_id="user-1",
+        text="我是鸿途。",
+    )
+
+    assert loop._actions_allowed_for_turn(turn, [action], "我是鸿途。") is True
+    assert arbiter.plans
+    assert arbiter.plans[-1]["actions"][0]["capabilityId"] == "speech.play"
+    assert arbiter.plans[-1]["actions"][0]["payload"]["text"] == "我是鸿途。"
+
+
+def test_voice_dialogue_loop_reports_blocked_arbiter_verdict_in_scheduler_state() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.cognition.realtime import RealtimeTurnManager
+
+    class _DenyingArbiter:
+        def allow_speaking(self, manager, turn, plan):
+            return False
+
+    body = _Body([""])
+    turn_manager = RealtimeTurnManager()
+    turn = turn_manager.start_round(reason="test")
+    turn_manager.finalize_asr(
+        round_id=turn.round_id,
+        cancellation_token=turn.cancellation_token,
+        asr_text="介绍下你自己",
+    )
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=_Cognition(),
+        realtime_turn_manager=turn_manager,
+        response_arbiter=_DenyingArbiter(),
+    )
+    action = PlaySpeechAction(
+        ts=1.0,
+        source="test",
+        session_id="s1",
+        actor_id="user-1",
+        text="我是鸿途。",
+    )
+
+    assert loop._actions_allowed_for_turn(turn, [action], "我是鸿途。") is False
+    scheduler_state = loop._scheduler_state_payload(turn)
+    assert scheduler_state["arbiter"]["state"] == "blocked"
+    assert scheduler_state["arbiter"]["can_speak"] is False
 
 
 def test_voice_dialogue_loop_blocks_stale_wake_ack_after_interrupt() -> None:

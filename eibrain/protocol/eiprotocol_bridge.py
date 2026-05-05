@@ -8,9 +8,15 @@ from typing import Any
 
 from eiprotocol import EventEnvelope, PolicyState, SourceRef, TargetRef
 from eiprotocol.builders import (
+    EventIdFactory,
+    build_dialogue_cancellation_applied_event,
     build_dialogue_fast_hypothesis_event,
     build_dialogue_stable_decision_event,
+    build_emotion_context_event,
     build_head_status_report_event,
+    build_memory_prefetch_requested_event,
+    build_proactive_activity_proposed_event,
+    build_speech_action_plan_event,
 )
 
 from .capabilities import (
@@ -244,6 +250,202 @@ def dialogue_stable_decision_to_eiprotocol_event(
         ttl_ms=_optional_int(raw.get("ttlMs", raw.get("ttl_ms")), fallback=3000),
         mode=_dict_from(raw.get("mode")),
     )
+
+
+def scheduler_snapshot_to_eiprotocol_events(
+    snapshot: object,
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    session_id: str = "",
+    ids: EventIdFactory | None = None,
+    sequence_start: int = 1,
+    time: str | None = None,
+) -> list[EventEnvelope]:
+    """Convert a scheduler snapshot into stable realtime cognition events.
+
+    The converter consumes only JSON-like snapshot keys so it can accept current
+    and future scheduler implementations without importing cognition classes.
+    """
+
+    raw = _snapshot_mapping(snapshot)
+    if not raw:
+        return []
+    current = _mapping_from_any(raw.get("current")) or _mapping_from_any(raw.get("turn")) or {}
+    scheduler = _mapping_from_any(raw.get("scheduler")) or _mapping_from_any(raw.get("scheduler_state")) or {}
+    round_id = _first_text(
+        current.get("round_id"),
+        current.get("roundId"),
+        raw.get("current_round_id"),
+        raw.get("round_id"),
+        raw.get("roundId"),
+    )
+    cancellation_token = _first_text(
+        current.get("cancellation_token"),
+        current.get("cancellationToken"),
+        raw.get("current_cancellation_token"),
+        raw.get("cancellation_token"),
+        raw.get("cancellationToken"),
+    )
+    brain_source = _source_like(source, fallback="eibrain.honxin")
+    brain_target = _target_from_source_like(source, fallback="eibrain.honxin")
+    head_source = _source_from_target_like(target, fallback="eihead.honjia")
+    head_target = _target_like(target, fallback="eihead.honjia")
+    memory_target = _target_like("eimemory.default", fallback="eimemory.default")
+    common = {
+        "session_id": session_id or _first_text(raw.get("session_id"), raw.get("sessionId")),
+        "round_id": round_id,
+        "ids": ids,
+        "time": time or DEFAULT_EVENT_TIME,
+    }
+
+    events: list[EventEnvelope] = []
+    sequence = max(1, int(sequence_start))
+
+    emotion = _first_mapping(
+        current,
+        raw,
+        scheduler,
+        keys=("emotion_state", "emotion_context", "emotion"),
+    )
+    if emotion is not None:
+        events.append(
+            build_emotion_context_event(
+                source=head_source,
+                target=brain_target,
+                context=emotion,
+                context_id=_first_text(
+                    emotion.get("contextId"),
+                    emotion.get("context_id"),
+                    f"{round_id}:emotion" if round_id else "emotion",
+                ),
+                mood=_first_text(emotion.get("mood"), emotion.get("state"), "unknown"),
+                confidence=_optional_float(emotion.get("confidence")) or 0.0,
+                sequence=sequence,
+                **common,
+            )
+        )
+        sequence += 1
+
+    for index, prefetch in enumerate(_prefetch_items(raw=raw, current=current, scheduler=scheduler)):
+        query = _first_text(prefetch.get("query"), prefetch.get("text"), prefetch.get("summary"))
+        if not query:
+            continue
+        events.append(
+            build_memory_prefetch_requested_event(
+                source=brain_source,
+                target=memory_target,
+                prefetch=prefetch,
+                prefetch_id=_first_text(
+                    prefetch.get("prefetchId"),
+                    prefetch.get("prefetch_id"),
+                    prefetch.get("id"),
+                    f"{round_id}:prefetch:{index}" if round_id else f"prefetch:{index}",
+                ),
+                query=query,
+                reason=_first_text(prefetch.get("reason"), prefetch.get("source"), "scheduler_prefetch"),
+                sequence=sequence,
+                **common,
+            )
+        )
+        sequence += 1
+
+    plan = _first_mapping(
+        current,
+        raw,
+        scheduler,
+        keys=("speech_action_plan", "speechActionPlan", "speech_plan", "plan"),
+    )
+    if plan is not None:
+        if not any(plan.get(key) for key in ("action_segments", "actionSegments", "action_plan", "actionPlan", "actions")):
+            action_plan = current.get("action_plan") or raw.get("action_plan") or scheduler.get("action_plan")
+            if isinstance(action_plan, list):
+                plan = {**dict(plan), "action_segments": action_plan, "action_plan": action_plan}
+        events.append(
+            build_speech_action_plan_event(
+                source=brain_source,
+                target=head_target,
+                plan=plan,
+                plan_id=_first_text(
+                    plan.get("planId"),
+                    plan.get("plan_id"),
+                    plan.get("id"),
+                    f"{round_id}:speech_action_plan" if round_id else "speech_action_plan",
+                ),
+                stable=bool(plan.get("stable", False)),
+                sequence=sequence,
+                **common,
+            )
+        )
+        sequence += 1
+
+    activity = _first_mapping(
+        raw,
+        current,
+        scheduler,
+        keys=("proactive_activity", "proactiveActivity", "activity", "activity_proposal"),
+    )
+    if activity is not None:
+        events.append(
+            build_proactive_activity_proposed_event(
+                source=brain_source,
+                target=head_target,
+                proposal=activity,
+                proposal_id=_first_text(
+                    activity.get("proposalId"),
+                    activity.get("proposal_id"),
+                    activity.get("id"),
+                    f"{round_id}:activity" if round_id else "activity",
+                ),
+                channel=_first_text(activity.get("channel"), "silent"),
+                reason=_first_text(activity.get("reason"), "unspecified"),
+                should_emit=_truthy(activity.get("shouldEmit", activity.get("should_emit"))),
+                sequence=sequence,
+                **common,
+            )
+        )
+        sequence += 1
+
+    cancellation = _first_mapping(
+        raw,
+        current,
+        scheduler,
+        keys=("cancellation", "cancellation_applied", "last_interrupt", "interrupt"),
+    )
+    if cancellation is not None and _cancellation_is_applied(cancellation):
+        cancelled_round_id = _first_text(
+            cancellation.get("cancelledRoundId"),
+            cancellation.get("cancelled_round_id"),
+            cancellation.get("round_id"),
+            cancellation.get("roundId"),
+        )
+        token = _first_text(
+            cancellation.get("cancellationToken"),
+            cancellation.get("cancellation_token"),
+            cancellation_token,
+        )
+        reason = _first_text(cancellation.get("reason"), cancellation.get("type"), "cancelled")
+        if cancelled_round_id and token and reason:
+            events.append(
+                build_dialogue_cancellation_applied_event(
+                    source=brain_source,
+                    target=head_target,
+                    cancellation=cancellation,
+                    cancellation_id=_first_text(
+                        cancellation.get("cancellationId"),
+                        cancellation.get("cancellation_id"),
+                        cancellation.get("id"),
+                        f"{cancelled_round_id}:cancelled",
+                    ),
+                    cancelled_round_id=cancelled_round_id,
+                    cancellation_token=token,
+                    reason=reason,
+                    sequence=sequence,
+                    **common,
+                )
+            )
+
+    return events
 
 
 def capability_manifest_to_eiprotocol_event(
@@ -594,6 +796,38 @@ def _target_like(target: str | TargetRef | Mapping[str, Any] | None, *, fallback
     return _target_ref(_first_text(target, fallback))
 
 
+def _source_from_target_like(
+    target: str | TargetRef | Mapping[str, Any] | None,
+    *,
+    fallback: str,
+) -> SourceRef:
+    if isinstance(target, TargetRef):
+        return SourceRef(domain=target.domain, instance_id=target.instance_id, metadata=dict(target.metadata))
+    if isinstance(target, Mapping):
+        return SourceRef(
+            domain=str(target.get("domain", "") or ""),
+            instance_id=str(target.get("instanceId", target.get("instance_id", "")) or ""),
+            metadata=_dict_from(target.get("metadata")),
+        )
+    return _source_ref(_first_text(target, fallback))
+
+
+def _target_from_source_like(
+    source: str | SourceRef | Mapping[str, Any] | None,
+    *,
+    fallback: str,
+) -> TargetRef | None:
+    if isinstance(source, SourceRef):
+        return TargetRef(domain=source.domain, instance_id=source.instance_id, metadata=dict(source.metadata))
+    if isinstance(source, Mapping):
+        return TargetRef(
+            domain=str(source.get("domain", "") or ""),
+            instance_id=str(source.get("instanceId", source.get("instance_id", "")) or ""),
+            metadata=_dict_from(source.get("metadata")),
+        )
+    return _target_ref(_first_text(source, fallback))
+
+
 def _split_ref(value: str) -> tuple[str, str, str]:
     parts = [part for part in str(value).split(".") if part]
     domain = parts[0] if parts else ""
@@ -674,6 +908,74 @@ def _health_to_dict(health: HeadHealth) -> dict[str, Any]:
 
 def _dict_from(value: object) -> dict[str, Any]:
     return _copy_jsonish(dict(value)) if isinstance(value, Mapping) else {}
+
+
+def _snapshot_mapping(value: object) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return _copy_jsonish(dict(value))
+    for method_name in ("snapshot", "status_payload", "to_dict", "status"):
+        method = getattr(value, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            payload = method()
+        except TypeError:
+            continue
+        if isinstance(payload, Mapping):
+            return _copy_jsonish(dict(payload))
+    return {}
+
+
+def _mapping_from_any(value: object) -> dict[str, Any] | None:
+    if isinstance(value, Mapping):
+        return _copy_jsonish(dict(value))
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        payload = value.to_dict()
+        if isinstance(payload, Mapping):
+            return _copy_jsonish(dict(payload))
+    return None
+
+
+def _first_mapping(*sources: Mapping[str, Any], keys: tuple[str, ...]) -> dict[str, Any] | None:
+    for source in sources:
+        if not isinstance(source, Mapping):
+            continue
+        for key in keys:
+            payload = _mapping_from_any(source.get(key))
+            if payload is not None and payload:
+                return payload
+    return None
+
+
+def _prefetch_items(
+    *,
+    raw: Mapping[str, Any],
+    current: Mapping[str, Any],
+    scheduler: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    for source in (raw, current, scheduler):
+        if not isinstance(source, Mapping):
+            continue
+        for key in ("memory_prefetch", "memory_prefetch_requests", "prefetch", "prefetch_requests"):
+            value = source.get(key)
+            items = _mapping_items(value)
+            if items:
+                return items
+    candidates = _mapping_items(current.get("memory_candidates"))
+    return [
+        item
+        for item in candidates
+        if _first_text(item.get("query"), item.get("text")) and _first_text(item.get("source"), item.get("kind"))
+    ]
+
+
+def _mapping_items(value: object) -> list[dict[str, Any]]:
+    payload = _mapping_from_any(value)
+    if payload is not None:
+        return [payload]
+    if not isinstance(value, list):
+        return []
+    return [_copy_jsonish(dict(item)) for item in value if isinstance(item, Mapping)]
 
 
 def _coerce_mapping(value: Mapping[str, Any], *, label: str) -> dict[str, Any]:
@@ -798,6 +1100,27 @@ def _optional_int(value: object, *, fallback: int | None) -> int | None:
     return int(value)
 
 
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "emit", "active"}
+
+
+def _cancellation_is_applied(cancellation: Mapping[str, Any]) -> bool:
+    if _truthy(cancellation.get("cancelled")) or _truthy(cancellation.get("canceled")):
+        return True
+    if _truthy(cancellation.get("interrupted")) or _truthy(cancellation.get("applied")):
+        return True
+    if cancellation.get("cancelled_at_ts") or cancellation.get("cancelledAt"):
+        return True
+    if cancellation.get("appliedTo") or cancellation.get("applied_to"):
+        return True
+    state = _first_text(cancellation.get("state"), cancellation.get("status")).strip().lower()
+    return state in {"cancelled", "canceled", "interrupted", "applied"}
+
+
 def _list_of_dicts(value: object) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
@@ -845,6 +1168,7 @@ __all__ = [
     "head_action_to_eiprotocol_event",
     "head_status_report_to_eiprotocol_event",
     "payload_to_eiprotocol_event",
+    "scheduler_snapshot_to_eiprotocol_events",
     "to_eiprotocol_event",
     "vision_observation_to_eiprotocol_event",
 ]

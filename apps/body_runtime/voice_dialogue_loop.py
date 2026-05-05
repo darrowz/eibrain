@@ -5,12 +5,15 @@ from __future__ import annotations
 import re
 import threading
 import time
+from dataclasses import asdict, is_dataclass
+from typing import Any
 from typing import TYPE_CHECKING, Iterable
 
 from apps.body_runtime.app import BodyRuntimeApp
 from eibrain.cognition.realtime import (
     FastThinkEngine,
     InterruptionController,
+    RealtimeCognitiveScheduler,
     RealtimeTurnManager,
     ResponseArbiter,
     SpeechActionPlanner,
@@ -26,6 +29,13 @@ except Exception:  # pragma: no cover - compatibility shim
 
 if TYPE_CHECKING:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+
+_ACTION_CAPABILITY_BY_KIND = {
+    "play_speech_action": "speech.play",
+    "stop_speech_action": "speech.stop",
+    "move_head_action": "head.move",
+}
 
 
 class _FallbackRealtimeVoiceSession:
@@ -225,6 +235,7 @@ class VoiceDialogueLoop:
         response_arbiter: ResponseArbiter | None = None,
         interruption_controller: InterruptionController | None = None,
         speech_action_planner: SpeechActionPlanner | None = None,
+        realtime_cognitive_scheduler: RealtimeCognitiveScheduler | None = None,
     ) -> None:
         self.body_runtime = body_runtime
         self.cognitive_runtime = cognitive_runtime
@@ -256,6 +267,11 @@ class VoiceDialogueLoop:
         self.response_arbiter = response_arbiter or ResponseArbiter()
         self.interruption_controller = interruption_controller or InterruptionController()
         self.speech_action_planner = speech_action_planner or SpeechActionPlanner()
+        self.realtime_cognitive_scheduler = realtime_cognitive_scheduler or RealtimeCognitiveScheduler(
+            turn_manager=self.realtime_turn_manager,
+            arbiter=self.response_arbiter,
+            interruption_controller=self.interruption_controller,
+        )
         self._turn_lock = threading.RLock()
         self._interrupted_round_count = 0
         self._last_microfeedback: dict[str, object] | None = None
@@ -344,7 +360,14 @@ class VoiceDialogueLoop:
             self._last_microfeedback = None
 
         self._call_realtime(old_realtime_session, "interrupt", reason=reason, turn=old_turn)
+        stop_started_s = time.perf_counter()
         stop_status, stop_error = self._dispatch_stop_speech()
+        stop_dispatch_elapsed_ms = round(max(0.0, time.perf_counter() - stop_started_s) * 1000, 2)
+        tts_stop_confirmed = stop_status in {"ok", "healthy", "completed", "stopped"}
+        interruption["stop_dispatch_elapsed_ms"] = stop_dispatch_elapsed_ms
+        interruption["interrupt_to_tts_stop_ms"] = stop_dispatch_elapsed_ms if tts_stop_confirmed else None
+        interruption["tts_stop_confirmed"] = tts_stop_confirmed
+        interruption["tts_stop_within_300ms"] = tts_stop_confirmed and stop_dispatch_elapsed_ms <= 300.0
         self._publish_state(
             phase="listening" if self.conversation_active else "idle",
             last_status="interrupted",
@@ -353,6 +376,10 @@ class VoiceDialogueLoop:
             interruption=interruption,
             stop_speech_status=stop_status,
             stop_speech_error=stop_error,
+            stop_dispatch_elapsed_ms=stop_dispatch_elapsed_ms,
+            interrupt_to_tts_stop_ms=stop_dispatch_elapsed_ms if tts_stop_confirmed else None,
+            tts_stop_confirmed=tts_stop_confirmed,
+            tts_stop_within_300ms=tts_stop_confirmed and stop_dispatch_elapsed_ms <= 300.0,
             interrupt_active=True,
             last_interrupt=interruption,
             last_error="",
@@ -370,19 +397,36 @@ class VoiceDialogueLoop:
         transcript: str,
     ) -> TurnBlackboard:
         with self._turn_lock:
-            finalized = self.realtime_turn_manager.finalize_asr(
-                round_id=turn.round_id,
-                cancellation_token=turn.cancellation_token,
-                asr_text=transcript,
-            )
             if transcript.strip():
-                fast_result = self.fast_think_engine.process_partial(finalized, transcript)
+                microfeedback_started_s = time.perf_counter()
+                partial = self.realtime_cognitive_scheduler.observe_partial(
+                    transcript,
+                    round_id=turn.round_id,
+                    cancellation_token=turn.cancellation_token,
+                )
+                microfeedback_elapsed_ms = round(max(0.0, time.perf_counter() - microfeedback_started_s) * 1000, 2)
+                self.realtime_cognitive_scheduler.observe_final(
+                    transcript,
+                    round_id=turn.round_id,
+                    cancellation_token=turn.cancellation_token,
+                )
+                finalized = self.realtime_turn_manager.current_turn() or turn
+                fast_payload = partial.get("fast") if isinstance(partial, dict) else {}
+                deadline_ms = int(fast_payload.get("deadline_ms") or 500)
                 self._last_microfeedback = {
-                    "text": fast_result.microfeedback,
-                    "deadline_ms": fast_result.deadline_ms,
-                    "source": fast_result.source,
-                    "stable": fast_result.stable,
+                    "text": str(fast_payload.get("microfeedback") or ""),
+                    "deadline_ms": deadline_ms,
+                    "elapsed_ms": microfeedback_elapsed_ms,
+                    "within_deadline": microfeedback_elapsed_ms <= float(deadline_ms),
+                    "source": str(fast_payload.get("source") or "fast_think"),
+                    "stable": bool(fast_payload.get("stable") is True),
                 }
+            else:
+                finalized = self.realtime_turn_manager.finalize_asr(
+                    round_id=turn.round_id,
+                    cancellation_token=turn.cancellation_token,
+                    asr_text=transcript,
+                )
             return finalized
 
     def _is_current_turn(self, turn: TurnBlackboard) -> bool:
@@ -507,11 +551,7 @@ class VoiceDialogueLoop:
             current_cancellation_token = (
                 current_turn.cancellation_token if current_turn is not None else ""
             )
-            scheduler_state = (
-                selected_turn.to_dict()
-                if selected_turn is not None
-                else {"state": "idle", "interrupted_round_count": self._interrupted_round_count}
-            )
+            scheduler_state = self._scheduler_state_payload(selected_turn)
             interrupted_round_count = self._interrupted_round_count
 
         payload: dict[str, object] = {
@@ -524,6 +564,85 @@ class VoiceDialogueLoop:
         if selected_turn is not None:
             payload["round_id"] = selected_turn.round_id
             payload["cancellation_token"] = selected_turn.cancellation_token
+        return payload
+
+    def _scheduler_state_payload(self, selected_turn: TurnBlackboard | None) -> dict[str, object]:
+        if selected_turn is None:
+            return {
+                "state": "idle",
+                "status": "idle",
+                "interrupted_round_count": self._interrupted_round_count,
+                "lanes": {},
+            }
+
+        payload = selected_turn.to_dict()
+        fast_hypotheses = list(payload.get("fast_hypotheses") or [])
+        stable_decisions = list(payload.get("stable_decisions") or [])
+        last_decision = stable_decisions[-1] if stable_decisions and isinstance(stable_decisions[-1], dict) else {}
+        speech_plan = dict(payload.get("speech_plan") or {})
+        if not speech_plan:
+            speech_plan = {
+                "round_id": selected_turn.round_id,
+                "cancellation_token": selected_turn.cancellation_token,
+                "stable": bool(payload.get("stable_speech_segments")),
+                "speech_segments": list(payload.get("stable_speech_segments") or []),
+                "action_plan": list(payload.get("action_plan") or []),
+            }
+        speech_plan.setdefault("plan_id", f"{selected_turn.round_id}:speech_action")
+        speech_plan.setdefault("round_id", selected_turn.round_id)
+        speech_plan.setdefault("cancellation_token", selected_turn.cancellation_token)
+        speech_plan.setdefault("action_plan", list(payload.get("action_plan") or []))
+        speech_plan.setdefault("actions", list(payload.get("action_plan") or []))
+
+        scheduler_decision = selected_turn.safety_state.get("scheduler_decision")
+        if isinstance(scheduler_decision, dict):
+            proactive_activity = dict(scheduler_decision.get("proactive_activity") or {})
+        else:
+            proactive_activity = {}
+
+        fast_state = "ready" if fast_hypotheses else "waiting"
+        slow_state = "ready" if stable_decisions else "waiting"
+        arbiter_verdict = selected_turn.safety_state.get("arbiter_verdict")
+        if isinstance(arbiter_verdict, dict):
+            arbiter_state = str(arbiter_verdict.get("state") or "approved")
+            can_speak = bool(arbiter_verdict.get("can_speak"))
+        else:
+            arbiter_state = "ready" if speech_plan.get("speech_segments") else "waiting"
+            can_speak = arbiter_state == "ready"
+        lanes = {
+            "fast_think": {
+                "state": fast_state,
+                "status": fast_state,
+                "hypothesis_count": len(fast_hypotheses),
+                "last_hypothesis": fast_hypotheses[-1] if fast_hypotheses else {},
+            },
+            "slow_reasoner": {
+                "state": slow_state,
+                "status": slow_state,
+                "decision_count": len(stable_decisions),
+                "last_decision": last_decision,
+            },
+            "arbiter": {
+                "state": arbiter_state,
+                "status": arbiter_state,
+                "current_round": selected_turn.round_id,
+                "speech_plan_stable": bool(speech_plan.get("stable")),
+                "can_speak": can_speak,
+            },
+        }
+        payload.update(
+            {
+                "state": selected_turn.state,
+                "status": selected_turn.state,
+                "lanes": lanes,
+                "fast_think": lanes["fast_think"],
+                "slow_reasoner": lanes["slow_reasoner"],
+                "arbiter": lanes["arbiter"],
+                "speech_action_plan": speech_plan,
+                "proactive_activity": proactive_activity,
+                "interrupted_round_count": self._interrupted_round_count,
+            }
+        )
         return payload
 
     def _publish_stale_round(
@@ -589,12 +708,74 @@ class VoiceDialogueLoop:
         if not actions or not reply:
             return True
         plan = self.speech_action_planner.plan(turn, speech_text=reply)
+        action_segments = self._action_segments_for_gate(actions)
+        plan["action_segments"] = action_segments
+        plan["actions"] = action_segments
+        plan["action_plan"] = action_segments
+        plan["actionSegments"] = action_segments
+        turn.speech_plan = plan
+        turn.action_plan = action_segments
         with self._turn_lock:
-            return self.response_arbiter.allow_speaking(
+            allowed = self.response_arbiter.allow_speaking(
                 self.realtime_turn_manager,
                 turn,
                 plan,
             )
+            turn.safety_state["arbiter_verdict"] = {
+                "state": "approved" if allowed else "blocked",
+                "status": "approved" if allowed else "blocked",
+                "can_speak": allowed,
+                "reason": "approved" if allowed else "response_arbiter_rejected_plan",
+                "speech_segment_count": len(plan.get("speech_segments", []) or []),
+                "action_segment_count": len(action_segments),
+                "round_id": turn.round_id,
+                "cancellation_token": turn.cancellation_token,
+            }
+            return allowed
+
+    @staticmethod
+    def _action_segments_for_gate(actions: list[object]) -> list[dict[str, object]]:
+        segments: list[dict[str, object]] = []
+        for index, action in enumerate(actions):
+            payload = VoiceDialogueLoop._action_payload(action)
+            kind = str(payload.get("kind") or payload.get("type") or action.__class__.__name__)
+            capability_id = str(
+                payload.get("capabilityId")
+                or payload.get("capability_id")
+                or _ACTION_CAPABILITY_BY_KIND.get(kind, kind)
+            )
+            segments.append(
+                {
+                    "capabilityId": capability_id,
+                    "startOffsetMs": int(payload.get("startOffsetMs") or payload.get("start_offset_ms") or index * 120),
+                    "durationMs": int(payload.get("durationMs") or payload.get("duration_ms") or 0),
+                    "style": str(payload.get("style") or "default"),
+                    "payload": payload,
+                    "status": str(payload.get("status") or "ready"),
+                }
+            )
+        return segments
+
+    @staticmethod
+    def _action_payload(action: object) -> dict[str, object]:
+        if isinstance(action, dict):
+            return dict(action)
+        if hasattr(action, "to_dict"):
+            try:
+                value = action.to_dict()
+                if isinstance(value, dict):
+                    return dict(value)
+            except Exception:
+                pass
+        if is_dataclass(action) and not isinstance(action, type):
+            return dict(asdict(action))
+        payload: dict[str, object] = {}
+        for name in ("kind", "type", "source", "session_id", "actor_id", "target_id", "text", "reason"):
+            if hasattr(action, name):
+                value = getattr(action, name)
+                if value is not None:
+                    payload[name] = value
+        return payload
 
     @staticmethod
     def _strip_trigger(text: str, trigger: str) -> tuple[str, bool]:
@@ -733,6 +914,7 @@ class VoiceDialogueLoop:
             think_s = time.perf_counter() - think_started
             if not self._is_current_turn(turn):
                 return actions, reply, think_s, "round_not_current_or_unstable", False
+            self._record_scheduler_decision(observation, turn)
             return actions, reply, think_s, "", False
 
         actions: list[object] = []
@@ -772,7 +954,22 @@ class VoiceDialogueLoop:
                     text=reply,
                 )
             ]
+        self._record_scheduler_decision(observation, turn)
         return actions, reply, time.perf_counter() - think_started, "", emitted_reply_delta
+
+    def _record_scheduler_decision(self, observation: AudioTranscriptFinal, turn: TurnBlackboard) -> dict[str, object]:
+        if not self._is_current_turn(turn):
+            return {}
+        try:
+            result = self.realtime_cognitive_scheduler.decide(
+                round_id=turn.round_id,
+                cancellation_token=turn.cancellation_token,
+                final_text=observation.text,
+            )
+        except (RuntimeError, ValueError):
+            return {}
+        turn.safety_state["scheduler_decision"] = result
+        return result
 
     @staticmethod
     def _reply_from_actions(actions: list[object]) -> str:
@@ -1174,10 +1371,11 @@ class VoiceDialogueLoop:
                     outcomes = []
                     status = "no_reply"
                 speak_s = time.perf_counter() - speak_started
+                reply_status = "reply_ready" if reply and status == "ok" else "reply_degraded" if reply else status
                 self._call_realtime(
                     realtime_session,
                     "complete",
-                    status="reply_ready" if reply else status,
+                    status=reply_status,
                     turn=turn,
                 )
                 turn_count = int(self.body_runtime.voice_dialogue_state.get("turn_count", 0) or 0) + 1
@@ -1190,14 +1388,14 @@ class VoiceDialogueLoop:
                 )
                 self._publish_state(
                     phase="idle",
-                    last_status="reply_ready" if reply else "no_reply",
+                    last_status=reply_status,
                     turn=turn,
                     realtime_voice_session=realtime_session,
                     conversation_active=True,
                     last_transcript=observation.text,
                     last_reply=reply,
                     turn_count=turn_count,
-                    last_error="",
+                    last_error="" if status == "ok" else "speech_dispatch_degraded",
                     last_latency_s={
                         "listen_asr": round(listen_asr_s, 2),
                         "think": round(think_s, 2),

@@ -23,6 +23,17 @@ def _fixed_clock() -> callable:
     return clock
 
 
+def _incrementing_clock() -> callable:
+    current = 1000.0
+
+    def clock() -> float:
+        nonlocal current
+        current += 0.05
+        return current
+
+    return clock
+
+
 def test_turn_blackboard_json_payload() -> None:
     turn = TurnBlackboard(
         round_id="round-1",
@@ -61,9 +72,36 @@ def test_realtime_turn_manager_start_round_and_token_isolation() -> None:
 
     assert first.round_id != second.round_id
     assert first.cancellation_token != second.cancellation_token
+    assert first.cancellation is not None
+    assert first.cancellation.cancelled is True
+    assert first.cancellation.reason == "superseded"
     assert manager.current_turn() == second
     assert manager.is_current(round_id=second.round_id, cancellation_token=second.cancellation_token)
     assert not manager.is_current(round_id=first.round_id, cancellation_token=first.cancellation_token)
+
+
+def test_realtime_turn_manager_ten_round_rollover_cancels_superseded_tokens() -> None:
+    manager = RealtimeTurnManager(clock=_incrementing_clock())
+    turns = [manager.start_round(reason=f"audit-{index}") for index in range(10)]
+    current = turns[-1]
+    stale_outputs_emitted = 0
+
+    for stale in turns[:-1]:
+        stable_plan = {
+            "round_id": stale.round_id,
+            "cancellation_token": stale.cancellation_token,
+            "stable": True,
+            "speech_segments": [{"text": "stale", "startOffsetMs": 0, "stable": True}],
+            "action_plan": [],
+        }
+        allowed = ResponseArbiter().allow_speaking(manager, stale, stable_plan)
+        stale_outputs_emitted += int(allowed)
+        assert stale.cancellation is not None
+        assert stale.cancellation.cancelled is True
+        assert stale.cancellation.reason == "superseded"
+
+    assert manager.current_turn() == current
+    assert stale_outputs_emitted == 0
 
 
 def test_realtime_fast_think_produces_partial_microfeedback_under_500ms() -> None:
@@ -80,6 +118,19 @@ def test_realtime_fast_think_produces_partial_microfeedback_under_500ms() -> Non
     assert result.microfeedback
     assert len(result.intent_hypotheses) >= 1
     assert result.stable is False
+
+
+def test_package_fast_think_engine_uses_realtime_fast_lane_contract() -> None:
+    engine = FastThinkEngine()
+    assert hasattr(engine, "sanitize_hypothesis")
+
+    turn = RealtimeTurnManager(clock=_fixed_clock()).start_round()
+    result = engine.process_partial(turn, "能不能帮我看看灯？")
+    payload = result.to_dict()
+
+    assert payload["stable"] is False
+    assert payload["micro_feedback"]["text"]
+    assert any(item["intent"] == "possible_action_request" for item in payload["intent_hints"])
 
 
 def test_response_arbiter_blocks_non_stable_or_cancelled_round() -> None:
@@ -164,6 +215,7 @@ def test_speech_action_planner_structured_output_and_failure_fallback() -> None:
     assert plan_failed["stable"] is True
     assert any(segment.get("source") == "action_fallback" for segment in plan_failed["speech_segments"])
     assert any(item["status"] == "retry" for item in plan_failed["action_plan"])
+    assert all(item["status"] != "ready" for item in plan_failed["action_plan"])
 
 
 def test_reject_if_cancelled_guard_refuses_stale_updates() -> None:

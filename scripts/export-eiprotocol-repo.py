@@ -23,6 +23,7 @@ COPY_FILE_GLOBS = (
 STANDALONE_TEST_EXCLUDES = frozenset(
     {
         "tests/protocol/test_eiprotocol_bridge.py",
+        "tests/protocol/test_eiprotocol_realtime_cognition_bridge.py",
     }
 )
 SKIP_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}

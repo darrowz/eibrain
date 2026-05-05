@@ -10,14 +10,19 @@ import uuid
 from .models import (
     AudioTurn,
     Detection,
+    DialogueCancellationApplied,
     DialogueFastHypothesis,
     DialogueStableDecision,
+    EmotionContext,
     EventEnvelope,
     ExecutionOutcome,
     HeadStatusReport,
+    MemoryPrefetchRequest,
     PolicyState,
+    ProactiveActivityProposal,
     RealtimeVisionObservation,
     SourceRef,
+    SpeechActionPlan,
     TargetRef,
 )
 from .validation import ValidationIssue, validate_event_strict
@@ -45,10 +50,13 @@ _EVENT_DEFAULTS: dict[str, tuple[str, bool]] = {
     "ei.observation.audio.chunk": ("observation", False),
     "ei.observation.vision.frame": ("observation", False),
     "ei.observation.head.status.report": ("observation", False),
+    "ei.observation.emotion.context": ("observation", True),
     "ei.dialogue.asr.partial": ("dialogue", True),
     "ei.dialogue.asr.final": ("dialogue", True),
     "ei.dialogue.fast_hypothesis": ("dialogue", True),
     "ei.dialogue.decision.stable": ("dialogue", True),
+    "ei.dialogue.speech_action.plan": ("dialogue", True),
+    "ei.dialogue.cancellation.applied": ("dialogue", True),
     "ei.dialogue.agent.delta": ("dialogue", True),
     "ei.dialogue.agent.final": ("dialogue", True),
     "ei.dialogue.tts.delta": ("dialogue", True),
@@ -61,11 +69,13 @@ _EVENT_DEFAULTS: dict[str, tuple[str, bool]] = {
     "ei.action.emergency.stop": ("action", True),
     "ei.policy.decision": ("policy", True),
     "ei.memory.recall.request": ("memory", True),
+    "ei.memory.prefetch.requested": ("memory", True),
     "ei.memory.recall.result": ("memory", True),
     "ei.memory.write.proposed": ("memory", True),
     "ei.memory.write.committed": ("memory", True),
     "ei.outcome.execution": ("outcome", True),
     "ei.outcome.user.feedback": ("outcome", True),
+    "ei.activity.proactive.proposed": ("dialogue", True),
     "ei.training.signal": ("training", True),
 }
 
@@ -530,6 +540,320 @@ def build_dialogue_stable_decision_event(
     )
 
 
+def build_emotion_context_event(
+    *,
+    source: SourceLike,
+    context: EmotionContext | Mapping[str, Any] | None = None,
+    context_id: str = "",
+    mood: str = "",
+    confidence: float | None = None,
+    signals: Mapping[str, Any] | None = None,
+    environment: Mapping[str, Any] | None = None,
+    context_source: str = "",
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 1000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _emotion_context(
+        context,
+        context_id=context_id,
+        mood=mood,
+        confidence=confidence,
+        signals=signals,
+        environment=environment,
+        context_source=context_source,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.observation.emotion.context",
+        event_type="observation",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
+def build_memory_prefetch_requested_event(
+    *,
+    source: SourceLike,
+    prefetch: MemoryPrefetchRequest | Mapping[str, Any] | None = None,
+    prefetch_id: str = "",
+    query: str = "",
+    reason: str = "",
+    candidates: Iterable[Mapping[str, Any]] | None = None,
+    scope: Iterable[str] | None = None,
+    prefetch_source: str = "",
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 1500,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _memory_prefetch_request(
+        prefetch,
+        prefetch_id=prefetch_id,
+        query=query,
+        reason=reason,
+        candidates=candidates,
+        scope=scope,
+        prefetch_source=prefetch_source,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.memory.prefetch.requested",
+        event_type="memory",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
+def build_speech_action_plan_event(
+    *,
+    source: SourceLike,
+    plan: SpeechActionPlan | Mapping[str, Any] | None = None,
+    plan_id: str = "",
+    stable: bool = False,
+    speech_segments: Iterable[Mapping[str, Any]] | None = None,
+    action_segments: Iterable[Mapping[str, Any]] | None = None,
+    language: str = "zh-CN",
+    fallback_text: str = "",
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 3000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _speech_action_plan(
+        plan,
+        plan_id=plan_id,
+        stable=stable,
+        speech_segments=speech_segments,
+        action_segments=action_segments,
+        language=language,
+        fallback_text=fallback_text,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.dialogue.speech_action.plan",
+        event_type="dialogue",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="high",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
+def build_proactive_activity_proposed_event(
+    *,
+    source: SourceLike,
+    proposal: ProactiveActivityProposal | Mapping[str, Any] | None = None,
+    proposal_id: str = "",
+    channel: str = "",
+    reason: str = "",
+    should_emit: bool = False,
+    urgency: float | None = None,
+    disturbance: str = "low",
+    requires_user_attention: bool = False,
+    text: str = "",
+    memory_refs: Iterable[Mapping[str, Any]] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 1500,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _proactive_activity_proposal(
+        proposal,
+        proposal_id=proposal_id,
+        channel=channel,
+        reason=reason,
+        should_emit=should_emit,
+        urgency=urgency,
+        disturbance=disturbance,
+        requires_user_attention=requires_user_attention,
+        text=text,
+        memory_refs=memory_refs,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.activity.proactive.proposed",
+        event_type="dialogue",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="realtime",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
+def build_dialogue_cancellation_applied_event(
+    *,
+    source: SourceLike,
+    cancellation: DialogueCancellationApplied | Mapping[str, Any] | None = None,
+    cancellation_id: str = "",
+    cancelled_round_id: str = "",
+    cancellation_token: str = "",
+    reason: str = "",
+    applied_to: Iterable[str] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+    ids: EventIdFactory | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    time: str | None = None,
+    sequence: int = 1,
+    session_id: str = "",
+    round_id: str | None = None,
+    correlation_id: str = "",
+    causation_id: str = "",
+    trace_id: str = "",
+    target: TargetLike = None,
+    ttl_ms: int | None = 3000,
+    mode: Mapping[str, Any] | None = None,
+    policy: PolicyState | Mapping[str, Any] | None = None,
+    extensions: Mapping[str, Any] | None = None,
+) -> EventEnvelope:
+    content = _dialogue_cancellation_applied(
+        cancellation,
+        cancellation_id=cancellation_id,
+        cancelled_round_id=cancelled_round_id,
+        cancellation_token=cancellation_token,
+        reason=reason,
+        applied_to=applied_to,
+        metadata=metadata,
+    ).to_content()
+    return build_event(
+        ids=ids,
+        name="ei.dialogue.cancellation.applied",
+        event_type="dialogue",
+        source=source,
+        target=target,
+        content=content,
+        event_id=event_id,
+        request_id=request_id,
+        time=time,
+        sequence=sequence,
+        session_id=session_id,
+        round_id=round_id,
+        correlation_id=correlation_id,
+        causation_id=causation_id,
+        trace_id=trace_id,
+        priority="high",
+        ttl_ms=ttl_ms,
+        mode=mode,
+        policy=policy,
+        extensions=extensions,
+        round_scoped=True,
+    )
+
+
 def build_vision_frame_event(
     *,
     source: SourceLike,
@@ -774,6 +1098,219 @@ def _dialogue_stable_decision(
     )
 
 
+def _emotion_context(
+    context: EmotionContext | Mapping[str, Any] | None,
+    *,
+    context_id: str,
+    mood: str,
+    confidence: float | None,
+    signals: Mapping[str, Any] | None,
+    environment: Mapping[str, Any] | None,
+    context_source: str,
+    metadata: Mapping[str, Any] | None,
+) -> EmotionContext:
+    if isinstance(context, EmotionContext):
+        return context
+    if isinstance(context, Mapping):
+        merged = dict(context)
+        if context_id:
+            merged["contextId"] = context_id
+        if mood:
+            merged["mood"] = mood
+        if confidence is not None:
+            merged["confidence"] = confidence
+        if signals is not None:
+            merged["signals"] = dict(signals)
+        if environment is not None:
+            merged["environment"] = dict(environment)
+        if context_source:
+            merged["source"] = context_source
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return EmotionContext.from_content(merged)
+    return EmotionContext(
+        context_id=context_id,
+        mood=mood,
+        confidence=float(confidence) if confidence is not None else 0.0,
+        signals=dict(signals or {}),
+        environment=dict(environment or {}),
+        source=context_source,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _memory_prefetch_request(
+    prefetch: MemoryPrefetchRequest | Mapping[str, Any] | None,
+    *,
+    prefetch_id: str,
+    query: str,
+    reason: str,
+    candidates: Iterable[Mapping[str, Any]] | None,
+    scope: Iterable[str] | None,
+    prefetch_source: str,
+    metadata: Mapping[str, Any] | None,
+) -> MemoryPrefetchRequest:
+    if isinstance(prefetch, MemoryPrefetchRequest):
+        return prefetch
+    if isinstance(prefetch, Mapping):
+        merged = dict(prefetch)
+        if prefetch_id:
+            merged["prefetchId"] = prefetch_id
+        if query:
+            merged["query"] = query
+        if reason:
+            merged["reason"] = reason
+        if candidates is not None:
+            merged["candidates"] = [dict(item) for item in candidates]
+        if scope is not None:
+            merged["scope"] = [str(item) for item in scope]
+        if prefetch_source:
+            merged["source"] = prefetch_source
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return MemoryPrefetchRequest.from_content(merged)
+    return MemoryPrefetchRequest(
+        prefetch_id=prefetch_id,
+        query=query,
+        reason=reason,
+        candidates=[dict(item) for item in candidates or ()],
+        scope=[str(item) for item in scope or ()],
+        source=prefetch_source,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _speech_action_plan(
+    plan: SpeechActionPlan | Mapping[str, Any] | None,
+    *,
+    plan_id: str,
+    stable: bool,
+    speech_segments: Iterable[Mapping[str, Any]] | None,
+    action_segments: Iterable[Mapping[str, Any]] | None,
+    language: str,
+    fallback_text: str,
+    metadata: Mapping[str, Any] | None,
+) -> SpeechActionPlan:
+    if isinstance(plan, SpeechActionPlan):
+        return plan
+    if isinstance(plan, Mapping):
+        merged = dict(plan)
+        if plan_id:
+            merged["planId"] = plan_id
+        if stable:
+            merged["stable"] = stable
+        if speech_segments is not None:
+            merged["speechSegments"] = [dict(item) for item in speech_segments]
+        if action_segments is not None:
+            merged["actionSegments"] = [dict(item) for item in action_segments]
+        if language:
+            merged["language"] = language
+        if fallback_text:
+            merged["fallbackText"] = fallback_text
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return SpeechActionPlan.from_content(merged)
+    return SpeechActionPlan(
+        plan_id=plan_id,
+        stable=bool(stable),
+        speech_segments=[dict(item) for item in speech_segments or ()],
+        action_segments=[dict(item) for item in action_segments or ()],
+        language=language,
+        fallback_text=fallback_text,
+        metadata=dict(metadata or {}),
+    )
+
+
+def _proactive_activity_proposal(
+    proposal: ProactiveActivityProposal | Mapping[str, Any] | None,
+    *,
+    proposal_id: str,
+    channel: str,
+    reason: str,
+    should_emit: bool,
+    urgency: float | None,
+    disturbance: str,
+    requires_user_attention: bool,
+    text: str,
+    memory_refs: Iterable[Mapping[str, Any]] | None,
+    metadata: Mapping[str, Any] | None,
+) -> ProactiveActivityProposal:
+    if isinstance(proposal, ProactiveActivityProposal):
+        return proposal
+    if isinstance(proposal, Mapping):
+        merged = dict(proposal)
+        if proposal_id:
+            merged["proposalId"] = proposal_id
+        if channel:
+            merged["channel"] = channel
+        if reason:
+            merged["reason"] = reason
+        if should_emit:
+            merged["shouldEmit"] = should_emit
+        if urgency is not None:
+            merged["urgency"] = urgency
+        if disturbance:
+            merged["disturbance"] = disturbance
+        if requires_user_attention:
+            merged["requiresUserAttention"] = requires_user_attention
+        if text:
+            merged["text"] = text
+        if memory_refs is not None:
+            merged["memoryRefs"] = [dict(item) for item in memory_refs]
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return ProactiveActivityProposal.from_content(merged)
+    return ProactiveActivityProposal(
+        proposal_id=proposal_id,
+        channel=channel,
+        reason=reason,
+        should_emit=bool(should_emit),
+        urgency=urgency,
+        disturbance=disturbance,
+        requires_user_attention=requires_user_attention,
+        text=text,
+        memory_refs=[dict(item) for item in memory_refs or ()],
+        metadata=dict(metadata or {}),
+    )
+
+
+def _dialogue_cancellation_applied(
+    cancellation: DialogueCancellationApplied | Mapping[str, Any] | None,
+    *,
+    cancellation_id: str,
+    cancelled_round_id: str,
+    cancellation_token: str,
+    reason: str,
+    applied_to: Iterable[str] | None,
+    metadata: Mapping[str, Any] | None,
+) -> DialogueCancellationApplied:
+    if isinstance(cancellation, DialogueCancellationApplied):
+        return cancellation
+    if isinstance(cancellation, Mapping):
+        merged = dict(cancellation)
+        if cancellation_id:
+            merged["cancellationId"] = cancellation_id
+        if cancelled_round_id:
+            merged["cancelledRoundId"] = cancelled_round_id
+        if cancellation_token:
+            merged["cancellationToken"] = cancellation_token
+        if reason:
+            merged["reason"] = reason
+        if applied_to is not None:
+            merged["appliedTo"] = [str(item) for item in applied_to]
+        if metadata is not None:
+            merged["metadata"] = dict(metadata)
+        return DialogueCancellationApplied.from_content(merged)
+    return DialogueCancellationApplied(
+        cancellation_id=cancellation_id,
+        cancelled_round_id=cancelled_round_id,
+        cancellation_token=cancellation_token,
+        reason=reason,
+        applied_to=[str(item) for item in applied_to or ()],
+        metadata=dict(metadata or {}),
+    )
+
+
 def _raise_if_invalid(event: EventEnvelope) -> None:
     errors = [_issue_to_error(issue) for issue in validate_event_strict(event, known_event_required=True)]
     if errors:
@@ -791,10 +1328,15 @@ __all__ = [
     "EventIdFactory",
     "build_action_request_event",
     "build_asr_event",
+    "build_dialogue_cancellation_applied_event",
     "build_dialogue_fast_hypothesis_event",
     "build_dialogue_stable_decision_event",
+    "build_emotion_context_event",
     "build_event",
     "build_execution_outcome_event",
     "build_head_status_report_event",
+    "build_memory_prefetch_requested_event",
+    "build_proactive_activity_proposed_event",
+    "build_speech_action_plan_event",
     "build_vision_frame_event",
 ]

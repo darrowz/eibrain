@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from eiprotocol import EventEnvelope, validate_event
+from eiprotocol import EmotionContext, EventEnvelope, validate_event
 from eiprotocol.catalog import list_event_names
 from eiprotocol.validation import validate_event_strict
 
@@ -28,6 +28,8 @@ EXPECTED_FIXTURES = {
     "control_pong.json",
     "control_resume.json",
     "dialogue_decision_stable.json",
+    "dialogue_cancellation_applied.json",
+    "emotion_context.json",
     "emergency_stop.json",
     "error_event.json",
     "execution_outcome.json",
@@ -36,11 +38,14 @@ EXPECTED_FIXTURES = {
     "head_status_report.json",
     "interrupt_requested.json",
     "memory_recall_request.json",
+    "memory_prefetch_requested.json",
     "memory_recall_result.json",
     "memory_write_committed.json",
     "memory_write_proposed.json",
     "policy_decision.json",
+    "proactive_activity_proposed.json",
     "realtime_vision_frame.json",
+    "speech_action_plan.json",
     "training_signal.json",
     "tts_delta.json",
     "tts_final.json",
@@ -72,3 +77,9 @@ def test_eiprotocol_fixture_validates_and_round_trips(fixture_name: str) -> None
     assert validate_event(payload) == []
     assert validate_event_strict(payload, known_event_required=True) == []
     assert EventEnvelope.from_dict(payload).to_dict() == payload
+
+
+def test_emotion_context_fixture_round_trips_through_typed_model() -> None:
+    payload = json.loads((FIXTURE_DIR / "emotion_context.json").read_text(encoding="utf-8"))
+
+    assert EmotionContext.from_content(payload["content"]).to_content() == payload["content"]

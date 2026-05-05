@@ -547,6 +547,11 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_last_turn = _display_value(_voice_last_turn_summary(voice.get("last_turn")))
     voice_round = _display_value(_voice_round_summary(voice.get("round")))
     voice_scheduler = _display_value(_voice_scheduler_summary(voice.get("scheduler")))
+    voice_fast_think = _display_value(_voice_realtime_component_summary(voice.get("fast_think")))
+    voice_slow_reasoner = _display_value(_voice_realtime_component_summary(voice.get("slow_reasoner")))
+    voice_arbiter = _display_value(_voice_realtime_component_summary(voice.get("arbiter")))
+    voice_speech_action_plan = _display_value(_voice_realtime_component_summary(voice.get("speech_action_plan")))
+    voice_proactive_activity = _display_value(_voice_realtime_component_summary(voice.get("proactive_activity")))
     voice_interruption = _display_value(_voice_interruption_summary(voice.get("interruption")))
     voice_microfeedback = _display_value(_voice_microfeedback_summary(voice.get("microfeedback")))
     voice_closed_loop = _display_value(_voice_closed_loop_summary(voice.get("closed_loop_state")))
@@ -655,6 +660,11 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Last turn</div><span class="metric">{voice_last_turn}</span></div>
       <div class="card"><div class="label">Round</div><span class="metric">{voice_round}</span></div>
       <div class="card"><div class="label">Scheduler</div><span class="metric">{voice_scheduler}</span></div>
+      <div class="card"><div class="label">Fast think</div><span class="metric">{voice_fast_think}</span></div>
+      <div class="card"><div class="label">Slow reasoner</div><span class="metric">{voice_slow_reasoner}</span></div>
+      <div class="card"><div class="label">Arbiter</div><span class="metric">{voice_arbiter}</span></div>
+      <div class="card"><div class="label">Speech/action plan</div><span class="metric">{voice_speech_action_plan}</span></div>
+      <div class="card"><div class="label">Proactive activity</div><span class="metric">{voice_proactive_activity}</span></div>
       <div class="card"><div class="label">Interrupts</div><span class="metric">{voice_interruption}</span></div>
       <div class="card"><div class="label">Microfeedback</div><span class="metric">{voice_microfeedback}</span></div>
       <div class="card"><div class="label">Closed loop</div><span class="metric">{voice_closed_loop}</span></div>
@@ -893,6 +903,16 @@ def _voice_scheduler_summary(value: Any) -> str:
     if stale and "stale" not in {part.lower() for part in parts}:
         parts.append("stale")
     return " / ".join(parts)
+
+
+def _voice_realtime_component_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    summary = value.get("summary")
+    if summary not in (None, ""):
+        return str(summary)
+    state = value.get("state") or value.get("status") or value.get("component_state") or "unknown"
+    return str(state)
 
 
 def _voice_interruption_summary(value: Any) -> str:

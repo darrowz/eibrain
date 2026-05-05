@@ -86,6 +86,8 @@ def test_list_event_names_filters_by_event_type_and_plane() -> None:
         "ei.dialogue.asr.final",
         "ei.dialogue.fast_hypothesis",
         "ei.dialogue.decision.stable",
+        "ei.dialogue.speech_action.plan",
+        "ei.dialogue.cancellation.applied",
         "ei.dialogue.agent.delta",
         "ei.dialogue.agent.final",
         "ei.dialogue.tts.delta",
@@ -94,6 +96,7 @@ def test_list_event_names_filters_by_event_type_and_plane() -> None:
     ]
     assert list_event_names(event_type="memory", plane="memory") == [
         "ei.memory.recall.request",
+        "ei.memory.prefetch.requested",
         "ei.memory.recall.result",
         "ei.memory.write.proposed",
         "ei.memory.write.committed",

@@ -476,6 +476,42 @@ class RoundSchedulerInterruptVoiceApp(FakeMonitorApp):
         }
 
 
+class RealtimeCognitionVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "running",
+            "ear": {"status": "ok", "provider": "faster_whisper"},
+            "mouth": {"status": "ok", "backend": "minimax", "model": "speech-2.8-hd"},
+            "dialogue": {
+                "phase": "thinking",
+                "last_status": "active",
+                "current_round_id": "round-rt-1",
+                "current_cancellation_token": "cancel-rt-1",
+                "scheduler_state": {
+                    "state": "active",
+                    "lanes": {
+                        "fast_think": {"state": "ready", "latency_ms": 96.0, "hypothesis_count": 2},
+                        "slow_reasoner": {"state": "thinking", "latency_ms": 340.0},
+                        "arbiter": {"state": "approved", "last_decision": "speak"},
+                    },
+                    "speech_action_plan": {
+                        "plan_id": "plan-rt-1",
+                        "stable": True,
+                        "speech_segments": [{"text": "I will reply softly.", "stable": True}],
+                        "action_segments": [{"capabilityId": "neck.pan"}],
+                    },
+                    "proactive_activity": {
+                        "proposal_id": "activity-rt-1",
+                        "channel": "visual_only",
+                        "reason": "memory_nudge",
+                        "should_emit": True,
+                    },
+                },
+            },
+        }
+
+
 class HistoricInterruptVoiceApp(FakeMonitorApp):
     def voice_realtime(self) -> dict[str, object]:
         return {
@@ -949,6 +985,29 @@ def test_voice_api_and_html_render_round_scheduler_interrupt_cards() -> None:
     assert "too_slow" in body
 
 
+def test_voice_api_and_html_render_realtime_cognition_lane_summaries() -> None:
+    app = RealtimeCognitionVoiceApp()
+
+    with running_server(app, clock=lambda: 656.7) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["lanes"]["fast_think"]["state"] == "ready"
+    assert payload["fast_think"]["summary"] == "ready (96.0ms)"
+    assert payload["slow_reasoner"]["state"] == "thinking"
+    assert payload["arbiter"]["state"] == "approved"
+    assert payload["speech_action_plan"]["summary"] == "plan-rt-1: 1 speech, 1 action"
+    assert payload["proactive_activity"]["summary"] == "activity-rt-1: visual_only / emit"
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Fast think" in body
+    assert "Slow reasoner" in body
+    assert "Speech/action plan" in body
+    assert "plan-rt-1" in body
+    assert "activity-rt-1" in body
+
+
 def test_voice_helper_keeps_historic_interrupt_visible_without_degrading_current_round() -> None:
     payload = build_voice_diagnostics_from_app(HistoricInterruptVoiceApp(), timestamp=656.8)
 
@@ -1354,6 +1413,45 @@ def test_recent_actions_alias_and_action_log_attribute_are_supported() -> None:
     assert payload["actions"] == [
         {"action_id": "a3", "action_type": "capture_frame", "status": "accepted"}
     ]
+
+
+def test_recent_actions_reads_body_runtime_dispatch_outcomes() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.protocol.actions import PlaySpeechAction
+    from eibrain.protocol.outcomes import ActionExecuted
+
+    class _Mouth:
+        name = "mouth"
+
+        def supports_action(self, action) -> bool:
+            return getattr(action, "kind", "") == "play_speech_action"
+
+        def handle_action(self, action):
+            return ActionExecuted(
+                ts=action.ts,
+                source="mouth.tts",
+                status="ok",
+                session_id=action.session_id,
+                actor_id=action.actor_id,
+                action_kind=action.kind,
+                details={"text": action.text},
+            )
+
+    runtime = BodyRuntimeApp()
+    runtime.organs = [_Mouth()]
+    runtime.dispatch_actions(
+        [PlaySpeechAction(ts=1.0, source="test", text="hello", session_id="s1", actor_id="user-1")]
+    )
+
+    with running_server(runtime, clock=lambda: 991.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/actions/recent")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["source"] == "recent_actions"
+    assert payload["count"] == 1
+    assert payload["actions"][0]["action_kind"] == "play_speech_action"
+    assert payload["actions"][0]["details"]["text"] == "hello"
 
 
 def test_recent_actions_reports_not_wired_when_runtime_exposes_no_log() -> None:

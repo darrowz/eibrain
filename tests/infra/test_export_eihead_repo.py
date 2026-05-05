@@ -301,7 +301,16 @@ def test_export_manifest_records_native_completion_gates(tmp_path: Path) -> None
     manifest = json.loads((target / "EXPORT_MANIFEST.json").read_text(encoding="utf-8"))
 
     gates = manifest["native_completion_gates"]
-    assert [gate["module"] for gate in gates] == ["eye", "neck", "ear", "mouth", "runtime", "export", "deploy"]
+    assert [gate["module"] for gate in gates] == [
+        "eye",
+        "neck",
+        "ear",
+        "mouth",
+        "realtime_cognitive_scheduler",
+        "runtime",
+        "export",
+        "deploy",
+    ]
     for gate in gates:
         assert gate["state"] in {"native_boundary", "transitional", "blocked_by_hardware_validation"}
         assert gate["owner_repo"] == "eihead"
@@ -319,6 +328,13 @@ def test_export_manifest_records_native_completion_gates(tmp_path: Path) -> None
     deploy_gate = next(gate for gate in gates if gate["module"] == "deploy")
     assert deploy_gate["state"] == "blocked_by_hardware_validation"
     assert "honjia Phase 0 baseline" in deploy_gate["next_acceptance"]
+
+    scheduler_gate = next(gate for gate in gates if gate["module"] == "realtime_cognitive_scheduler")
+    assert scheduler_gate["state"] == "native_boundary"
+    assert scheduler_gate["code_level_complete"] is True
+    assert scheduler_gate["hardware_verified"] is False
+    assert scheduler_gate["honjia_cutover"] == "blocked_by_hardware_validation"
+    assert "scheduler snapshot" in scheduler_gate["next_acceptance"]
 
 
 def test_export_manifest_records_cutover_readiness_summary(tmp_path: Path) -> None:

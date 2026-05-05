@@ -73,6 +73,7 @@ def _build_voice_payload(
     realtime_session = _realtime_session_payload(data, dialogue_source)
     round_info = _round_payload(data, dialogue_source, realtime_session)
     scheduler = _scheduler_payload(data, dialogue_source)
+    cognition = _realtime_cognition_payloads(data, dialogue_source, realtime_session, scheduler)
     interruption = _interruption_payload(data, dialogue_source)
     microfeedback = _microfeedback_payload(data, dialogue_source)
     latency = _latency_payload(data, dialogue_source)
@@ -122,6 +123,12 @@ def _build_voice_payload(
         "dialogue": dialogue,
         "round": round_info,
         "scheduler": scheduler,
+        "lanes": cognition["lanes"],
+        "fast_think": cognition["fast_think"],
+        "slow_reasoner": cognition["slow_reasoner"],
+        "arbiter": cognition["arbiter"],
+        "speech_action_plan": cognition["speech_action_plan"],
+        "proactive_activity": cognition["proactive_activity"],
         "interruption": interruption,
         "streaming": streaming,
         "microfeedback": microfeedback,
@@ -173,6 +180,12 @@ def _voice_payload_from_snapshot(app: Any) -> dict[str, Any] | None:
         "closed_loop_state",
         "last_reply_delta",
         "cancellation_chain",
+        "lanes",
+        "fast_think",
+        "slow_reasoner",
+        "arbiter",
+        "speech_action_plan",
+        "proactive_activity",
     ):
         if key in snapshot:
             payload[key] = snapshot[key]
@@ -344,7 +357,7 @@ def _round_payload(
         "complete": bool(complete),
         "interrupted": bool(interrupted),
         "lifecycle": lifecycle,
-        "state": "active" if has_round else "unknown",
+        "state": lifecycle,
     }
 
 
@@ -391,6 +404,205 @@ def _scheduler_component_state(*, state: str, stale: bool, not_wired: bool) -> s
     if normalized in {"ok", "healthy", "ready", "running", "active", "scheduled", "idle"}:
         return "wired"
     return "unknown"
+
+
+def _realtime_cognition_payloads(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+    realtime_session: Mapping[str, Any] | None,
+    scheduler: Mapping[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    lanes_source = _first_mapping(data, dialogue, realtime_session, scheduler, keys=("lanes", "lane_states", "scheduler_lanes"))
+    fast_think = _lane_payload(
+        _first_mapping(
+            lanes_source,
+            scheduler,
+            dialogue,
+            data,
+            realtime_session,
+            keys=("fast_think", "fastThink", "fast_lane", "fast"),
+        ),
+        default_state="unknown",
+    )
+    slow_reasoner = _lane_payload(
+        _first_mapping(
+            lanes_source,
+            scheduler,
+            dialogue,
+            data,
+            realtime_session,
+            keys=("slow_reasoner", "slowReasoner", "slow_lane", "slow", "slow_thinking"),
+        ),
+        default_state="unknown",
+    )
+    arbiter = _lane_payload(
+        _first_mapping(
+            lanes_source,
+            scheduler,
+            dialogue,
+            data,
+            realtime_session,
+            keys=("arbiter", "response_arbiter"),
+        ),
+        default_state="unknown",
+    )
+    lanes = _lanes_payload(fast_think=fast_think, slow_reasoner=slow_reasoner, arbiter=arbiter)
+    speech_action_plan = _speech_action_plan_payload(
+        _first_mapping(
+            scheduler,
+            dialogue,
+            data,
+            realtime_session,
+            keys=("speech_action_plan", "speechActionPlan", "speech_plan"),
+        )
+    )
+    proactive_activity = _proactive_activity_payload(
+        _first_mapping(
+            scheduler,
+            dialogue,
+            data,
+            realtime_session,
+            keys=("proactive_activity", "proactiveActivity", "activity_proposal", "activity"),
+        )
+    )
+    return {
+        "lanes": lanes,
+        "fast_think": fast_think,
+        "slow_reasoner": slow_reasoner,
+        "arbiter": arbiter,
+        "speech_action_plan": speech_action_plan,
+        "proactive_activity": proactive_activity,
+    }
+
+
+def _lane_payload(raw: Mapping[str, Any] | None, *, default_state: str) -> dict[str, Any]:
+    if raw is None:
+        return _missing_realtime_component(default_state)
+    payload = _json_mapping(raw)
+    state = _first_text(payload.get("state"), payload.get("status"), payload.get("phase"), default_state)
+    normalized = _normalized_text(state)
+    if normalized in {"not_wired", "missing", "unavailable", "disabled", "offline"}:
+        component_state = "not_wired"
+    elif normalized in {"stale", "blocked", "error", "failed", "unhealthy"}:
+        component_state = "degraded"
+    elif normalized in {"unknown", ""}:
+        component_state = "unknown"
+    else:
+        component_state = "wired"
+    latency_ms = _float_or_none(_first_value(payload, "latency_ms", "latencyMs", "elapsed_ms", "elapsedMs"))
+    summary = state if latency_ms is None else f"{state} ({latency_ms}ms)"
+    payload.update(
+        {
+            "state": state,
+            "status": state,
+            "component_state": component_state,
+            "wired": component_state == "wired",
+            "not_wired": component_state == "not_wired",
+            "summary": summary,
+        }
+    )
+    if latency_ms is not None:
+        payload["latency_ms"] = latency_ms
+    return payload
+
+
+def _lanes_payload(
+    *,
+    fast_think: Mapping[str, Any],
+    slow_reasoner: Mapping[str, Any],
+    arbiter: Mapping[str, Any],
+) -> dict[str, Any]:
+    states = [
+        str(component.get("component_state") or "unknown")
+        for component in (fast_think, slow_reasoner, arbiter)
+    ]
+    if any(state == "wired" for state in states):
+        component_state = "wired"
+    elif any(state == "degraded" for state in states):
+        component_state = "degraded"
+    elif any(state == "not_wired" for state in states):
+        component_state = "not_wired"
+    else:
+        component_state = "unknown"
+    return {
+        "fast_think": dict(fast_think),
+        "slow_reasoner": dict(slow_reasoner),
+        "arbiter": dict(arbiter),
+        "component_state": component_state,
+        "wired": component_state == "wired",
+        "not_wired": component_state == "not_wired",
+        "summary": " / ".join(
+            f"{name}={component.get('state', 'unknown')}"
+            for name, component in (
+                ("fast_think", fast_think),
+                ("slow_reasoner", slow_reasoner),
+                ("arbiter", arbiter),
+            )
+        ),
+    }
+
+
+def _speech_action_plan_payload(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    if raw is None:
+        return _missing_realtime_component("not_wired")
+    payload = _json_mapping(raw)
+    plan_id = _first_text(payload.get("planId"), payload.get("plan_id"), payload.get("id"), "unknown")
+    speech_segments = _first_list(payload, "speechSegments", "speech_segments", "speech")
+    action_segments = _first_list(payload, "actionSegments", "action_segments", "actions", "action_plan")
+    state = _first_text(payload.get("state"), payload.get("status"), "ready")
+    payload.update(
+        {
+            "plan_id": plan_id,
+            "state": state,
+            "status": state,
+            "component_state": "wired",
+            "wired": True,
+            "not_wired": False,
+            "speech_count": len(speech_segments),
+            "action_count": len(action_segments),
+            "summary": f"{plan_id}: {len(speech_segments)} speech, {len(action_segments)} {_plural('action', len(action_segments))}",
+        }
+    )
+    return payload
+
+
+def _proactive_activity_payload(raw: Mapping[str, Any] | None) -> dict[str, Any]:
+    if raw is None:
+        return _missing_realtime_component("not_wired")
+    payload = _json_mapping(raw)
+    proposal_id = _first_text(payload.get("proposalId"), payload.get("proposal_id"), payload.get("id"), "unknown")
+    channel = _first_text(payload.get("channel"), "unknown")
+    should_emit = _truthy(_first_value(payload, "shouldEmit", "should_emit"))
+    state = _first_text(payload.get("state"), payload.get("status"), "proposed")
+    payload.update(
+        {
+            "proposal_id": proposal_id,
+            "channel": channel,
+            "should_emit": should_emit,
+            "state": state,
+            "status": state,
+            "component_state": "wired",
+            "wired": True,
+            "not_wired": False,
+            "summary": f"{proposal_id}: {channel} / {'emit' if should_emit else 'hold'}",
+        }
+    )
+    return payload
+
+
+def _missing_realtime_component(state: str) -> dict[str, Any]:
+    return {
+        "state": state,
+        "status": state,
+        "component_state": state,
+        "wired": False,
+        "not_wired": state == "not_wired",
+        "summary": state,
+    }
+
+
+def _plural(word: str, count: int) -> str:
+    return word if count == 1 else f"{word}s"
 
 
 def _interruption_payload(data: Mapping[str, Any] | None, dialogue: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -985,6 +1197,14 @@ def _json_list(value: Any) -> list[Any]:
     return [_json_ready(item) for item in iterator]
 
 
+def _first_list(mapping: Mapping[str, Any], *keys: str) -> list[Any]:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, list):
+            return list(value)
+    return []
+
+
 def _mapping_from_keys(mapping: Mapping[str, Any] | None, *keys: str) -> dict[str, Any] | None:
     if not isinstance(mapping, Mapping):
         return None
@@ -1023,6 +1243,12 @@ def _dialogue_mapping(mapping: Mapping[str, Any] | None) -> dict[str, Any] | Non
         "interruption",
         "last_interrupt",
         "microfeedback",
+        "lanes",
+        "fast_think",
+        "slow_reasoner",
+        "arbiter",
+        "speech_action_plan",
+        "proactive_activity",
     }
     if any(key in mapping for key in dialogue_keys):
         return _json_mapping({key: mapping[key] for key in dialogue_keys if key in mapping})

@@ -37,7 +37,8 @@ def _source_eiprotocol_test_files() -> list[str]:
     return sorted(
         path.relative_to(REPO_ROOT).as_posix()
         for path in (REPO_ROOT / "tests" / "protocol").glob("test_eiprotocol*.py")
-        if path.is_file() and path.name != "test_eiprotocol_bridge.py"
+        if path.is_file()
+        and path.name not in {"test_eiprotocol_bridge.py", "test_eiprotocol_realtime_cognition_bridge.py"}
     )
 
 

@@ -93,6 +93,8 @@ class RealtimeTurnManager:
         if previous_turn is not None and previous_turn.state not in {"cancelled", "interrupted"}:
             previous_turn.state = "completed"
             previous_turn.updated_at_ts = now
+            if previous_turn.cancellation is not None:
+                previous_turn.cancellation.cancel(reason="superseded", at_ts=now)
 
         round_id = f"round-{self._round_index}"
         token = uuid.uuid4().hex
@@ -495,3 +497,11 @@ class InterruptionController:
             )
         new_turn = manager.interrupt(reason=reason)
         return self.summarize(old_turn=old_turn, new_turn=new_turn, reason=reason)
+
+
+# Compatibility: historical imports from ``realtime.turn`` now delegate to the
+# focused Task 3 modules while keeping RealtimeTurnManager and TurnBlackboard in
+# this file.
+from .arbiter import ResponseArbiter as ResponseArbiter
+from .interruption import InterruptionController as InterruptionController
+from .planner import SpeechActionPlanner as SpeechActionPlanner

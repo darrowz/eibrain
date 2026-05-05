@@ -1,0 +1,53 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_proactive_activity_001",
+  "type": "dialogue",
+  "name": "ei.activity.proactive.proposed",
+  "time": "2026-05-05T09:40:00.360+08:00",
+  "sequence": 204,
+  "requestId": "req_realtime_cognition_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "evt_memory_prefetch_001",
+  "causationId": "evt_memory_prefetch_001",
+  "traceId": "trc_realtime_cognition_001",
+  "source": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "deviceId": "",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "normal",
+  "ttlMs": 3000,
+  "mode": {
+    "conversationState": "idle",
+    "interactionMode": "free"
+  },
+  "content": {
+    "proposalId": "activity_001",
+    "channel": "visual_only",
+    "reason": "memory_nudge",
+    "shouldEmit": true,
+    "urgency": 0.42,
+    "metadata": {
+      "disturbance": "low"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "metadata": {}
+  }
+}

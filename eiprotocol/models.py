@@ -474,6 +474,244 @@ class DialogueStableDecision:
 
 
 @dataclass(slots=True)
+class EmotionContext:
+    context_id: str
+    mood: str
+    confidence: float
+    signals: dict[str, Any] = field(default_factory=dict)
+    environment: dict[str, Any] = field(default_factory=dict)
+    source: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "contextId": self.context_id,
+            "mood": self.mood,
+            "confidence": float(self.confidence),
+            "signals": dict(self.signals),
+            "environment": dict(self.environment),
+            "source": self.source,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "EmotionContext":
+        signals = data.get("signals")
+        if not isinstance(signals, Mapping) and isinstance(data.get("prosody"), Mapping):
+            signals = {"prosody": dict(data.get("prosody") or {})}
+        environment = data.get("environment")
+        metadata = data.get("metadata")
+        return cls(
+            context_id=str(data.get("contextId", data.get("context_id", "")) or ""),
+            mood=str(data.get("mood", data.get("state", "")) or ""),
+            confidence=float(data.get("confidence", 0.0) or 0.0),
+            signals=_dict(signals if isinstance(signals, Mapping) else None),
+            environment=_dict(environment if isinstance(environment, Mapping) else None),
+            source=str(data.get("source", "") or ""),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="observation",
+            name="ei.observation.emotion.context",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class MemoryPrefetchRequest:
+    prefetch_id: str
+    query: str
+    reason: str
+    candidates: list[dict[str, Any]] = field(default_factory=list)
+    scope: list[str] = field(default_factory=list)
+    source: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "prefetchId": self.prefetch_id,
+            "query": self.query,
+            "reason": self.reason,
+            "candidates": [dict(item) for item in self.candidates],
+            "scope": list(self.scope),
+            "source": self.source,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "MemoryPrefetchRequest":
+        candidates = data.get("candidates")
+        scope = data.get("scope")
+        metadata = data.get("metadata")
+        return cls(
+            prefetch_id=str(data.get("prefetchId", data.get("prefetch_id", "")) or ""),
+            query=str(data.get("query", "") or ""),
+            reason=str(data.get("reason", "") or ""),
+            candidates=_dict_items(candidates),
+            scope=[str(item) for item in _list(scope if isinstance(scope, (list, tuple)) else None)],
+            source=str(data.get("source", "") or ""),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="memory",
+            name="ei.memory.prefetch.requested",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class SpeechActionPlan:
+    plan_id: str
+    stable: bool
+    speech_segments: list[dict[str, Any]] = field(default_factory=list)
+    action_segments: list[dict[str, Any]] = field(default_factory=list)
+    language: str = "zh-CN"
+    fallback_text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "planId": self.plan_id,
+            "stable": bool(self.stable),
+            "speechSegments": [dict(item) for item in self.speech_segments],
+            "actionSegments": [dict(item) for item in self.action_segments],
+            "language": self.language,
+            "fallbackText": self.fallback_text,
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "SpeechActionPlan":
+        speech_segments = data.get("speechSegments", data.get("speech_segments", data.get("speech")))
+        action_segments = data.get("actionSegments", data.get("action_segments", data.get("actions")))
+        metadata = data.get("metadata")
+        return cls(
+            plan_id=str(data.get("planId", data.get("plan_id", "")) or ""),
+            stable=bool(data.get("stable", False)),
+            speech_segments=_dict_items(speech_segments),
+            action_segments=_dict_items(action_segments),
+            language=str(data.get("language", "zh-CN") or "zh-CN"),
+            fallback_text=str(data.get("fallbackText", data.get("fallback_text", "")) or ""),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="dialogue",
+            name="ei.dialogue.speech_action.plan",
+            content=self.to_content(),
+            priority="high",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class ProactiveActivityProposal:
+    proposal_id: str
+    channel: str
+    reason: str
+    should_emit: bool
+    urgency: float | None = None
+    disturbance: str = "low"
+    requires_user_attention: bool = False
+    text: str = ""
+    memory_refs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "proposalId": self.proposal_id,
+            "channel": self.channel,
+            "reason": self.reason,
+            "shouldEmit": bool(self.should_emit),
+            "urgency": self.urgency,
+            "disturbance": self.disturbance,
+            "requiresUserAttention": self.requires_user_attention,
+            "text": self.text,
+            "memoryRefs": [dict(item) for item in self.memory_refs],
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "ProactiveActivityProposal":
+        memory_refs = data.get("memoryRefs", data.get("memory_refs"))
+        metadata = data.get("metadata")
+        return cls(
+            proposal_id=str(data.get("proposalId", data.get("proposal_id", "")) or ""),
+            channel=str(data.get("channel", "") or ""),
+            reason=str(data.get("reason", "") or ""),
+            should_emit=bool(data.get("shouldEmit", data.get("should_emit", False))),
+            urgency=_optional_float(data.get("urgency")),
+            disturbance=str(data.get("disturbance", "low") or "low"),
+            requires_user_attention=bool(
+                data.get("requiresUserAttention", data.get("requires_user_attention", False))
+            ),
+            text=str(data.get("text", "") or ""),
+            memory_refs=_dict_items(memory_refs),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="dialogue",
+            name="ei.activity.proactive.proposed",
+            content=self.to_content(),
+            priority="realtime",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
+class DialogueCancellationApplied:
+    cancellation_id: str
+    cancelled_round_id: str
+    cancellation_token: str
+    reason: str
+    applied_to: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_content(self) -> dict[str, Any]:
+        return {
+            "cancellationId": self.cancellation_id,
+            "cancelledRoundId": self.cancelled_round_id,
+            "cancellationToken": self.cancellation_token,
+            "reason": self.reason,
+            "appliedTo": list(self.applied_to),
+            "metadata": dict(self.metadata),
+        }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "DialogueCancellationApplied":
+        applied_to = data.get("appliedTo", data.get("applied_to"))
+        metadata = data.get("metadata")
+        return cls(
+            cancellation_id=str(data.get("cancellationId", data.get("cancellation_id", "")) or ""),
+            cancelled_round_id=str(data.get("cancelledRoundId", data.get("cancelled_round_id", "")) or ""),
+            cancellation_token=str(data.get("cancellationToken", data.get("cancellation_token", "")) or ""),
+            reason=str(data.get("reason", "") or ""),
+            applied_to=[str(item) for item in _list(applied_to if isinstance(applied_to, (list, tuple)) else None)],
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
+
+    def to_event(self, **kwargs: Any) -> EventEnvelope:
+        return _round_event(
+            event_type="dialogue",
+            name="ei.dialogue.cancellation.applied",
+            content=self.to_content(),
+            priority="high",
+            **kwargs,
+        )
+
+
+@dataclass(slots=True)
 class Detection:
     label: str
     score: float
@@ -675,8 +913,14 @@ def _round_event(
     )
 
 
+def _dict_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
 def _optional_float(value: Any) -> float | None:
-    return float(value) if value is not None else None
+    return float(value) if value not in (None, "") else None
 
 
 def validate_event(event: EventEnvelope | Mapping[str, Any]) -> list[str]:

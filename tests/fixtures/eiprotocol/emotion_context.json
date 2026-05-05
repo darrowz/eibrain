@@ -1,0 +1,61 @@
+{
+  "specVersion": "eiprotocol/0.1",
+  "id": "evt_emotion_context_001",
+  "type": "observation",
+  "name": "ei.observation.emotion.context",
+  "time": "2026-05-05T09:40:00.000+08:00",
+  "sequence": 201,
+  "requestId": "req_realtime_cognition_001",
+  "sessionId": "ses_honjia_001",
+  "roundId": "rnd_voice_001",
+  "correlationId": "evt_asr_partial_001",
+  "causationId": "evt_asr_partial_001",
+  "traceId": "trc_realtime_cognition_001",
+  "source": {
+    "domain": "eihead",
+    "instanceId": "honjia",
+    "deviceId": "honjia",
+    "botId": "bot_hongtu",
+    "uid": "",
+    "metadata": {}
+  },
+  "priority": "realtime",
+  "ttlMs": 800,
+  "mode": {
+    "conversationState": "listening",
+    "interactionMode": "free"
+  },
+  "content": {
+    "contextId": "emo_ctx_001",
+    "mood": "curious",
+    "confidence": 0.72,
+    "signals": {
+      "prosody": {
+        "speechRate": "normal",
+        "volume": "medium"
+      }
+    },
+    "environment": {
+      "noiseLevel": "low"
+    },
+    "source": "fast_lane",
+    "metadata": {
+      "source": "fast_lane"
+    }
+  },
+  "policy": {
+    "decision": "not_required",
+    "riskLevel": "L0",
+    "decisionId": "",
+    "requiredAck": false,
+    "reason": "",
+    "expiresAt": "",
+    "extensions": {}
+  },
+  "extensions": {},
+  "target": {
+    "domain": "eibrain",
+    "instanceId": "honxin",
+    "metadata": {}
+  }
+}

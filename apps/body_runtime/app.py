@@ -380,18 +380,22 @@ class BodyRuntimeApp:
         realtime_session = self._voice_realtime_session_payload(dialogue)
         round_info = self._voice_round_payload(dialogue, realtime_session)
         scheduler_state = self._voice_scheduler_state_payload(dialogue)
+        cognition = self._voice_realtime_cognition_payloads(dialogue, realtime_session, scheduler_state)
         interruption = self._voice_interruption_payload(dialogue, realtime_session)
         cancellation_chain = self._voice_cancellation_chain_payload(dialogue, realtime_session)
         recent_events = self._recent_voice_events()
         ear = self._voice_organ_payload("ear", recent_events=recent_events)
         mouth = self._voice_organ_payload("mouth", recent_events=recent_events)
         latency = self._voice_latency_payload(dialogue)
+        self._merge_voice_realtime_latency(latency, realtime_session)
         bottleneck = self._voice_bottleneck_payload(dialogue, latency=latency)
         last_turn = self._voice_last_turn(dialogue)
         status, wired, not_wired = self._voice_overall_status(
             ear=ear,
             mouth=mouth,
             dialogue=dialogue,
+            scheduler=scheduler_state,
+            interruption=interruption,
             latency=latency,
             last_turn=last_turn,
         )
@@ -400,6 +404,8 @@ class BodyRuntimeApp:
             ear=ear,
             mouth=mouth,
             dialogue=dialogue,
+            scheduler=scheduler_state,
+            interruption=interruption,
         )
         return {
             "schema": "eihead.monitor.voice_realtime.v1",
@@ -418,6 +424,12 @@ class BodyRuntimeApp:
             "current_round_id": round_info["current_round_id"],
             "current_cancellation_token": round_info["current_cancellation_token"],
             "scheduler_state": scheduler_state,
+            "lanes": cognition["lanes"],
+            "fast_think": cognition["fast_think"],
+            "slow_reasoner": cognition["slow_reasoner"],
+            "arbiter": cognition["arbiter"],
+            "speech_action_plan": cognition["speech_action_plan"],
+            "proactive_activity": cognition["proactive_activity"],
             "interruption": interruption,
             "last_interrupt": interruption["last_interrupt"],
             "interrupt_count": interruption["interrupt_count"],
@@ -639,6 +651,40 @@ class BodyRuntimeApp:
             "identity_registry": dict(self.identity_registry),
         }
 
+    def status(self) -> dict[str, object]:
+        return {
+            "ok": True,
+            "status": "ok",
+            "runtime": "body_runtime",
+            "node_id": self.config.body.node_id,
+            "overall_status": "online",
+            "recent_event_count": len(self._recent_events),
+            "voice_dialogue": dict(self.voice_dialogue_state),
+            "visual_tracking": dict(self.visual_tracking_state),
+            "interaction_state": dict(self.interaction_state),
+        }
+
+    def capabilities(self) -> dict[str, object]:
+        capabilities = {}
+        for organ in self.organs:
+            name = str(getattr(organ, "name", "") or organ.__class__.__name__)
+            capabilities[name] = {
+                "status": "wired",
+                "kind": name,
+                "class": organ.__class__.__name__,
+            }
+        return {
+            "schema": "body_runtime.capabilities.v1",
+            "node_id": self.config.body.node_id,
+            "summary": {
+                "online": len(capabilities),
+                "degraded": 0,
+                "offline": 0,
+                "total": len(capabilities),
+            },
+            "capabilities": capabilities,
+        }
+
     def register_current_identity(
         self,
         *,
@@ -706,14 +752,19 @@ class BodyRuntimeApp:
                             self._speech_busy_until = time.time() + 0.75
                     if outcome is not None:
                         outcomes.append(outcome)
+                        details = dict(getattr(outcome, "details", {}) or {})
+                        action_kind = str(getattr(outcome, "action_kind", "") or getattr(action, "kind", "") or "")
+                        if action_kind and "action_kind" not in details:
+                            details["action_kind"] = action_kind
                         self._recent_events.append(
                             {
                                 "kind": outcome.kind,
                                 "source": outcome.source,
                                 "status": outcome.status,
                                 "session_id": outcome.session_id,
+                                "action_kind": action_kind,
                                 "recorded_at_ts": time.time(),
-                                "details": dict(getattr(outcome, "details", {}) or {}),
+                                "details": details,
                             }
                         )
                     break
@@ -757,6 +808,25 @@ class BodyRuntimeApp:
 
     def recent_events(self) -> list[dict[str, object]]:
         return list(self._recent_events)
+
+    def recent_actions(self) -> list[dict[str, object]]:
+        actions: list[dict[str, object]] = []
+        for event in self._recent_events:
+            kind = str(event.get("kind", "") or "")
+            source = str(event.get("source", "") or "")
+            action_kind = str(event.get("action_kind", "") or "")
+            details = event.get("details")
+            detail_action_kind = ""
+            if isinstance(details, dict):
+                detail_action_kind = str(details.get("action_kind", "") or "")
+            if not (action_kind or detail_action_kind or "action" in kind or source.startswith(("mouth", "neck"))):
+                continue
+            payload = self._json_ready(event)
+            if isinstance(payload, dict):
+                normalized = dict(payload)
+                normalized.setdefault("action_kind", action_kind or detail_action_kind or kind)
+                actions.append(normalized)
+        return actions[-20:]
 
     def latest_visual_frame_path(self) -> str | None:
         for organ in self.organs:
@@ -1187,6 +1257,29 @@ class BodyRuntimeApp:
             "stage_latency_s": stage_latency_s,
         }
 
+    def _merge_voice_realtime_latency(
+        self,
+        latency: dict[str, object],
+        realtime_session: dict[str, object] | None,
+    ) -> None:
+        if not isinstance(realtime_session, dict):
+            return
+        session_latency = realtime_session.get("latency_ms")
+        if not isinstance(session_latency, dict):
+            return
+        stage_latency_ms = latency.setdefault("stage_latency_ms", {})
+        if not isinstance(stage_latency_ms, dict):
+            return
+        for key, value in session_latency.items():
+            number = self._coerce_optional_float(value)
+            if number is not None:
+                stage_latency_ms.setdefault(str(key), number)
+        first_speech_ms = self._coerce_optional_float(stage_latency_ms.get("first_speech"))
+        if first_speech_ms is None:
+            return
+        latency["first_speech_ms"] = first_speech_ms
+        latency["first_speech_within_2s"] = first_speech_ms <= 2000.0
+
     def _voice_bottleneck_payload(
         self,
         dialogue: dict[str, object],
@@ -1291,7 +1384,7 @@ class BodyRuntimeApp:
             "complete": bool(complete),
             "interrupted": bool(interrupted),
             "lifecycle": lifecycle,
-            "state": "active" if has_round else "unknown",
+            "state": lifecycle if has_round else "unknown",
         }
 
     def _voice_scheduler_state_payload(self, dialogue: dict[str, object]) -> dict[str, object]:
@@ -1336,6 +1429,236 @@ class BodyRuntimeApp:
         if normalized in {"ok", "healthy", "ready", "running", "active", "scheduled", "idle"}:
             return "wired"
         return "unknown"
+
+    def _voice_realtime_cognition_payloads(
+        self,
+        dialogue: dict[str, object],
+        realtime_session: dict[str, object] | None,
+        scheduler_state: dict[str, object],
+    ) -> dict[str, dict[str, object]]:
+        lanes_source = self._first_mapping_from(
+            scheduler_state,
+            dialogue,
+            realtime_session,
+            keys=("lanes", "lane_states", "scheduler_lanes"),
+        )
+        fast_think = self._voice_lane_payload(
+            self._first_mapping_from(
+                lanes_source,
+                scheduler_state,
+                dialogue,
+                realtime_session,
+                keys=("fast_think", "fastThink", "fast_lane", "fast"),
+            ),
+            default_state="unknown",
+        )
+        slow_reasoner = self._voice_lane_payload(
+            self._first_mapping_from(
+                lanes_source,
+                scheduler_state,
+                dialogue,
+                realtime_session,
+                keys=("slow_reasoner", "slowReasoner", "slow_lane", "slow", "slow_thinking"),
+            ),
+            default_state="unknown",
+        )
+        arbiter = self._voice_lane_payload(
+            self._first_mapping_from(
+                lanes_source,
+                scheduler_state,
+                dialogue,
+                realtime_session,
+                keys=("arbiter", "response_arbiter"),
+            ),
+            default_state="unknown",
+        )
+        lanes = self._voice_lanes_payload(fast_think=fast_think, slow_reasoner=slow_reasoner, arbiter=arbiter)
+        speech_action_plan = self._voice_speech_action_plan_payload(
+            self._first_mapping_from(
+                scheduler_state,
+                dialogue,
+                realtime_session,
+                keys=("speech_action_plan", "speechActionPlan", "speech_plan"),
+            )
+        )
+        proactive_activity = self._voice_proactive_activity_payload(
+            self._first_mapping_from(
+                scheduler_state,
+                dialogue,
+                realtime_session,
+                keys=("proactive_activity", "proactiveActivity", "activity_proposal", "activity"),
+            )
+        )
+        return {
+            "lanes": lanes,
+            "fast_think": fast_think,
+            "slow_reasoner": slow_reasoner,
+            "arbiter": arbiter,
+            "speech_action_plan": speech_action_plan,
+            "proactive_activity": proactive_activity,
+        }
+
+    def _voice_lane_payload(self, raw: dict[str, object] | None, *, default_state: str) -> dict[str, object]:
+        if raw is None:
+            return {
+                "state": default_state,
+                "status": default_state,
+                "component_state": default_state,
+                "wired": False,
+                "not_wired": default_state == "not_wired",
+                "summary": default_state,
+            }
+        payload = dict(raw)
+        state = self._first_text(payload.get("state"), payload.get("status"), payload.get("phase"), default_state)
+        normalized = self._normalized_text(state)
+        not_wired = normalized in {"not_wired", "missing", "unavailable", "disabled", "offline"}
+        stale = normalized in {"stale", "blocked", "error", "failed", "unhealthy"}
+        if not_wired:
+            component_state = "not_wired"
+        elif stale:
+            component_state = "degraded"
+        elif normalized in {"unknown", ""}:
+            component_state = "unknown"
+        else:
+            component_state = "wired"
+        latency_ms = self._coerce_optional_float(
+            self._first_present(payload, "latency_ms", "latencyMs", "elapsed_ms", "elapsedMs")
+        )
+        summary = state
+        if latency_ms is not None:
+            summary = f"{state} ({latency_ms}ms)"
+        payload.update(
+            {
+                "state": state,
+                "status": state,
+                "component_state": component_state,
+                "wired": component_state == "wired",
+                "not_wired": component_state == "not_wired",
+                "summary": summary,
+            }
+        )
+        if latency_ms is not None:
+            payload["latency_ms"] = latency_ms
+        return payload
+
+    @staticmethod
+    def _voice_lanes_payload(
+        *,
+        fast_think: dict[str, object],
+        slow_reasoner: dict[str, object],
+        arbiter: dict[str, object],
+    ) -> dict[str, object]:
+        states = [
+            str(component.get("component_state") or "unknown")
+            for component in (fast_think, slow_reasoner, arbiter)
+        ]
+        if any(state == "wired" for state in states):
+            component_state = "wired"
+        elif any(state == "degraded" for state in states):
+            component_state = "degraded"
+        elif any(state == "not_wired" for state in states):
+            component_state = "not_wired"
+        else:
+            component_state = "unknown"
+        return {
+            "fast_think": fast_think,
+            "slow_reasoner": slow_reasoner,
+            "arbiter": arbiter,
+            "component_state": component_state,
+            "wired": component_state == "wired",
+            "not_wired": component_state == "not_wired",
+            "summary": " / ".join(
+                f"{name}={component.get('state', 'unknown')}"
+                for name, component in (
+                    ("fast_think", fast_think),
+                    ("slow_reasoner", slow_reasoner),
+                    ("arbiter", arbiter),
+                )
+            ),
+        }
+
+    def _voice_speech_action_plan_payload(self, raw: dict[str, object] | None) -> dict[str, object]:
+        if raw is None:
+            return self._voice_missing_realtime_component("not_wired")
+        payload = dict(raw)
+        plan_id = self._first_text(payload.get("planId"), payload.get("plan_id"), payload.get("id"), "unknown")
+        speech_segments = self._first_list(payload, "speechSegments", "speech_segments", "speech")
+        action_segments = self._first_list(payload, "actionSegments", "action_segments", "actions", "action_plan")
+        state = self._first_text(payload.get("state"), payload.get("status"), "ready")
+        payload.update(
+            {
+                "plan_id": plan_id,
+                "state": state,
+                "status": state,
+                "component_state": "wired",
+                "wired": True,
+                "not_wired": False,
+                "speech_count": len(speech_segments),
+                "action_count": len(action_segments),
+                "summary": (
+                    f"{plan_id}: {len(speech_segments)} speech, "
+                    f"{len(action_segments)} {self._plural('action', len(action_segments))}"
+                ),
+            }
+        )
+        return payload
+
+    def _voice_proactive_activity_payload(self, raw: dict[str, object] | None) -> dict[str, object]:
+        if raw is None:
+            return self._voice_missing_realtime_component("not_wired")
+        payload = dict(raw)
+        proposal_id = self._first_text(payload.get("proposalId"), payload.get("proposal_id"), payload.get("id"), "unknown")
+        channel = self._first_text(payload.get("channel"), "unknown")
+        should_emit = self._truthy(self._first_present(payload, "shouldEmit", "should_emit"))
+        state = self._first_text(payload.get("state"), payload.get("status"), "proposed")
+        payload.update(
+            {
+                "proposal_id": proposal_id,
+                "channel": channel,
+                "should_emit": should_emit,
+                "state": state,
+                "status": state,
+                "component_state": "wired",
+                "wired": True,
+                "not_wired": False,
+                "summary": f"{proposal_id}: {channel} / {'emit' if should_emit else 'hold'}",
+            }
+        )
+        return payload
+
+    @staticmethod
+    def _voice_missing_realtime_component(state: str) -> dict[str, object]:
+        return {
+            "state": state,
+            "status": state,
+            "component_state": state,
+            "wired": False,
+            "not_wired": state == "not_wired",
+            "summary": state,
+        }
+
+    @staticmethod
+    def _plural(word: str, count: int) -> str:
+        return word if count == 1 else f"{word}s"
+
+    @staticmethod
+    def _first_mapping_from(*sources: dict[str, object] | None, keys: tuple[str, ...]) -> dict[str, object] | None:
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            for key in keys:
+                value = source.get(key)
+                if isinstance(value, dict):
+                    return dict(value)
+        return None
+
+    @staticmethod
+    def _first_list(mapping: dict[str, object], *keys: str) -> list[object]:
+        for key in keys:
+            value = mapping.get(key)
+            if isinstance(value, list):
+                return list(value)
+        return []
 
     def _voice_interruption_payload(
         self,
@@ -1433,13 +1756,15 @@ class BodyRuntimeApp:
         dialogue: dict[str, object],
         latency: dict[str, object],
         last_turn: dict[str, object] | None,
+        scheduler: dict[str, object] | None = None,
+        interruption: dict[str, object] | None = None,
     ) -> tuple[str, bool, bool]:
         states = [
-            self._normalized_text(component.get("state"))
-            for component in (ear, mouth, dialogue)
+            self._normalized_text(component.get("component_state") or component.get("state"))
+            for component in (ear, mouth, dialogue, scheduler, interruption)
             if isinstance(component, dict)
         ]
-        has_signal = bool(states or last_turn or latency.get("stage_latency_ms"))
+        has_signal = bool(any(state and state != "unknown" for state in states) or last_turn or latency.get("stage_latency_ms"))
         if not has_signal:
             return "not_wired", False, True
         if any(state == "wired" for state in states):
@@ -1459,11 +1784,21 @@ class BodyRuntimeApp:
         ear: dict[str, object],
         mouth: dict[str, object],
         dialogue: dict[str, object],
+        scheduler: dict[str, object] | None = None,
+        interruption: dict[str, object] | None = None,
     ) -> str:
         if status == "wired":
             return "voice loop wired"
         messages = []
-        for name, component in (("ear", ear), ("mouth", mouth), ("dialogue", dialogue)):
+        for name, component in (
+            ("ear", ear),
+            ("mouth", mouth),
+            ("dialogue", dialogue),
+            ("scheduler", scheduler),
+            ("interruption", interruption),
+        ):
+            if not isinstance(component, dict):
+                continue
             message = self._first_text(component.get("readiness_message"), component.get("status"))
             if message and message not in messages:
                 messages.append(f"{name}: {message}")

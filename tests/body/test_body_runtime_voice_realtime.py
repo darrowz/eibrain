@@ -25,6 +25,12 @@ def test_voice_realtime_default_runtime_does_not_report_wired() -> None:
     assert payload["interruption"]["state"] == "unknown"
     assert payload["last_interrupt"] is None
     assert payload["cancellation_chain"] == []
+    assert payload["lanes"]["component_state"] == "unknown"
+    assert payload["fast_think"]["state"] == "unknown"
+    assert payload["slow_reasoner"]["state"] == "unknown"
+    assert payload["arbiter"]["state"] == "unknown"
+    assert payload["speech_action_plan"]["state"] == "not_wired"
+    assert payload["proactive_activity"]["state"] == "not_wired"
 
 
 def test_voice_realtime_exports_native_payload_consumed_by_eihead_monitoring() -> None:
@@ -100,6 +106,7 @@ def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_c
             "status": "interrupted",
             "interrupted": True,
             "complete": False,
+            "latency_ms": {"first_speech": 1300.0},
             "cancellation_chain": [
                 {
                     "target": "generation",
@@ -115,6 +122,8 @@ def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_c
     payload = runtime.voice_realtime()
     consumed = build_voice_diagnostics_from_app(runtime, timestamp=124.0)
 
+    assert payload["status"] == "degraded"
+    assert payload["wired"] is False
     assert payload["current_round_id"] == "round-42"
     assert payload["current_cancellation_token"] == "cancel-42"
     assert payload["scheduler_state"]["state"] == "stale"
@@ -123,10 +132,62 @@ def test_voice_realtime_projects_round_scheduler_interruption_and_cancellation_c
     assert payload["last_interrupt"]["round_id"] == "round-42"
     assert payload["cancellation_chain"][0]["event_type"] == "generation_cancelled"
     assert payload["realtime_session"]["round_id"] == "round-42"
+    assert payload["round"]["state"] == "interrupted"
+    assert payload["latency"]["first_speech_within_2s"] is True
+    assert payload["latency"]["first_speech_ms"] == 1300.0
     assert consumed["round"]["lifecycle"] == "interrupted"
+    assert consumed["round"]["state"] == "interrupted"
     assert consumed["scheduler"]["state"] == "stale"
     assert consumed["interruption"]["last_interrupt"]["reason"] == "user_barge_in"
     assert consumed["cancellation_chain"][0]["cancellation_token"] == "cancel-42"
+
+
+def test_voice_realtime_summarizes_realtime_cognition_scheduler_snapshot() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eihead.monitoring.voice import build_voice_diagnostics_from_app
+
+    runtime = BodyRuntimeApp()
+    runtime.update_voice_dialogue_state(
+        enabled=True,
+        running=True,
+        phase="thinking",
+        last_status="active",
+        current_round_id="round-rt-1",
+        current_cancellation_token="cancel-rt-1",
+        scheduler_state={
+            "state": "active",
+            "lanes": {
+                "fast_think": {"state": "ready", "latency_ms": 96.0, "hypothesis_count": 2},
+                "slow_reasoner": {"state": "thinking", "latency_ms": 340.0},
+                "arbiter": {"state": "approved", "last_decision": "speak"},
+            },
+            "speech_action_plan": {
+                "plan_id": "plan-rt-1",
+                "stable": True,
+                "speech_segments": [{"text": "I will reply softly.", "stable": True}],
+                "action_segments": [{"capabilityId": "neck.pan"}],
+            },
+            "proactive_activity": {
+                "proposal_id": "activity-rt-1",
+                "channel": "visual_only",
+                "reason": "memory_nudge",
+                "should_emit": True,
+            },
+        },
+    )
+
+    payload = runtime.voice_realtime()
+    consumed = build_voice_diagnostics_from_app(runtime, timestamp=125.0)
+
+    assert payload["lanes"]["fast_think"]["state"] == "ready"
+    assert payload["lanes"]["slow_reasoner"]["state"] == "thinking"
+    assert payload["lanes"]["arbiter"]["state"] == "approved"
+    assert payload["fast_think"]["summary"] == "ready (96.0ms)"
+    assert payload["speech_action_plan"]["summary"] == "plan-rt-1: 1 speech, 1 action"
+    assert payload["proactive_activity"]["summary"] == "activity-rt-1: visual_only / emit"
+    assert consumed["lanes"]["fast_think"]["state"] == "ready"
+    assert consumed["speech_action_plan"]["plan_id"] == "plan-rt-1"
+    assert consumed["proactive_activity"]["proposal_id"] == "activity-rt-1"
 
 
 def test_request_voice_interrupt_clears_busy_dispatches_stop_and_records_state() -> None:

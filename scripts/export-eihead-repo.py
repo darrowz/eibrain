@@ -512,6 +512,18 @@ NATIVE_COMPLETION_GATES = (
         "fake_completion_guard_note": "Synthesis configuration without audible playback is not completion.",
     },
     {
+        "module": "realtime_cognitive_scheduler",
+        "owner_repo": "eihead",
+        "state": "native_boundary",
+        "code_level_complete": True,
+        "hardware_verified": False,
+        "honjia_cutover": "blocked_by_hardware_validation",
+        "blockers": "honjia hardware cutover remains blocked until real voice/audio/monitor validation proves the scheduler-backed loop on device.",
+        "next_acceptance": "scheduler snapshot lanes, speech/action plan, proactive activity, cancellation, and eiprotocol bridge events remain visible in monitor/export without claiming honjia hardware completion.",
+        "fake_completion_guard": FAKE_COMPLETION_GUARD,
+        "fake_completion_guard_note": "Scheduler code-level completion is not honjia realtime audio/LLM/TTS hardware completion.",
+    },
+    {
         "module": "runtime",
         "owner_repo": "eihead",
         "state": "transitional",
