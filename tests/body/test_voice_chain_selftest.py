@@ -13,8 +13,17 @@ def test_voice_chain_selftest_replays_full_event_path_without_hardware() -> None
     assert report["honjiaRequired"] is False
     assert report["codeReady"] is True
     assert report["roundLeakFree"] is True
+    assert report["streamingReady"] is True
+    assert report["interruptStopReady"] is True
     assert report["failedMetrics"] == []
     assert report["benchmark"]["turnCount"] == 2
+    assert report["benchmark"]["rounds"][0]["stageLatencyMs"]["listen_asr"] > 0
+    assert report["benchmark"]["rounds"][1]["interrupted"] is True
+    assert report["benchmark"]["interruptStop"]["ready"] is True
+    assert report["benchmark"]["streaming"]["ready"] is True
+    assert report["benchmark"]["readinessSummary"]["codeReady"] is True
+    assert report["benchmark"]["readinessSummary"]["streamingReady"] is True
+    assert report["benchmark"]["readinessSummary"]["interruptStopReady"] is True
     assert report["normalTurn"]["snapshot"]["closed_loop"] is True
     assert report["interruptTurn"]["snapshot"]["interrupted"] is True
     assert report["interruptTurn"]["snapshot"]["tts_stopped"] is True
@@ -22,6 +31,8 @@ def test_voice_chain_selftest_replays_full_event_path_without_hardware() -> None
     assert report["readiness"]["live"] is False
     assert report["readiness"]["honjiaReady"] is False
     assert report["readiness"]["codeReady"] is True
+    assert report["readiness"]["streamingReady"] is True
+    assert report["readiness"]["interruptStopReady"] is True
     assert "offline protocol selftest passed" in report["readiness"]["readinessMessage"]
 
     event_names = set(report["eventNames"])

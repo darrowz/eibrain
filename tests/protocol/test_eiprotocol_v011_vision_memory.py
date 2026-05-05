@@ -212,3 +212,72 @@ def test_v011_exports_are_available_from_package_root() -> None:
     assert eiprotocol.build_vision_scene_event is build_vision_scene_event
     assert eiprotocol.build_vision_event_event is build_vision_event_event
     assert eiprotocol.build_memory_policy_report_event is build_memory_policy_report_event
+
+
+def test_v011_accepts_realtime_vision_simulator_observation_content() -> None:
+    scene_content = {
+        "sceneId": "scene_rt_001",
+        "observedAt": "2026-05-05T10:15:00.000+08:00",
+        "summary": "Observed person, cup; realtime events: appeared, attention",
+        "objects": [
+            {
+                "trackId": "person-001",
+                "label": "person",
+                "confidence": 0.93,
+                "bbox": {"x_min": 0.12, "y_min": 0.15, "x_max": 0.32, "y_max": 0.70},
+                "region": "left_middle",
+            },
+            {
+                "trackId": "cup-001",
+                "label": "cup",
+                "confidence": 0.81,
+                "bbox": {"x_min": 0.62, "y_min": 0.45, "x_max": 0.72, "y_max": 0.58},
+                "region": "right_middle",
+            },
+        ],
+        "relationships": [{"subjectId": "person-001", "relation": "left_of", "objectId": "cup-001"}],
+        "environment": {"source": "realtime_vision_simulator"},
+        "metadata": {"realtime": True, "simulator": "software", "trackCount": 2},
+    }
+    event_content = {
+        "eventId": "scene_rt_001:appeared:person-001",
+        "eventType": "appeared",
+        "observedAt": "2026-05-05T10:15:00.000+08:00",
+        "sceneId": "scene_rt_001",
+        "subject": {"trackId": "person-001", "label": "person"},
+        "confidence": 0.93,
+        "details": {"fromRegion": "", "toRegion": "left_middle", "distance": 0.0},
+        "metadata": {"frameId": "frame-rt-001"},
+    }
+
+    scene_event = build_vision_scene_event(
+        source=_source(),
+        target=_target("eibrain"),
+        scene=scene_content,
+        event_id="evt_realtime_vision_scene_001",
+        request_id="req_realtime_vision_scene_001",
+        time="2026-05-05T10:15:00.010+08:00",
+    )
+    vision_event = build_vision_event_event(
+        source=_source(),
+        target=_target("eibrain"),
+        event_id=event_content["eventId"],
+        event_type=event_content["eventType"],
+        observed_at=event_content["observedAt"],
+        scene_id=event_content["sceneId"],
+        subject=event_content["subject"],
+        confidence=event_content["confidence"],
+        details=event_content["details"],
+        metadata=event_content["metadata"],
+        protocol_event_id="evt_realtime_vision_event_001",
+        request_id="req_realtime_vision_event_001",
+        time="2026-05-05T10:15:00.020+08:00",
+    )
+
+    assert scene_content["metadata"]["realtime"] is True
+    assert scene_event.content["objects"][0]["trackId"]
+    assert validate_event_strict(scene_event, known_event_required=True) == []
+    assert validate_event_strict(vision_event, known_event_required=True) == []
+    assert loads_event(dumps_event(scene_event)).to_dict() == scene_event.to_dict()
+    assert classify_event(scene_event)["route"] == "vision_scene"
+    assert classify_event(vision_event)["route"] == "vision_event"

@@ -57,7 +57,18 @@ def _readiness_from_benchmark(benchmark: Mapping[str, Any]) -> dict[str, Any]:
     round_leak_count = _int_or_none(data.get("roundLeakCount")) or 0
     turn_count = _int_or_none(data.get("turnCount")) or 0
     round_leak_free = round_leak_count == 0
-    honjia_ready = bool(turn_count) and round_leak_free and not failed_metrics
+    readiness_summary = data.get("readinessSummary") if isinstance(data.get("readinessSummary"), Mapping) else {}
+    streaming = data.get("streaming") if isinstance(data.get("streaming"), Mapping) else {}
+    interrupt_stop = data.get("interruptStop") if isinstance(data.get("interruptStop"), Mapping) else {}
+    streaming_ready = _optional_truthy(readiness_summary.get("streamingReady"), streaming.get("ready"))
+    interrupt_stop_ready = _optional_truthy(readiness_summary.get("interruptStopReady"), interrupt_stop.get("ready"))
+    honjia_ready = (
+        bool(turn_count)
+        and round_leak_free
+        and not failed_metrics
+        and streaming_ready is not False
+        and interrupt_stop_ready is not False
+    )
     payload: dict[str, Any] = {
         "schema": VOICE_CHAIN_READINESS_SCHEMA,
         "source": "live_benchmark",
@@ -69,6 +80,8 @@ def _readiness_from_benchmark(benchmark: Mapping[str, Any]) -> dict[str, Any]:
         "roundLeakFree": round_leak_free,
         "metrics": _json_mapping(metrics),
         "bottleneck": data.get("bottleneck") if isinstance(data.get("bottleneck"), Mapping) else None,
+        "streamingReady": streaming_ready if streaming_ready is not None else None,
+        "interruptStopReady": interrupt_stop_ready if interrupt_stop_ready is not None else None,
         "summary": "",
         "readinessMessage": "",
     }
@@ -76,6 +89,14 @@ def _readiness_from_benchmark(benchmark: Mapping[str, Any]) -> dict[str, Any]:
         payload["roundLeakRate"] = data["roundLeakRate"]
     if isinstance(data.get("thresholds"), Mapping):
         payload["thresholds"] = _json_mapping(data["thresholds"])
+    if isinstance(data.get("stageLatencyMetrics"), Mapping):
+        payload["stageLatencyMetrics"] = _json_mapping(data["stageLatencyMetrics"])
+    if isinstance(streaming, Mapping) and streaming:
+        payload["streaming"] = _json_mapping(streaming)
+    if isinstance(interrupt_stop, Mapping) and interrupt_stop:
+        payload["interruptStop"] = _json_mapping(interrupt_stop)
+    if isinstance(readiness_summary, Mapping) and readiness_summary:
+        payload["readinessSummary"] = _json_mapping(readiness_summary)
     payload["summary"] = _summary(payload)
     payload["readinessMessage"] = _readiness_message(payload)
     return payload
@@ -101,6 +122,10 @@ def _summary(payload: Mapping[str, Any]) -> str:
         return "not ready: " + ", ".join(failed)
     if not _truthy(payload.get("roundLeakFree")):
         return "not ready: round leak"
+    if payload.get("streamingReady") is False:
+        return "not ready: streaming"
+    if payload.get("interruptStopReady") is False:
+        return "not ready: interrupt stop"
     if turn_count <= 0:
         return "not ready: no live turns"
     return "not ready"
@@ -158,6 +183,12 @@ def _truthy(value: Any) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "ready", "ok", "wired"}
 
 
+def _optional_truthy(*values: Any) -> bool | None:
+    for value in values:
+        if value is not None:
+            return _truthy(value)
+    return None
+
+
 def _plural(word: str, count: int) -> str:
     return word if count == 1 else f"{word}s"
-

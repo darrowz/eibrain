@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import hashlib
 from typing import Any
 
 
@@ -23,7 +24,15 @@ class MultimodalMemoryPolicy:
             "openclaw.agent_end",
         ]
     )
-    blocked_general_sources: list[str] = field(default_factory=lambda: ["eimemory.knowledge.claims"])
+    blocked_general_sources: list[str] = field(
+        default_factory=lambda: [
+            "eimemory.knowledge.claims",
+            "eimemory.knowledge_base",
+            "eimemory.news",
+            "eimemory.paper",
+            "eimemory.research",
+        ]
+    )
 
     def build_recall_context(
         self,
@@ -76,10 +85,24 @@ class MultimodalMemoryPolicy:
                         "eibrain.identity",
                         "eibrain.policy",
                     ],
-                    "blocked_sources": [],
+                    "blocked_sources": list(self.blocked_general_sources),
                     "allowed_memory_types": ["world_observation", "identity", "fact", "policy", "semantic"],
                     "preferred_modalities": ["vision", "multimodal"],
                     "organs": ["eye", "cognition"],
+                    "recall_profile": "visual_grounding",
+                    "privacy": self._privacy_context(scope="situational_awareness", sensitivity="environmental"),
+                    "writeback_eligibility": {
+                        "eligible": True,
+                        "requires_explicit_memory_request": False,
+                        "default_memory_type": "world_observation",
+                    },
+                    "decision_trace": {
+                        "decision": "vision_world_grounding_recall",
+                        "why": [
+                            "prefer visual world and frame memory",
+                            "avoid knowledge/news/paper sources",
+                        ],
+                    },
                     "source_weights": {
                         "eibrain.visual_world": 1.6,
                         "eibrain.visual_frame": 1.4,
@@ -117,6 +140,21 @@ class MultimodalMemoryPolicy:
                     "allowed_memory_types": memory_types,
                     "preferred_modalities": ["multimodal_action", "audio_text", "vision", "system"],
                     "organs": ["neck", "mouth", "eye", "ear", "cognition"],
+                    "recall_profile": "action_outcome_repair",
+                    "privacy": self._privacy_context(scope="operational_feedback", sensitivity="operational"),
+                    "writeback_eligibility": {
+                        "eligible": True,
+                        "requires_explicit_memory_request": False,
+                        "default_memory_type": "action_outcome",
+                    },
+                    "decision_trace": {
+                        "decision": "action_outcome_feedback_recall",
+                        "why": [
+                            "retrieve action outcomes and procedural feedback",
+                            "avoid identity/persona memory contamination",
+                            "avoid knowledge/news/paper sources",
+                        ],
+                    },
                     "source_weights": {
                         "eibrain.head_feedback": 1.8,
                         "eibrain.procedural_feedback": 1.7,
@@ -136,10 +174,24 @@ class MultimodalMemoryPolicy:
             context.update(
                 {
                     "allowed_sources": ["eibrain.audio_dialogue", "eibrain.visual_frame", "eibrain.policy", "eibrain.system"],
-                    "blocked_sources": [],
+                    "blocked_sources": list(self.blocked_general_sources),
                     "allowed_memory_types": ["conversation", "fact", "policy", "semantic"],
                     "preferred_modalities": ["audio_text", "vision", "multimodal", "system"],
                     "organs": ["ear", "eye", "mouth", "neck", "cognition"],
+                    "recall_profile": "diagnostic_policy",
+                    "privacy": self._privacy_context(scope="diagnostic", sensitivity="operational"),
+                    "writeback_eligibility": {
+                        "eligible": False,
+                        "requires_explicit_memory_request": True,
+                        "default_memory_type": "training_candidate",
+                    },
+                    "decision_trace": {
+                        "decision": "diagnostic_policy_recall",
+                        "why": [
+                            "retrieve policy and system diagnostics",
+                            "avoid knowledge/news/paper sources",
+                        ],
+                    },
                     "source_weights": {"eibrain.policy": 1.6, "eibrain.audio_dialogue": 1.25},
                     "recall_filters": self._recall_filters(
                         channel_id=self.channel_id,
@@ -157,6 +209,20 @@ class MultimodalMemoryPolicy:
                 "allowed_memory_types": ["identity", "preference", "conversation", "semantic", "fact"],
                 "preferred_modalities": ["audio_text", "multimodal", "text"],
                 "organs": ["ear", "cognition"],
+                "recall_profile": "subject_dialogue" if self._is_subject_memory_query(lower_query) else "precision",
+                "privacy": self._privacy_context(scope="subject_conversation", sensitivity="personal"),
+                "writeback_eligibility": {
+                    "eligible": True,
+                    "requires_explicit_memory_request": True,
+                    "default_memory_type": "conversation",
+                },
+                "decision_trace": {
+                    "decision": "voice_subject_dialogue_recall",
+                    "why": [
+                        "retrieve Hongtu subject dialogue memory",
+                        "avoid knowledge/news/paper sources",
+                    ],
+                },
                 "source_weights": {
                     "eibrain.identity": 1.8,
                     "eibrain.preference": 1.5,
@@ -282,6 +348,26 @@ class MultimodalMemoryPolicy:
             promotion_status = "not_promoted"
 
         training_candidate = "training" in candidate_types
+        privacy = self._candidate_privacy(memory_type=memory_type, modality=modality, organ=organ)
+        dedupe_key = self._dedupe_key(
+            memory_type=memory_type,
+            modality=modality,
+            organ=organ,
+            summary=cleaned_summary,
+            source_event_id=source_event_id,
+        )
+        writeback = self._writeback_policy(
+            memory_type=memory_type,
+            explicit_memory_request=explicit_memory_request,
+            training_candidate=training_candidate,
+            adjustment=adjustment,
+        )
+        decision_trace = self._candidate_decision_trace(
+            memory_type=memory_type,
+            candidate_types=candidate_types,
+            explicit_memory_request=explicit_memory_request,
+            adjustment=adjustment,
+        )
         content: dict[str, object] = {
             "event_type": event,
             "summary": cleaned_summary,
@@ -317,6 +403,10 @@ class MultimodalMemoryPolicy:
             "persona_memory": False,
             "identity_memory": False,
             "durable_identity_allowed": False,
+            "dedupe_key": dedupe_key,
+            "privacy": privacy,
+            "sensitivity": privacy["sensitivity"],
+            "decision_trace": decision_trace,
         }
         outcome = self.writeback_outcome(
             modality=modality,
@@ -340,6 +430,7 @@ class MultimodalMemoryPolicy:
             "retention": retention,
             "promotion_status": promotion_status,
             "training_candidate": training_candidate,
+            "writeback": writeback,
             "content": content,
             "meta": meta,
             "outcome": outcome,
@@ -385,6 +476,23 @@ class MultimodalMemoryPolicy:
         )
 
     @staticmethod
+    def _is_subject_memory_query(query: str) -> bool:
+        return any(
+            token in query
+            for token in (
+                "remember",
+                "preference",
+                "prefer",
+                "like",
+                "记得",
+                "记住",
+                "喜欢",
+                "偏好",
+                "刚才",
+            )
+        )
+
+    @staticmethod
     def _is_action_outcome_event(*, event: str, status: str, success: bool | None, action_count: int) -> bool:
         if event in {"action", "action_outcome", "outcome", "execution_outcome", "head_feedback"}:
             return True
@@ -409,6 +517,107 @@ class MultimodalMemoryPolicy:
                 "prefer",
             )
         )
+
+    @staticmethod
+    def _privacy_context(*, scope: str, sensitivity: str) -> dict[str, str]:
+        return {
+            "scope": scope,
+            "sensitivity": sensitivity,
+            "allowed_use": "embodied_response",
+        }
+
+    def _candidate_privacy(self, *, memory_type: str, modality: str, organ: str) -> dict[str, str]:
+        if memory_type == "world_observation" or modality == "vision" or organ == "eye":
+            return self._privacy_context(scope="situational_awareness", sensitivity="environmental")
+        if memory_type in {"action_outcome", "procedural_adjustment_candidate", "training_candidate"} or modality in {
+            "multimodal_action",
+            "action",
+            "system",
+        }:
+            return self._privacy_context(scope="operational_feedback", sensitivity="operational")
+        return self._privacy_context(scope="subject_conversation", sensitivity="personal")
+
+    @staticmethod
+    def _dedupe_key(*, memory_type: str, modality: str, organ: str, summary: str, source_event_id: str) -> str:
+        basis = source_event_id or summary
+        digest = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12]
+        return f"{memory_type}:{modality}:{organ}:{digest}"
+
+    @staticmethod
+    def _writeback_policy(
+        *,
+        memory_type: str,
+        explicit_memory_request: bool,
+        training_candidate: bool,
+        adjustment: str,
+    ) -> dict[str, object]:
+        if adjustment:
+            return {
+                "eligible": True,
+                "reason": "procedural_adjustment",
+                "target_memory_type": memory_type,
+            }
+        if explicit_memory_request or memory_type == "semantic_candidate":
+            return {
+                "eligible": True,
+                "reason": "explicit_memory_request",
+                "target_memory_type": memory_type,
+            }
+        if memory_type == "world_observation":
+            return {
+                "eligible": True,
+                "reason": "visual_world_observation",
+                "target_memory_type": memory_type,
+            }
+        if training_candidate:
+            return {
+                "eligible": True,
+                "reason": "training_feedback",
+                "target_memory_type": memory_type,
+            }
+        return {
+            "eligible": False,
+            "reason": "working_memory_only",
+            "target_memory_type": memory_type,
+        }
+
+    @staticmethod
+    def _candidate_decision_trace(
+        *,
+        memory_type: str,
+        candidate_types: list[str],
+        explicit_memory_request: bool,
+        adjustment: str,
+    ) -> dict[str, object]:
+        if adjustment:
+            return {
+                "decision": "writeback_procedural_training_candidate",
+                "why": "action outcome includes a suggested procedural adjustment",
+            }
+        if explicit_memory_request or memory_type == "semantic_candidate":
+            return {
+                "decision": "writeback_semantic_candidate",
+                "why": "explicit user memory request, but not durable identity",
+            }
+        if memory_type == "world_observation":
+            return {
+                "decision": "writeback_visual_world_observation",
+                "why": "vision observation can be retained as situational episodic memory",
+            }
+        if "training" in candidate_types:
+            return {
+                "decision": "writeback_training_candidate",
+                "why": "feedback can improve future embodied behavior",
+            }
+        if memory_type == "conversation":
+            return {
+                "decision": "writeback_conversation_working_only",
+                "why": "dialogue is working memory unless the user explicitly asks to remember it",
+            }
+        return {
+            "decision": "writeback_working_event",
+            "why": "event is not eligible for durable subject memory",
+        }
 
     @staticmethod
     def _candidate_tags(

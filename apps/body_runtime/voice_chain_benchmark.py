@@ -13,12 +13,27 @@ DEFAULT_THRESHOLDS = {
     "interruptStopMs": 300.0,
 }
 
+READINESS_SUMMARY_SCHEMA = "eibrain.voice_chain_readiness_summary.v1"
+
 _METRIC_LABELS = {
     "wakeToListenMs": "wake_to_listen",
     "asrFinalMs": "asr_final",
     "firstTokenMs": "first_token",
     "firstAudioMs": "first_audio",
     "interruptStopMs": "interrupt_stop",
+}
+
+_STAGE_LATENCY_KEYS = (
+    "stageLatencyMs",
+    "stage_latency_ms",
+    "lastStageLatencyMs",
+    "last_stage_latency_ms",
+)
+
+_STREAMING_SIGNALS = {
+    "asrPartial": ("asrPartial", "asr_partial", "asrPartialSeen", "partialAsr", "partial_asr"),
+    "llmDelta": ("llmDelta", "llm_delta", "replyDelta", "reply_delta", "agentDelta", "agent_delta"),
+    "ttsChunk": ("ttsChunk", "tts_chunk", "audioChunk", "audio_chunk", "ttsAudioChunk", "tts_audio_chunk"),
 }
 
 
@@ -43,14 +58,34 @@ def summarize_voice_chain(turns: Iterable[Mapping[str, Any]], *, thresholds: Map
             "pass": p95 <= threshold if threshold is not None else None,
         }
 
-    round_leak_count = sum(1 for turn in turn_list if turn.get("roundLeak") is True)
+    round_leak_count = sum(1 for turn in turn_list if _is_round_leak(turn))
     turn_count = len(turn_list)
+    rounds = [_round_report(index, turn) for index, turn in enumerate(turn_list)]
+    round_leak = _round_leak_summary(round_leak_count, turn_count)
+    interrupt_stop = _interrupt_stop_summary(turn_list, threshold_values)
+    streaming = _streaming_summary(rounds)
+    bottleneck = _bottleneck(metrics)
+    failed_metrics = _failed_metrics(metrics)
     return {
         "turnCount": turn_count,
         "roundLeakCount": round_leak_count,
         "roundLeakRate": round_leak_count / turn_count if turn_count else 0.0,
+        "thresholds": threshold_values,
         "metrics": metrics,
-        "bottleneck": _bottleneck(metrics),
+        "stageLatencyMetrics": _stage_latency_metrics(rounds),
+        "rounds": rounds,
+        "roundLeak": round_leak,
+        "interruptStop": interrupt_stop,
+        "streaming": streaming,
+        "bottleneck": bottleneck,
+        "readinessSummary": _readiness_summary(
+            turn_count=turn_count,
+            failed_metrics=failed_metrics,
+            round_leak=round_leak,
+            interrupt_stop=interrupt_stop,
+            streaming=streaming,
+            bottleneck=bottleneck,
+        ),
     }
 
 
@@ -70,6 +105,245 @@ def _metric_fields(turns: list[Mapping[str, Any]], thresholds: Mapping[str, floa
         extra_fields.update(str(field) for field in turn if str(field).endswith("Ms") and field not in _METRIC_LABELS)
     fields.extend(sorted(extra_fields))
     return fields
+
+
+def _round_report(index: int, turn: Mapping[str, Any]) -> dict[str, Any]:
+    streaming = _turn_streaming_readiness(turn)
+    report: dict[str, Any] = {
+        "index": index,
+        "roundId": _round_id(turn, index),
+        "stageLatencyMs": _stage_latency_ms(turn),
+        "roundLeak": _is_round_leak(turn),
+        "interrupted": _is_interrupted(turn),
+        "streamingReady": streaming["ready"],
+    }
+    status = turn.get("status")
+    if status not in (None, ""):
+        report["status"] = str(status)
+    if streaming["missingSignals"]:
+        report["streamingMissingSignals"] = list(streaming["missingSignals"])
+    for field in _METRIC_LABELS:
+        value = _as_float(turn.get(field))
+        if value is not None:
+            report[field] = value
+    return report
+
+
+def _round_id(turn: Mapping[str, Any], index: int) -> str:
+    for key in ("roundId", "round_id", "id"):
+        value = turn.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return f"turn-{index + 1}"
+
+
+def _stage_latency_ms(turn: Mapping[str, Any]) -> dict[str, float]:
+    stages: dict[str, float] = {}
+    for key in _STAGE_LATENCY_KEYS:
+        value = turn.get(key)
+        if isinstance(value, Mapping):
+            stages.update(_coerce_numeric_mapping(value))
+    for field, label in _METRIC_LABELS.items():
+        value = _as_float(turn.get(field))
+        if value is not None:
+            stages.setdefault(label, value)
+    return stages
+
+
+def _coerce_numeric_mapping(value: Mapping[str, Any]) -> dict[str, float]:
+    result: dict[str, float] = {}
+    for key, item in value.items():
+        number = _as_float(item)
+        if number is not None:
+            result[str(key)] = number
+    return result
+
+
+def _stage_latency_metrics(rounds: list[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    stage_names = sorted(
+        {
+            str(name)
+            for item in rounds
+            if isinstance(item.get("stageLatencyMs"), Mapping)
+            for name in item["stageLatencyMs"]
+        }
+    )
+    metrics: dict[str, dict[str, Any]] = {}
+    for name in stage_names:
+        values = [
+            value
+            for item in rounds
+            if isinstance(item.get("stageLatencyMs"), Mapping)
+            for value in [_as_float(item["stageLatencyMs"].get(name))]
+            if value is not None
+        ]
+        if not values:
+            continue
+        metrics[name] = {
+            "count": len(values),
+            "avg": sum(values) / len(values),
+            "p95": _nearest_rank_p95(values),
+        }
+    return metrics
+
+
+def _round_leak_summary(round_leak_count: int, turn_count: int) -> dict[str, Any]:
+    rate = round_leak_count / turn_count if turn_count else 0.0
+    return {
+        "count": round_leak_count,
+        "rate": rate,
+        "free": round_leak_count == 0,
+        "pass": round_leak_count == 0,
+    }
+
+
+def _interrupt_stop_summary(turns: list[Mapping[str, Any]], thresholds: Mapping[str, float]) -> dict[str, Any]:
+    threshold = thresholds.get("interruptStopMs")
+    required_count = 0
+    confirmed_count = 0
+    failures: list[dict[str, Any]] = []
+    for index, turn in enumerate(turns):
+        if not _is_interrupted(turn):
+            continue
+        required_count += 1
+        value = _as_float(turn.get("interruptStopMs"))
+        passed = value is not None and (threshold is None or value <= threshold)
+        if passed:
+            confirmed_count += 1
+        else:
+            failures.append(
+                {
+                    "roundId": _round_id(turn, index),
+                    "interruptStopMs": value,
+                    "threshold": threshold,
+                }
+            )
+    failed_count = required_count - confirmed_count
+    return {
+        "requiredCount": required_count,
+        "confirmedCount": confirmed_count,
+        "failedCount": failed_count,
+        "threshold": threshold,
+        "ready": required_count > 0 and failed_count == 0,
+        "failures": failures,
+    }
+
+
+def _streaming_summary(rounds: list[Mapping[str, Any]]) -> dict[str, Any]:
+    missing = [
+        {
+            "roundId": item.get("roundId"),
+            "index": item.get("index"),
+            "signals": list(item.get("streamingMissingSignals", _STREAMING_SIGNALS)),
+        }
+        for item in rounds
+        if item.get("streamingReady") is not True
+    ]
+    ready_turn_count = sum(1 for item in rounds if item.get("streamingReady") is True)
+    turn_count = len(rounds)
+    return {
+        "ready": turn_count > 0 and ready_turn_count == turn_count,
+        "turnCount": turn_count,
+        "readyTurnCount": ready_turn_count,
+        "missingSignals": missing,
+    }
+
+
+def _turn_streaming_readiness(turn: Mapping[str, Any]) -> dict[str, Any]:
+    explicit = _explicit_bool(turn.get("streamingReady"), turn.get("streaming_ready"))
+    if explicit is not None:
+        return {"ready": explicit, "missingSignals": [] if explicit else list(_STREAMING_SIGNALS)}
+
+    streaming = turn.get("streaming")
+    source = streaming if isinstance(streaming, Mapping) else turn
+    missing = [
+        signal
+        for signal, aliases in _STREAMING_SIGNALS.items()
+        if not any(_truthy_signal(source.get(alias)) for alias in aliases)
+    ]
+    return {"ready": not missing, "missingSignals": missing}
+
+
+def _explicit_bool(*values: Any) -> bool | None:
+    for value in values:
+        if isinstance(value, bool):
+            return value
+    return None
+
+
+def _truthy_signal(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, Real):
+        return isfinite(float(value)) and float(value) != 0.0
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    if not text or text in {"0", "false", "no", "off", "missing", "none", "null"}:
+        return False
+    return True
+
+
+def _is_interrupted(turn: Mapping[str, Any]) -> bool:
+    status = str(turn.get("status") or "").lower()
+    return status == "interrupted" or turn.get("interrupted") is True or turn.get("interruptActive") is True
+
+
+def _is_round_leak(turn: Mapping[str, Any]) -> bool:
+    status = str(turn.get("status") or "").lower()
+    return turn.get("roundLeak") is True or status == "stale_round_blocked"
+
+
+def _failed_metrics(metrics: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    return [
+        str(name)
+        for name, metric in metrics.items()
+        if isinstance(metric, Mapping) and metric.get("pass") is False
+    ]
+
+
+def _readiness_summary(
+    *,
+    turn_count: int,
+    failed_metrics: list[str],
+    round_leak: Mapping[str, Any],
+    interrupt_stop: Mapping[str, Any],
+    streaming: Mapping[str, Any],
+    bottleneck: Mapping[str, Any],
+) -> dict[str, Any]:
+    round_leak_free = bool(round_leak.get("free"))
+    interrupt_stop_ready = bool(interrupt_stop.get("ready"))
+    streaming_ready = bool(streaming.get("ready"))
+    honjia_ready = bool(turn_count) and not failed_metrics and round_leak_free and interrupt_stop_ready and streaming_ready
+    reasons: list[str] = []
+    if turn_count <= 0:
+        reasons.append("no turns")
+    if failed_metrics:
+        reasons.append("failed metrics: " + ", ".join(failed_metrics))
+    if not round_leak_free:
+        reasons.append("round leak")
+    if not interrupt_stop_ready:
+        reasons.append("interrupt stop")
+    if not streaming_ready:
+        reasons.append("streaming")
+    message = "ready: voice-chain acceptance passed" if honjia_ready else "not ready: " + ", ".join(reasons)
+    return {
+        "schema": READINESS_SUMMARY_SCHEMA,
+        "source": "voice_chain_benchmark",
+        "live": True,
+        "honjiaReady": honjia_ready,
+        "codeReady": honjia_ready,
+        "turnCount": turn_count,
+        "failedMetrics": failed_metrics,
+        "roundLeakCount": int(round_leak.get("count") or 0),
+        "roundLeakRate": float(round_leak.get("rate") or 0.0),
+        "roundLeakFree": round_leak_free,
+        "interruptStopReady": interrupt_stop_ready,
+        "streamingReady": streaming_ready,
+        "bottleneck": dict(bottleneck),
+        "summary": message,
+        "readinessMessage": message,
+    }
 
 
 def _as_float(value: Any) -> float | None:

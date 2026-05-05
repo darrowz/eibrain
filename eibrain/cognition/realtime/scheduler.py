@@ -75,7 +75,9 @@ class RealtimeCognitiveScheduler:
             cancellation_token=turn.cancellation_token,
             asr_text=observed_text,
         )
+        fast_started = time.perf_counter()
         fast_result = self.fast_engine.process_partial(turn, observed_text, deadline_ms=deadline_ms)
+        fast_latency_ms = round(max(0.0, time.perf_counter() - fast_started) * 1000, 3)
         fast_payload = _to_dict(fast_result)
         microfeedback = _first_text(
             fast_payload.get("microfeedback"),
@@ -101,6 +103,7 @@ class RealtimeCognitiveScheduler:
         if memory_candidates:
             prefetch.extend(_normalize_memory_candidates(memory_candidates, source="caller_memory"))
         turn.memory_candidates = _merge_memory_candidates(turn.memory_candidates, prefetch)
+        self._set_lane_metric(turn, "fast", latency_ms=fast_latency_ms)
 
         return {
             "round_id": turn.round_id,
@@ -145,6 +148,7 @@ class RealtimeCognitiveScheduler:
             cancellation_token=turn.cancellation_token,
             asr_text=observed_text,
         )
+        self._set_lane_metric(turn, "slow", latency_ms=self._lane_latency_ms(turn, "slow"))
         return {
             "round_id": turn.round_id,
             "cancellation_token": turn.cancellation_token,
@@ -178,6 +182,7 @@ class RealtimeCognitiveScheduler:
             incoming = _normalize_memory_candidates(memory_candidates, source="caller_memory")
             turn.memory_candidates = _merge_memory_candidates(incoming, turn.memory_candidates)
 
+        slow_started = time.perf_counter()
         decision = self.slow_reasoner.decide(
             turn=turn,
             round_id=requested_round_id,
@@ -194,6 +199,7 @@ class RealtimeCognitiveScheduler:
             cancellation_token=requested_token,
             decision=decision,
         )
+        slow_latency_ms = round(max(0.0, time.perf_counter() - slow_started) * 1000, 3)
         turn.speech_plan = {
             "stable": True,
             "speech_segments": list(committed.get("speech_segments", [])),
@@ -204,7 +210,19 @@ class RealtimeCognitiveScheduler:
             "source": "realtime_cognitive_scheduler",
         }
         turn.action_plan = list(committed.get("action_plan", []))
+        arbiter_started = time.perf_counter()
         can_speak = self.arbiter.allow_speaking(self.turn_manager, turn, committed)
+        arbiter_latency_ms = round(max(0.0, time.perf_counter() - arbiter_started) * 1000, 3)
+        turn.safety_state["arbiter_verdict"] = {
+            "state": "approved" if can_speak else "blocked",
+            "status": "approved" if can_speak else "blocked",
+            "can_speak": can_speak,
+            "round_id": turn.round_id,
+            "cancellation_token": turn.cancellation_token,
+        }
+        self._set_lane_metric(turn, "slow", latency_ms=slow_latency_ms)
+        self._set_lane_metric(turn, "arbiter", latency_ms=arbiter_latency_ms)
+        self._set_lane_metric(turn, "speaking", latency_ms=round(slow_latency_ms + arbiter_latency_ms, 3))
         activity = self.activity_manager.propose(
             idle_seconds=idle_seconds,
             emotion_context=turn.emotion_state,
@@ -251,6 +269,7 @@ class RealtimeCognitiveScheduler:
     def snapshot(self) -> dict[str, Any]:
         payload = self.turn_manager.status_payload()
         current = payload.get("current") or {}
+        payload["lanes"] = self._lane_snapshots(self.turn_manager.current_turn())
         payload["scheduler"] = {
             "lane": "realtime_cognitive_scheduler",
             "current_round_id": payload.get("current_round_id"),
@@ -300,6 +319,117 @@ class RealtimeCognitiveScheduler:
             environment = dict(turn.emotion_state.get("environment", {}))
             environment.update(dict(environment_context))
             turn.emotion_state["environment"] = environment
+
+    def _set_lane_metric(self, turn: TurnBlackboard, lane: str, *, latency_ms: float) -> None:
+        metrics = turn.safety_state.setdefault("lane_metrics", {})
+        if isinstance(metrics, dict):
+            metrics[str(lane)] = {"latency_ms": round(max(0.0, float(latency_ms)), 3)}
+
+    def _lane_latency_ms(self, turn: TurnBlackboard | None, lane: str) -> float:
+        if turn is None:
+            return 0.0
+        metrics = turn.safety_state.get("lane_metrics")
+        if not isinstance(metrics, Mapping):
+            return 0.0
+        lane_payload = metrics.get(lane)
+        if not isinstance(lane_payload, Mapping):
+            return 0.0
+        latency = lane_payload.get("latency_ms")
+        try:
+            return round(max(0.0, float(latency)), 3)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _lane_snapshots(self, turn: TurnBlackboard | None) -> dict[str, dict[str, Any]]:
+        round_id = turn.round_id if turn is not None else ""
+        cancellation_token = turn.cancellation_token if turn is not None else ""
+        cancellable = bool(
+            turn is not None
+            and turn.state == "active"
+            and (turn.cancellation is None or not turn.cancellation.cancelled)
+        )
+        fast_hypotheses = list(turn.fast_hypotheses) if turn is not None else []
+        stable_decisions = list(turn.stable_decisions) if turn is not None else []
+        stable_speech_segments = list(turn.stable_speech_segments) if turn is not None else []
+        final_text = str(turn.asr_final or "") if turn is not None else ""
+        verdict = turn.safety_state.get("arbiter_verdict") if turn is not None else None
+        verdict_state = str(verdict.get("state") or "") if isinstance(verdict, Mapping) else ""
+        fast_status = "hypothesis_pending" if fast_hypotheses else "idle"
+        slow_status = "stable_committed" if stable_decisions else "decision_pending" if final_text else "idle"
+        arbiter_status = verdict_state or ("pending" if stable_decisions else "idle")
+        speaking_status = (
+            "ready"
+            if stable_speech_segments and verdict_state == "approved"
+            else "blocked"
+            if stable_speech_segments
+            else "idle"
+        )
+
+        return {
+            "fast": self._lane_payload(
+                lane="fast",
+                status=fast_status,
+                latency_ms=self._lane_latency_ms(turn, "fast"),
+                pending_count=len(fast_hypotheses),
+                stable_count=0,
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                cancellable=cancellable,
+            ),
+            "slow": self._lane_payload(
+                lane="slow",
+                status=slow_status,
+                latency_ms=self._lane_latency_ms(turn, "slow"),
+                pending_count=1 if final_text and not stable_decisions else 0,
+                stable_count=len(stable_decisions),
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                cancellable=cancellable,
+            ),
+            "arbiter": self._lane_payload(
+                lane="arbiter",
+                status=arbiter_status,
+                latency_ms=self._lane_latency_ms(turn, "arbiter"),
+                pending_count=1 if stable_decisions and not verdict_state else 0,
+                stable_count=1 if verdict_state else 0,
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                cancellable=cancellable,
+            ),
+            "speaking": self._lane_payload(
+                lane="speaking",
+                status=speaking_status,
+                latency_ms=self._lane_latency_ms(turn, "speaking"),
+                pending_count=len(stable_speech_segments) if stable_speech_segments and verdict_state != "approved" else 0,
+                stable_count=len(stable_speech_segments),
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+                cancellable=cancellable,
+            ),
+        }
+
+    def _lane_payload(
+        self,
+        *,
+        lane: str,
+        status: str,
+        latency_ms: float,
+        pending_count: int,
+        stable_count: int,
+        round_id: str,
+        cancellation_token: str,
+        cancellable: bool,
+    ) -> dict[str, Any]:
+        return {
+            "lane": lane,
+            "status": status,
+            "latency_ms": round(max(0.0, float(latency_ms)), 3),
+            "pending_count": max(0, int(pending_count)),
+            "stable_count": max(0, int(stable_count)),
+            "round_id": round_id,
+            "cancellation_token": cancellation_token,
+            "cancellable": cancellable,
+        }
 
     def _prefetch_memory(self, *, turn: TurnBlackboard, text: str) -> list[dict[str, Any]]:
         stripped = text.strip()

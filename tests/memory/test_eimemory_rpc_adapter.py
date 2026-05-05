@@ -93,7 +93,12 @@ def test_eimemory_rpc_adapter_merges_custom_task_context(monkeypatch) -> None:
                 "goal": "respond to spoken user input",
                 "organ": "ear",
                 "modality": "audio_text",
-                "recall_profile": "precision",
+                "recall_profile": "subject_dialogue",
+                "allowed_sources": ["eibrain.audio_dialogue", "eibrain.preference"],
+                "blocked_sources": ["eimemory.news", "eimemory.paper", "eimemory.knowledge_base"],
+                "privacy": {"scope": "subject_conversation", "sensitivity": "personal"},
+                "writeback_eligibility": {"eligible": True, "requires_explicit_memory_request": True},
+                "decision_trace": {"decision": "voice_subject_dialogue_recall", "why": "subject memory only"},
             },
         )
     )
@@ -103,7 +108,15 @@ def test_eimemory_rpc_adapter_merges_custom_task_context(monkeypatch) -> None:
     assert task_context["goal"] == "respond to spoken user input"
     assert task_context["organ"] == "ear"
     assert task_context["modality"] == "audio_text"
-    assert task_context["recall_profile"] == "precision"
+    assert task_context["recall_profile"] == "subject_dialogue"
+    assert task_context["allowed_sources"] == ["eibrain.audio_dialogue", "eibrain.preference"]
+    assert task_context["blocked_sources"] == ["eimemory.news", "eimemory.paper", "eimemory.knowledge_base"]
+    assert task_context["privacy"] == {"scope": "subject_conversation", "sensitivity": "personal"}
+    assert task_context["writeback_eligibility"] == {"eligible": True, "requires_explicit_memory_request": True}
+    assert task_context["decision_trace"] == {
+        "decision": "voice_subject_dialogue_recall",
+        "why": "subject memory only",
+    }
 
 
 def test_eimemory_rpc_adapter_maps_recall_bundle_to_memory_result(monkeypatch) -> None:

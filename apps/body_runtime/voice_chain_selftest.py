@@ -134,8 +134,14 @@ def run_voice_chain_selftest(*, thresholds: Mapping[str, Any] | None = None) -> 
     ]
     round_leak_count = int(benchmark.get("roundLeakCount") or 0)
     round_leak_free = round_leak_count == 0
-    code_ready = not failed_metrics and round_leak_free and all(
-        bool(turn.get("adapterApplied")) for turn in (normal, interrupted)
+    streaming = benchmark.get("streaming") if isinstance(benchmark.get("streaming"), Mapping) else {}
+    interrupt_stop = benchmark.get("interruptStop") if isinstance(benchmark.get("interruptStop"), Mapping) else {}
+    readiness_summary = benchmark.get("readinessSummary") if isinstance(benchmark.get("readinessSummary"), Mapping) else {}
+    streaming_ready = bool(streaming.get("ready"))
+    interrupt_stop_ready = bool(interrupt_stop.get("ready"))
+    code_ready = (
+        bool(readiness_summary.get("codeReady"))
+        and all(bool(turn.get("adapterApplied")) for turn in (normal, interrupted))
     )
     event_names = [*normal["eventNames"], *interrupted["eventNames"]]
     operation_counts = Counter([*normal["operations"], *interrupted["operations"]])
@@ -150,8 +156,15 @@ def run_voice_chain_selftest(*, thresholds: Mapping[str, Any] | None = None) -> 
             "failedMetrics": failed_metrics,
             "roundLeakCount": round_leak_count,
             "roundLeakFree": round_leak_free,
+            "roundLeakRate": benchmark.get("roundLeakRate"),
+            "streamingReady": streaming_ready,
+            "interruptStopReady": interrupt_stop_ready,
             "metrics": benchmark.get("metrics", {}),
+            "stageLatencyMetrics": benchmark.get("stageLatencyMetrics", {}),
+            "streaming": streaming,
+            "interruptStop": interrupt_stop,
             "bottleneck": benchmark.get("bottleneck"),
+            "readinessSummary": readiness_summary,
             "summary": "selftest ready: protocol path passed" if code_ready else "selftest not ready",
             "readinessMessage": (
                 "offline protocol selftest passed; honjia live benchmark still required"
@@ -166,6 +179,8 @@ def run_voice_chain_selftest(*, thresholds: Mapping[str, Any] | None = None) -> 
         "honjiaRequired": False,
         "codeReady": code_ready,
         "roundLeakFree": round_leak_free,
+        "streamingReady": streaming_ready,
+        "interruptStopReady": interrupt_stop_ready,
         "failedMetrics": failed_metrics,
         "thresholds": threshold_values,
         "benchmark": benchmark,
@@ -251,6 +266,7 @@ def _run_turn(
 
     snapshot = session.snapshot()
     latency = snapshot.get("latency_ms") if isinstance(snapshot.get("latency_ms"), Mapping) else {}
+    stage_latency_ms = _stage_latency_ms_from_snapshot(latency)
     benchmark_turn = {
         "roundId": round_id,
         "wakeToListenMs": 0.0,
@@ -258,6 +274,12 @@ def _run_turn(
         "firstTokenMs": latency.get("final_asr_to_first_reply_token", 0.0),
         "firstAudioMs": latency.get("first_speech", 0.0),
         "interruptStopMs": timings_ms.get("stop", 0.0) if interrupted else 0.0,
+        "stageLatencyMs": stage_latency_ms,
+        "streaming": {
+            "asrPartial": "ei.voice.asr.partial" in event_names,
+            "llmDelta": "ei.dialogue.agent.delta" in event_names,
+            "ttsChunk": "ei.voice.tts.chunk" in event_names,
+        },
         "roundLeak": False,
         "interrupted": interrupted,
     }
@@ -274,6 +296,28 @@ def _run_turn(
             "chunkCount": len(playback.chunks),
         },
     }
+
+
+def _stage_latency_ms_from_snapshot(latency: Mapping[str, Any]) -> dict[str, float]:
+    asr = _float_or_zero(latency.get("final_asr"))
+    first_token = _float_or_zero(latency.get("final_asr_to_first_reply_token"))
+    first_speech = _float_or_zero(latency.get("first_speech"))
+    return {
+        "listen_asr": asr,
+        "llm_first_token": first_token,
+        "tts_first_audio": max(0.0, first_speech - asr - first_token),
+        "total": first_speech,
+    }
+
+
+def _float_or_zero(value: Any) -> float:
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number == number and number not in (float("inf"), float("-inf")) else 0.0
 
 
 def _round_event(name: str, *, round_id: str, content: Mapping[str, Any]) -> dict[str, Any]:

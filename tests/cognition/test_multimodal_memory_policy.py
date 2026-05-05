@@ -26,6 +26,48 @@ def test_audio_response_recall_prefers_hongtu_subject_memory() -> None:
     assert context["recall_filters"]["channel_ids"] == ["voice.honjia", "global.profile", "global.summary"]
 
 
+def test_subject_voice_recall_blocks_knowledge_news_and_records_decision_trace() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="brain.respond",
+        modality="audio_text",
+        organ="ear",
+        phase="engaged",
+        salience_score=0.74,
+        body_capabilities={"can_hear_voice": True, "can_speak": True},
+        query="你还记得我刚才说喜欢什么吗",
+        trace_id="trace-voice-1",
+        source_event_id="asr-final-1",
+    )
+
+    assert context["recall_profile"] == "subject_dialogue"
+    assert context["allowed_sources"] == [
+        "eibrain.identity",
+        "eibrain.preference",
+        "eibrain.dialogue",
+        "eibrain.audio_dialogue",
+        "openclaw.agent_end",
+    ]
+    assert set(context["blocked_sources"]) >= {
+        "eimemory.knowledge.claims",
+        "eimemory.knowledge_base",
+        "eimemory.news",
+        "eimemory.paper",
+        "eimemory.research",
+    }
+    assert context["privacy"] == {
+        "scope": "subject_conversation",
+        "sensitivity": "personal",
+        "allowed_use": "embodied_response",
+    }
+    assert context["writeback_eligibility"] == {
+        "eligible": True,
+        "requires_explicit_memory_request": True,
+        "default_memory_type": "conversation",
+    }
+    assert context["decision_trace"]["decision"] == "voice_subject_dialogue_recall"
+    assert "avoid knowledge/news/paper sources" in context["decision_trace"]["why"]
+
+
 def test_visual_orient_recall_prefers_visual_identity_memory() -> None:
     context = MultimodalMemoryPolicy().build_recall_context(
         task_type="brain.orient",
@@ -48,6 +90,30 @@ def test_visual_orient_recall_prefers_visual_identity_memory() -> None:
     assert context["preferred_modalities"] == ["vision", "multimodal"]
     assert context["visual_context"] == {"target_x": 0.42}
     assert context["recall_filters"]["source_systems"] == ["eibrain", "openclaw"]
+
+
+def test_visual_orient_recall_uses_visual_profile_and_low_sensitivity_trace() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="brain.orient",
+        modality="vision",
+        organ="eye",
+        phase="attending",
+        salience_score=0.69,
+        body_capabilities={"can_see_people": True},
+        query="look at the person near the desk",
+        visual_context={"target_label": "person"},
+    )
+
+    assert context["recall_profile"] == "visual_grounding"
+    assert "eimemory.news" in context["blocked_sources"]
+    assert context["privacy"]["scope"] == "situational_awareness"
+    assert context["privacy"]["sensitivity"] == "environmental"
+    assert context["writeback_eligibility"] == {
+        "eligible": True,
+        "requires_explicit_memory_request": False,
+        "default_memory_type": "world_observation",
+    }
+    assert context["decision_trace"]["decision"] == "vision_world_grounding_recall"
 
 
 def test_diagnostic_recall_uses_policy_sources() -> None:
@@ -87,6 +153,10 @@ def test_action_feedback_recall_excludes_identity_memory_sources() -> None:
     assert context["trace_id"] == "trace-neck-1"
     assert context["source_event_id"] == "evt-outcome-1"
     assert context["recall_filters"]["memory_types"] == context["allowed_memory_types"]
+    assert context["recall_profile"] == "action_outcome_repair"
+    assert context["privacy"]["sensitivity"] == "operational"
+    assert context["writeback_eligibility"]["default_memory_type"] == "action_outcome"
+    assert context["decision_trace"]["decision"] == "action_outcome_feedback_recall"
 
 
 def test_writeback_outcome_tags_subject_modality_and_organ() -> None:
@@ -132,6 +202,10 @@ def test_dialogue_without_explicit_memory_is_working_candidate_not_identity() ->
     assert candidate["meta"]["identity_memory"] is False
     assert candidate["meta"]["persona_memory"] is False
     assert "eibrain.identity" not in candidate["source"]
+    assert candidate["writeback"]["eligible"] is False
+    assert candidate["meta"]["dedupe_key"].startswith("conversation:audio_text:ear:")
+    assert candidate["meta"]["privacy"]["sensitivity"] == "personal"
+    assert candidate["meta"]["decision_trace"]["decision"] == "writeback_conversation_working_only"
 
 
 def test_explicit_preference_dialogue_is_semantic_candidate_not_identity() -> None:
@@ -156,6 +230,14 @@ def test_explicit_preference_dialogue_is_semantic_candidate_not_identity() -> No
     assert candidate["meta"]["identity_memory"] is False
     assert candidate["meta"]["durable_identity_allowed"] is False
     assert "semantic_candidate" in candidate["tags"]
+    assert candidate["writeback"] == {
+        "eligible": True,
+        "reason": "explicit_memory_request",
+        "target_memory_type": "semantic_candidate",
+    }
+    assert candidate["meta"]["privacy"]["scope"] == "subject_conversation"
+    assert candidate["meta"]["sensitivity"] == "personal"
+    assert candidate["meta"]["decision_trace"]["why"] == "explicit user memory request, but not durable identity"
 
 
 def test_visual_observation_is_episodic_candidate_with_source_trace_metadata() -> None:
@@ -177,6 +259,10 @@ def test_visual_observation_is_episodic_candidate_with_source_trace_metadata() -
     assert candidate["content"]["visual_context"] == {"target_x": 0.7, "summary": "person standing near desk"}
     assert candidate["meta"]["identity_memory"] is False
     assert "vision" in candidate["tags"]
+    assert candidate["writeback"]["eligible"] is True
+    assert candidate["meta"]["dedupe_key"].startswith("world_observation:vision:eye:")
+    assert candidate["meta"]["privacy"]["sensitivity"] == "environmental"
+    assert candidate["meta"]["decision_trace"]["decision"] == "writeback_visual_world_observation"
 
 
 def test_action_outcome_feedback_is_procedural_and_training_candidate() -> None:
@@ -203,6 +289,14 @@ def test_action_outcome_feedback_is_procedural_and_training_candidate() -> None:
     assert candidate["meta"]["trace_id"] == "trace-neck-2"
     assert candidate["content"]["suggested_adjustment"] == "increase yaw deadband before moving"
     assert candidate["meta"]["identity_memory"] is False
+    assert candidate["writeback"] == {
+        "eligible": True,
+        "reason": "procedural_adjustment",
+        "target_memory_type": "procedural_adjustment_candidate",
+    }
+    assert candidate["meta"]["dedupe_key"].startswith("procedural_adjustment_candidate:multimodal_action:neck:")
+    assert candidate["meta"]["privacy"]["sensitivity"] == "operational"
+    assert candidate["meta"]["decision_trace"]["decision"] == "writeback_procedural_training_candidate"
 
 
 def test_user_feedback_without_adjustment_is_training_candidate_not_identity() -> None:

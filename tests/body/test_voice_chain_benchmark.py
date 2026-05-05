@@ -123,3 +123,107 @@ def test_summarize_voice_chain_uses_default_thresholds_and_is_json_serializable(
     assert summary["metrics"]["asrFinalMs"]["pass"] is True
     assert summary["metrics"]["firstTokenMs"]["pass"] is False
     assert json.loads(json.dumps(summary, sort_keys=True)) == summary
+
+
+def test_summarize_voice_chain_reports_round_stage_and_readiness_summary() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
+
+    summary = summarize_voice_chain(
+        [
+            {
+                "roundId": "round-1",
+                "status": "reply_ready",
+                "asrFinalMs": 500.0,
+                "firstTokenMs": 260.0,
+                "firstAudioMs": 1200.0,
+                "stageLatencyMs": {
+                    "listen_asr": 500.0,
+                    "llm_first_token": 260.0,
+                    "tts_first_audio": 440.0,
+                    "total": 1200.0,
+                },
+                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "roundLeak": False,
+            },
+            {
+                "roundId": "round-2",
+                "status": "interrupted",
+                "asrFinalMs": 700.0,
+                "firstTokenMs": 320.0,
+                "firstAudioMs": 1600.0,
+                "interruptStopMs": 180.0,
+                "stageLatencyMs": {
+                    "listen_asr": 700.0,
+                    "llm_first_token": 320.0,
+                    "tts_first_audio": 580.0,
+                    "total": 1600.0,
+                },
+                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "interrupted": True,
+                "roundLeak": False,
+            },
+            {
+                "roundId": "round-3",
+                "status": "stale_round_blocked",
+                "asrFinalMs": 650.0,
+                "firstTokenMs": 300.0,
+                "firstAudioMs": 1500.0,
+                "stageLatencyMs": {
+                    "listen_asr": 650.0,
+                    "llm_first_token": 300.0,
+                    "tts_first_audio": 550.0,
+                    "total": 1500.0,
+                },
+                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "roundLeak": True,
+            },
+        ],
+        thresholds={"asrFinalMs": 800.0, "firstTokenMs": 700.0, "firstAudioMs": 2000.0, "interruptStopMs": 300.0},
+    )
+
+    assert summary["rounds"][0]["roundId"] == "round-1"
+    assert summary["rounds"][0]["stageLatencyMs"]["listen_asr"] == 500.0
+    assert summary["rounds"][1]["interrupted"] is True
+    assert summary["rounds"][1]["interruptStopMs"] == 180.0
+    assert summary["rounds"][2]["roundLeak"] is True
+    assert summary["stageLatencyMetrics"]["listen_asr"]["avg"] == pytest.approx(616.6666666666666)
+    assert summary["stageLatencyMetrics"]["listen_asr"]["p95"] == 700.0
+    assert summary["stageLatencyMetrics"]["total"]["p95"] == 1600.0
+    assert summary["roundLeak"] == {"count": 1, "rate": pytest.approx(1 / 3), "free": False, "pass": False}
+    assert summary["interruptStop"]["requiredCount"] == 1
+    assert summary["interruptStop"]["confirmedCount"] == 1
+    assert summary["interruptStop"]["ready"] is True
+    assert summary["streaming"]["ready"] is True
+    assert summary["streaming"]["readyTurnCount"] == 3
+    assert summary["readinessSummary"]["honjiaReady"] is False
+    assert summary["readinessSummary"]["roundLeakFree"] is False
+    assert summary["readinessSummary"]["interruptStopReady"] is True
+    assert summary["readinessSummary"]["streamingReady"] is True
+    assert "round leak" in summary["readinessSummary"]["readinessMessage"]
+    assert json.loads(json.dumps(summary, sort_keys=True)) == summary
+
+
+def test_summarize_voice_chain_treats_non_empty_streaming_payloads_as_present() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
+
+    summary = summarize_voice_chain(
+        [
+            {
+                "roundId": "round-streaming-text",
+                "asrFinalMs": 500.0,
+                "firstTokenMs": 260.0,
+                "firstAudioMs": 1200.0,
+                "interruptStopMs": 120.0,
+                "status": "interrupted",
+                "streaming": {
+                    "asrPartial": "ni hao",
+                    "replyDelta": "hello",
+                    "ttsChunk": "chunk-001",
+                },
+            }
+        ]
+    )
+
+    assert summary["streaming"]["ready"] is True
+    assert summary["rounds"][0]["streamingReady"] is True
+    assert summary["readinessSummary"]["streamingReady"] is True

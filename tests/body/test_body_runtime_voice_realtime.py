@@ -112,6 +112,42 @@ def test_voice_realtime_exposes_voice_chain_benchmark_in_dialogue_payload() -> N
     assert consumed["voice_chain_readiness"]["honjiaReady"] is True
 
 
+def test_voice_realtime_readiness_uses_streaming_and_interrupt_acceptance() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+
+    benchmark = {
+        "turnCount": 2,
+        "roundLeakCount": 0,
+        "metrics": {
+            "asrFinalMs": {"p95": 500.0, "threshold": 800.0, "pass": True},
+            "firstAudioMs": {"p95": 1400.0, "threshold": 2000.0, "pass": True},
+        },
+        "streaming": {"ready": False, "missingSignals": [{"roundId": "round-1", "signals": ["ttsChunk"]}]},
+        "interruptStop": {"ready": True, "requiredCount": 1, "confirmedCount": 1, "failedCount": 0},
+        "readinessSummary": {
+            "streamingReady": False,
+            "interruptStopReady": True,
+            "summary": "not ready: streaming",
+        },
+    }
+    runtime = BodyRuntimeApp()
+    runtime.update_voice_dialogue_state(
+        enabled=True,
+        running=True,
+        phase="idle",
+        last_status="reply_ready",
+        voice_chain_benchmark=benchmark,
+    )
+
+    readiness = runtime.voice_realtime()["voice_chain_readiness"]
+
+    assert readiness["honjiaReady"] is False
+    assert readiness["streamingReady"] is False
+    assert readiness["interruptStopReady"] is True
+    assert readiness["streaming"]["missingSignals"][0]["signals"] == ["ttsChunk"]
+    assert "streaming" in readiness["summary"]
+
+
 def test_voice_realtime_exposes_waiting_voice_chain_readiness_without_fake_live_data() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eihead.monitoring.voice import build_voice_diagnostics_from_app

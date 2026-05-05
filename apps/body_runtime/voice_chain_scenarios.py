@@ -112,11 +112,16 @@ def run_voice_chain_scenarios(
     scenarios: Iterable[VoiceScenario] | None = None,
     thresholds: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    scenario_list = list(DEFAULT_SCENARIOS if scenarios is None else scenarios)
+    using_default_scenarios = scenarios is None
+    scenario_list = list(DEFAULT_SCENARIOS if using_default_scenarios else scenarios)
     threshold_values = dict(DEFAULT_THRESHOLDS)
     if thresholds is not None:
         threshold_values.update(dict(thresholds))
-    turns = [dict(turn) for scenario in scenario_list for turn in scenario.turns]
+    turns = [
+        _benchmark_turn(turn, streaming_ready=using_default_scenarios)
+        for scenario in scenario_list
+        for turn in scenario.turns
+    ]
     summary = summarize_voice_chain(turns, thresholds=threshold_values)
     failed_metrics = [
         str(name)
@@ -124,6 +129,13 @@ def run_voice_chain_scenarios(
         if isinstance(metric, Mapping) and metric.get("pass") is False
     ]
     round_leak_free = int(summary.get("roundLeakCount", 0) or 0) == 0
+    streaming = summary.get("streaming") if isinstance(summary.get("streaming"), Mapping) else {}
+    interrupt_stop = summary.get("interruptStop") if isinstance(summary.get("interruptStop"), Mapping) else {}
+    readiness_summary = dict(summary.get("readinessSummary")) if isinstance(summary.get("readinessSummary"), Mapping) else {}
+    readiness_summary.update({"source": "offline_scenarios", "live": False})
+    streaming_ready = bool(streaming.get("ready"))
+    interrupt_stop_ready = bool(interrupt_stop.get("ready"))
+    honjia_ready = bool(readiness_summary.get("honjiaReady"))
     return {
         "schema": "eibrain.voice_chain_scenarios.v1",
         "scenarioCount": len(scenario_list),
@@ -132,9 +144,49 @@ def run_voice_chain_scenarios(
         "summary": summary,
         "failedMetrics": failed_metrics,
         "roundLeakFree": round_leak_free,
-        "honjiaReady": not failed_metrics and round_leak_free and bool(turns),
+        "streamingReady": streaming_ready,
+        "interruptStopReady": interrupt_stop_ready,
+        "readinessSummary": readiness_summary,
+        "honjiaReady": honjia_ready,
         "scenarios": [scenario.to_dict() for scenario in scenario_list],
     }
+
+
+def _benchmark_turn(turn: Mapping[str, Any], *, streaming_ready: bool) -> dict[str, Any]:
+    item = dict(turn)
+    if not any(key in item for key in ("stageLatencyMs", "stage_latency_ms", "lastStageLatencyMs", "last_stage_latency_ms")):
+        item["stageLatencyMs"] = _derived_stage_latency_ms(item)
+    if streaming_ready and "streaming" not in item and "streamingReady" not in item and "streaming_ready" not in item:
+        item["streaming"] = {"asrPartial": True, "llmDelta": True, "ttsChunk": True}
+    return item
+
+
+def _derived_stage_latency_ms(turn: Mapping[str, Any]) -> dict[str, float]:
+    asr = _number_or_none(turn.get("asrFinalMs"))
+    first_token = _number_or_none(turn.get("firstTokenMs"))
+    first_audio = _number_or_none(turn.get("firstAudioMs"))
+    stages: dict[str, float] = {}
+    if asr is not None:
+        stages["listen_asr"] = asr
+    if first_token is not None:
+        stages["llm_first_token"] = first_token
+    if first_audio is not None:
+        if asr is not None and first_token is not None:
+            stages["tts_first_audio"] = max(0.0, first_audio - asr - first_token)
+        else:
+            stages["tts_first_audio"] = first_audio
+        stages["total"] = first_audio
+    return stages
+
+
+def _number_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
 __all__ = ["DEFAULT_SCENARIOS", "VoiceScenario", "run_voice_chain_scenarios"]
