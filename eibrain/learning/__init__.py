@@ -1,1 +1,1 @@
-"""Learning domain placeholders."""
+"""Learning, review, adaptation, and exploration helpers."""

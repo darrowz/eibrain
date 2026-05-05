@@ -9,7 +9,8 @@ from pathlib import Path
 import time
 
 from eibrain.protocol.actions import PlaySpeechAction, StopSpeechAction
-from eibrain.body.health import DegradationManager
+from eibrain.body.health import DegradationManager, FallbackPolicy
+from eibrain.body.state import BodyStateManager
 from eibrain.body.ear_stream import EarStreamProcessor
 from eibrain.body.ear_stream import ArecordStreamCapture
 from eibrain.body.ear_stream import pcm_signal_stats
@@ -37,6 +38,10 @@ class BodyRuntimeApp:
         self.config = config or EIBrainConfig()
         self.organs = self._build_organs()
         self.degradation_manager = DegradationManager()
+        self.body_state_manager = BodyStateManager(
+            node_id=self.config.body.node_id,
+            degradation_manager=self.degradation_manager,
+        )
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
         self._neck_fusion = NeckFusionPolicy(NeckFusionConfig(consecutive_bias_required=1))
@@ -831,11 +836,28 @@ class BodyRuntimeApp:
             for organ in self.organs
         ]
         degradation = self.degradation_manager.evaluate(organ_states)
+        fallback_policy = FallbackPolicy.from_capabilities(
+            degradation.capabilities,
+            degradation_mode=degradation.degradation_mode,
+        )
+        runtime_sections = {
+            "voice_dialogue": dict(self.voice_dialogue_state),
+            "visual_tracking": dict(self.visual_tracking_state),
+            "interaction_state": dict(self.interaction_state),
+            "identity_registry": dict(self.identity_registry),
+        }
+        body_state = self.body_state_manager.snapshot(
+            organ_states,
+            recent_events=list(self._recent_events),
+            runtime=runtime_sections,
+        )
         return {
             "node_id": self.config.body.node_id,
             "organ_count": len(organ_states),
             "degradation_mode": degradation.degradation_mode,
             "capabilities": degradation.capabilities.to_dict(),
+            "fallback_policy": fallback_policy.to_dict(),
+            "body_state": body_state,
             "organs": {state.organ: state.to_dict() for state in organ_states},
             "recent_event_count": len(self._recent_events),
             "voice_dialogue": dict(self.voice_dialogue_state),

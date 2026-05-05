@@ -1,4 +1,4 @@
-"""Operator console placeholder."""
+"""Operator console status aggregation."""
 
 from __future__ import annotations
 

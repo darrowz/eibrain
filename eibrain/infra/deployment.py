@@ -50,7 +50,7 @@ def bootstrap_default_deployment(config: EIBrainConfig) -> DeploymentLayout:
                 "- decoder.onnx",
                 "- joiner.onnx",
                 "",
-                "You can replace the placeholder files once the real model bundle is ready.",
+                "Replace the empty marker files once the real model bundle is ready.",
             ]
         ),
         encoding="utf-8",
