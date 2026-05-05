@@ -258,7 +258,7 @@ def test_voice_realtime_summarizes_realtime_cognition_scheduler_snapshot() -> No
             "state": "active",
             "lanes": {
                 "fast_think": {"state": "ready", "latency_ms": 96.0, "hypothesis_count": 2},
-                "slow_reasoner": {"state": "thinking", "latency_ms": 340.0},
+                "slow_reasoning": {"state": "thinking", "latency_ms": 340.0},
                 "arbiter": {"state": "approved", "last_decision": "speak"},
             },
             "speech_action_plan": {

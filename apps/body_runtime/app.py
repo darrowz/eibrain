@@ -1683,7 +1683,7 @@ class BodyRuntimeApp:
                 scheduler_state,
                 dialogue,
                 realtime_session,
-                keys=("slow_reasoner", "slowReasoner", "slow_lane", "slow", "slow_thinking"),
+                keys=("slow_reasoner", "slowReasoner", "slow_reasoning", "slowReasoning", "slow_lane", "slow", "slow_thinking"),
             ),
             default_state="unknown",
         )

@@ -27,6 +27,7 @@ from .memory import MemoryOrchestrator
 from .activity import ProactiveActivityManager
 from .scheduler import RealtimeCognitiveScheduler
 from .slow import SlowReasoner
+from .voice_runtime_bridge import VoiceRuntimeBridge
 
 __all__ = [
     "OBSERVATION_KINDS",
@@ -47,6 +48,7 @@ __all__ = [
     "SlowReasoner",
     "TurnBlackboard",
     "FastThinkOutput",
+    "VoiceRuntimeBridge",
     "asr_final",
     "asr_partial",
     "environment",

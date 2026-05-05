@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
+from .eivoice_runtime import build_eivoice_runtime_panel
 from .neck import build_neck_diagnostics_from_app
 from .realtime_vision import realtime_vision_payload_from_app
 from .voice import build_voice_diagnostics_from_app
@@ -192,6 +193,9 @@ def create_handler(
                     HTTPStatus.OK,
                     build_voice_diagnostics_from_app(runtime_app, timestamp=now()),
                 )
+                return
+            if path == "/api/eivoice/runtime":
+                self._write_json(HTTPStatus.OK, _eivoice_runtime_payload(runtime_app))
                 return
             if path in {"/api/neck/status", "/api/neck/realtime"}:
                 self._write_json(
@@ -435,6 +439,32 @@ def _recent_events_payload(app: Any, timestamp: float) -> JsonObject:
     }
 
 
+def _eivoice_runtime_payload(app: Any) -> JsonObject:
+    return {"eivoiceRuntime": build_eivoice_runtime_panel(_eivoice_runtime_status_from_app(app))}
+
+
+def _eivoice_runtime_status_from_app(app: Any) -> JsonObject:
+    for attr_name in (
+        "eivoice_runtime_status",
+        "eivoice_runtime",
+        "latest_eivoice_runtime_status",
+        "latest_eivoice_runtime",
+    ):
+        if not hasattr(app, attr_name):
+            continue
+        source = getattr(app, attr_name)
+        payload = source() if callable(source) else source
+        if isinstance(payload, Mapping):
+            return dict(payload)
+
+    status = _call_json_object(app, "status")
+    for key in ("eivoice_runtime", "eivoiceRuntime", "voice_runtime", "runtime_status"):
+        payload = status.get(key)
+        if isinstance(payload, Mapping):
+            return dict(payload)
+    return {}
+
+
 def _coerce_action_log(raw_log: Any) -> tuple[list[JsonObject], JsonObject]:
     extra: JsonObject = {}
     if raw_log is None:
@@ -508,6 +538,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     capabilities = _safe_payload(lambda: _call_json_object(app, "capabilities"))
     realtime = _safe_payload(lambda: realtime_vision_payload_from_app(app, timestamp=timestamp))
     voice = _safe_payload(lambda: build_voice_diagnostics_from_app(app, timestamp=timestamp))
+    eivoice_runtime = _safe_payload(lambda: _eivoice_runtime_payload(app))
     neck = _safe_payload(lambda: build_neck_diagnostics_from_app(app, timestamp=timestamp))
     recent = _safe_payload(lambda: _recent_actions_payload(app, timestamp))
     recent_events = _safe_payload(lambda: _recent_events_payload(app, timestamp))
@@ -521,6 +552,13 @@ def _render_index(app: Any, timestamp: float) -> str:
     )
     realtime_state = _display_value(realtime.get("status", "unknown"))
     voice_state = _display_value(voice.get("status", "unknown"))
+    eivoice_panel = (
+        eivoice_runtime.get("eivoiceRuntime")
+        if isinstance(eivoice_runtime.get("eivoiceRuntime"), Mapping)
+        else {}
+    )
+    eivoice_runtime_state = _display_value(eivoice_panel.get("state", "unknown"))
+    eivoice_runtime_health = _display_value(eivoice_panel.get("health", "unknown"))
     neck_state = _display_value(neck.get("status", "unknown"))
     recent_state = _display_value(recent.get("status", "unknown"))
     recent_events_state = _display_value(recent_events.get("status", "unknown"))
@@ -582,6 +620,12 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_chain_readiness = _display_value(_voice_chain_readiness_summary(voice.get("voice_chain_readiness")))
     voice_chain_bottleneck = _display_value(_voice_chain_bottleneck_summary(voice.get("voice_chain_readiness")))
     voice_readiness = _display_value(voice.get("readiness_message") or "unknown")
+    eivoice_conversation = _display_value(eivoice_panel.get("conversationState", "unknown"))
+    eivoice_dropped_total = _display_value(_metric_value(eivoice_panel.get("droppedTotal")))
+    eivoice_queue_summary = eivoice_panel.get("queueSummary") if isinstance(eivoice_panel.get("queueSummary"), Mapping) else {}
+    eivoice_queue_fill = _display_value(_metric_value(eivoice_queue_summary.get("maxFillRatio")))
+    eivoice_warnings = eivoice_panel.get("warnings") if isinstance(eivoice_panel.get("warnings"), list) else []
+    eivoice_warning_text = _display_value(", ".join(str(item) for item in eivoice_warnings) or "none")
     neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
     neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
     neck_will_move = _display_value(neck.get("will_move") if neck.get("will_move") is not None else "unknown")
@@ -595,6 +639,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     capabilities_json = _json_for_html(capabilities)
     realtime_json = _json_for_html(realtime)
     voice_json = _json_for_html(voice)
+    eivoice_runtime_json = _json_for_html(eivoice_runtime)
     neck_json = _json_for_html(neck)
     recent_json = _json_for_html(recent)
     recent_events_json = _json_for_html(recent_events)
@@ -624,13 +669,14 @@ def _render_index(app: Any, timestamp: float) -> str:
   <main>
     <header>
       <h1>eihead native monitor</h1>
-      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · neck <strong>{neck_state}</strong> · actions <strong>{recent_state}</strong> · events <strong>{recent_events_state}</strong></p>
+      <p>node <strong>{node_id}</strong> · status <strong>{overall}</strong> · realtime vision <strong>{realtime_state}</strong> · voice <strong>{voice_state}</strong> · eivoice runtime <strong>{eivoice_runtime_health}</strong> · neck <strong>{neck_state}</strong> · actions <strong>{recent_state}</strong> · events <strong>{recent_events_state}</strong></p>
     </header>
     <section class="grid">
       <div class="card"><div class="label">Status API</div><a href="/api/status">/api/status</a></div>
       <div class="card"><div class="label">Capabilities API</div><a href="/api/capabilities">/api/capabilities</a></div>
       <div class="card"><div class="label">Realtime Vision API</div><a href="/api/vision/realtime">/api/vision/realtime</a></div>
       <div class="card"><div class="label">Voice Diagnostics API</div><a href="/api/voice/realtime">/api/voice/realtime</a></div>
+      <div class="card"><div class="label">EIVoice Runtime API</div><a href="/api/eivoice/runtime">/api/eivoice/runtime</a></div>
       <div class="card"><div class="label">Neck Diagnostics API</div><a href="/api/neck/status">/api/neck/status</a></div>
       <div class="card"><div class="label">Recent Actions API</div><a href="/api/actions/recent">/api/actions/recent</a></div>
       <div class="card"><div class="label">Recent Events API</div><a href="/api/events/recent">/api/events/recent</a></div>
@@ -703,6 +749,15 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Voice chain bottleneck</div><span class="metric">{voice_chain_bottleneck}</span></div>
       <div class="card"><div class="label">Readiness</div><span class="metric">{voice_readiness}</span></div>
     </section>
+    <h2>EIVoice Runtime</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Health</div><span class="metric">{eivoice_runtime_health}</span></div>
+      <div class="card"><div class="label">State</div><span class="metric">{eivoice_runtime_state}</span></div>
+      <div class="card"><div class="label">Conversation</div><span class="metric">{eivoice_conversation}</span></div>
+      <div class="card"><div class="label">Dropped total</div><span class="metric">{eivoice_dropped_total}</span></div>
+      <div class="card"><div class="label">Max queue fill</div><span class="metric">{eivoice_queue_fill}</span></div>
+      <div class="card"><div class="label">Warnings</div><span class="metric">{eivoice_warning_text}</span></div>
+    </section>
     <h2>Status</h2>
     <pre>{status_json}</pre>
     <h2>Capabilities</h2>
@@ -711,6 +766,8 @@ def _render_index(app: Any, timestamp: float) -> str:
     <pre>{realtime_json}</pre>
     <h2>Voice</h2>
     <pre>{voice_json}</pre>
+    <h2>eivoiceRuntime</h2>
+    <pre>{eivoice_runtime_json}</pre>
     <h2>Neck</h2>
     <pre>{neck_json}</pre>
     <h2>Recent Actions</h2>
