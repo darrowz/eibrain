@@ -49,6 +49,7 @@ APP_REALTIME_VISION_ATTRS = (
 REALTIME_VISION_CONTAINER_KEYS = ("eye", "vision", "realtime_vision", "body_runtime")
 CAPABILITY_NATIVE_PROVIDER_MAP = {
     "camera": "eye",
+    "hailo": "eye",
     "vision_backend": "eye",
     "microphone": "ear",
     "asr": "ear",
@@ -73,10 +74,23 @@ class HeadRuntimeApp:
     neck_pan_state: PanNeckState = field(default_factory=PanNeckState, repr=False)
     native_providers: Mapping[str, Any] | None = field(default=None, repr=False)
     _ptz_last_target_angle: int | None = field(default=None, init=False, repr=False)
+    _native_provider_services: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
+        raw_native_providers = self.native_providers if isinstance(self.native_providers, Mapping) else {}
+        self._native_provider_services = {
+            str(name): provider
+            for name, provider in raw_native_providers.items()
+            if _is_native_provider_service(provider)
+        }
+        normalizable_providers = {
+            str(name): _pending_native_provider_service_status(provider)
+            if str(name) in self._native_provider_services
+            else provider
+            for name, provider in raw_native_providers.items()
+        }
         self.native_providers = normalize_native_provider_statuses(
-            self.native_providers,
+            normalizable_providers,
             neck_servo_adapter=self.neck_servo_adapter,
         )
 
@@ -112,7 +126,7 @@ class HeadRuntimeApp:
 
     def snapshot(self) -> dict[str, Any]:
         body_snapshot, body_snapshot_check = self._body_snapshot_or_error()
-        native_providers = dict(self.native_providers or {})
+        native_providers = self._native_provider_statuses()
         checks, check_details, status = _runtime_check_summary(
             delegate_name=self.delegate_name,
             native_providers=native_providers,
@@ -160,7 +174,7 @@ class HeadRuntimeApp:
         node_id = _string_or_default(body_snapshot.get("node_id"), "honjia")
         manifest = CapabilityRegistry(
             {"node_id": node_id},
-            probe=_capability_live_probe_from_native_providers(self.native_providers or {}),
+            probe=_capability_live_probe_from_native_providers(self._native_provider_statuses()),
         ).manifest()
         status_snapshot = build_status_snapshot(manifest)
         return {
@@ -191,7 +205,7 @@ class HeadRuntimeApp:
                 now_ts=now_ts,
                 max_age_seconds=self.realtime_vision_max_age_seconds,
             ):
-                return payload
+                return _with_realtime_device_payload(payload)
         return None
 
     def voice_status(self) -> Mapping[str, Any] | Any | None:
@@ -619,6 +633,7 @@ class HeadRuntimeApp:
     def _realtime_vision_candidates(self) -> list[Any]:
         candidates: list[Any] = []
         candidates.extend(_attr_payload_candidates(self, APP_REALTIME_VISION_ATTRS))
+        candidates.extend(_native_provider_service_realtime_candidates(self._native_provider_services))
         candidates.extend(_native_provider_realtime_candidates(self.native_providers or {}))
         candidates.extend(_attr_payload_candidates(self.body_runtime, REALTIME_VISION_ATTRS))
         try:
@@ -627,6 +642,18 @@ class HeadRuntimeApp:
             body_snapshot = {}
         candidates.extend(_mapping_realtime_candidates(body_snapshot))
         return candidates
+
+    def _native_provider_statuses(self) -> dict[str, dict[str, Any]]:
+        statuses = dict(self.native_providers or {})
+        for provider_name, service in self._native_provider_services.items():
+            service_status = _native_provider_service_status(service)
+            if service_status is None:
+                continue
+            statuses[provider_name] = normalize_native_provider_statuses(
+                {provider_name: service_status},
+                neck_servo_adapter=self.neck_servo_adapter,
+            )[provider_name]
+        return statuses
 
     def _normalize_action(
         self,
@@ -914,6 +941,11 @@ def _native_provider_realtime_candidates(native_providers: Mapping[str, Any]) ->
     return candidates
 
 
+def _native_provider_service_realtime_candidates(native_provider_services: Mapping[str, Any]) -> list[Any]:
+    eye_provider = native_provider_services.get("eye") if isinstance(native_provider_services, Mapping) else None
+    return [eye_provider] if eye_provider is not None else []
+
+
 def _mapping_realtime_candidates(payload: Any) -> list[Any]:
     if not isinstance(payload, Mapping):
         return []
@@ -988,6 +1020,40 @@ def _capability_live_probe_from_native_providers(native_providers: Mapping[str, 
         }
 
     return probe
+
+
+def _is_native_provider_service(provider: Any) -> bool:
+    if provider is None or isinstance(provider, Mapping):
+        return False
+    return any(callable(getattr(provider, method_name, None)) for method_name in ("poll", "status")) or hasattr(
+        provider,
+        "latest_status",
+    )
+
+
+def _pending_native_provider_service_status(provider: Any) -> dict[str, Any]:
+    provider_name = provider.__class__.__name__ if provider is not None else "native_provider_service"
+    return {
+        "status": "unknown",
+        "provider": provider_name,
+        "reason": "native_provider_service_status_pending",
+    }
+
+
+def _native_provider_service_status(service: Any) -> Any | None:
+    latest_status = getattr(service, "latest_status", None)
+    if latest_status is not None:
+        return latest_status
+
+    for method_name in ("status", "poll"):
+        method = getattr(service, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            return method()
+        except TypeError:
+            continue
+    return None
 
 
 def _capability_status_from_native_provider(native_status: str, *, hardware_verified: bool) -> str:
@@ -1210,13 +1276,7 @@ def _resolve_realtime_payload_candidate(payload: Any, *, seen: set[int] | None =
         return payload
     seen.add(candidate_id)
 
-    latest_status = getattr(payload, "latest_status", None)
-    if latest_status is not None:
-        resolved = _resolve_realtime_payload_candidate(latest_status, seen=seen)
-        if resolved is not None:
-            return resolved
-
-    for method_name in ("status", "poll"):
+    for method_name in ("poll", "status"):
         method = getattr(payload, method_name, None)
         if not callable(method):
             continue
@@ -1224,6 +1284,12 @@ def _resolve_realtime_payload_candidate(payload: Any, *, seen: set[int] | None =
             resolved = _resolve_realtime_payload_candidate(method(), seen=seen)
         except TypeError:
             continue
+        if resolved is not None:
+            return resolved
+
+    latest_status = getattr(payload, "latest_status", None)
+    if latest_status is not None:
+        resolved = _resolve_realtime_payload_candidate(latest_status, seen=seen)
         if resolved is not None:
             return resolved
 
@@ -1244,6 +1310,24 @@ def _payload_mapping(payload: Any) -> dict[str, Any] | None:
     except TypeError:
         return None
     return dict(serialized) if isinstance(serialized, Mapping) else None
+
+
+def _with_realtime_device_payload(payload: Any) -> Any:
+    data = _payload_mapping(payload)
+    if data is None:
+        return payload
+    device_keys = ("camera_device", "hailo_device")
+    devices = data.get("devices")
+    if not isinstance(devices, Mapping):
+        devices = {}
+    else:
+        devices = dict(devices)
+    for key in device_keys:
+        if key in data and key not in devices:
+            devices[key] = data[key]
+    if not devices or data.get("devices") == devices:
+        return payload
+    return {**data, "devices": devices}
 
 
 def _is_realtime_payload_fresh(data: Mapping[str, Any], *, now_ts: float, max_age_seconds: float) -> bool:

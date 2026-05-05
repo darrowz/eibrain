@@ -161,7 +161,7 @@ def _normalize_status(raw_status: Any) -> NativeProviderStatus:
     if isinstance(raw_status, NativeProviderStatus):
         return raw_status
     if isinstance(raw_status, Mapping):
-        status = _normalize_status_text(raw_status.get("status")) or "unknown"
+        status = _normalize_mapping_status(raw_status)
         return NativeProviderStatus(
             status,
             provider=_string_value(raw_status.get("provider") or raw_status.get("backend")),
@@ -181,6 +181,46 @@ def _normalize_status(raw_status: Any) -> NativeProviderStatus:
     return NativeProviderStatus(_normalize_status_text(raw_status) or "unknown")
 
 
+def _normalize_mapping_status(raw_status: Mapping[str, Any]) -> str:
+    status = _normalize_status_text(raw_status.get("status"))
+    if status is not None and status != "unknown":
+        return status
+    readiness_status = _status_from_readiness(raw_status)
+    if readiness_status is not None:
+        return readiness_status
+    return status or "unknown"
+
+
+def _status_from_readiness(raw_status: Mapping[str, Any]) -> str | None:
+    raw_text = _string_value(raw_status.get("status")).strip().lower()
+    not_wired = _truthy(raw_status.get("not_wired")) or raw_text in {
+        "not_wired",
+        "offline",
+        "missing",
+        "placeholder",
+        "unavailable",
+    }
+    placeholder = _truthy(raw_status.get("placeholder"))
+    stream_ready = _optional_bool(raw_status.get("stream_ready"))
+    degraded = _truthy(raw_status.get("degraded")) or raw_text == "degraded"
+    mode = _string_value(raw_status.get("mode")).strip().lower()
+    kind = _string_value(raw_status.get("kind")).strip().lower()
+
+    if not_wired or placeholder:
+        return "unavailable"
+    if degraded:
+        return "degraded"
+    if stream_ready is True:
+        return "wired"
+    if stream_ready is False:
+        return "unavailable"
+    if raw_text in {"tracking", "ready", "running", "online", "ok", "live"} and (
+        mode in {"realtime", "realtime_stream"} or kind == "realtime_vision_observation"
+    ):
+        return "wired"
+    return None
+
+
 def _normalize_status_text(value: Any) -> str | None:
     text = _string_value(value).strip().lower()
     if not text:
@@ -195,7 +235,6 @@ def _details_without_status_fields(raw_status: Mapping[str, Any]) -> dict[str, A
     status_keys = {
         "status",
         "provider",
-        "backend",
         "reason",
         "source",
         "status_source",
@@ -239,6 +278,12 @@ def _optional_bool(value: Any) -> bool | None:
             return True
         if normalized in {"0", "false", "no", "off"}:
             return False
+    return bool(value)
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
 
 

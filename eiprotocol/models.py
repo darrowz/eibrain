@@ -715,7 +715,7 @@ class DialogueCancellationApplied:
 class Detection:
     label: str
     score: float
-    bbox: list[float]
+    bbox: list[Any] | dict[str, Any]
     track_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -723,10 +723,20 @@ class Detection:
         return {
             "label": self.label,
             "score": float(self.score),
-            "bbox": list(self.bbox),
+            "bbox": _bbox(self.bbox),
             "trackId": self.track_id,
             "metadata": dict(self.metadata),
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Detection":
+        return cls(
+            label=str(data.get("label", "") or ""),
+            score=float(data.get("score", 0.0) or 0.0),
+            bbox=_bbox(data.get("bbox")),
+            track_id=str(data.get("trackId", data.get("track_id", "")) or ""),
+            metadata=_dict(data.get("metadata") if isinstance(data.get("metadata"), Mapping) else None),
+        )
 
 
 @dataclass(slots=True)
@@ -737,6 +747,9 @@ class RealtimeVisionObservation:
     frame_age_ms: float | None = None
     backend: str = ""
     detections: list[Detection] = field(default_factory=list)
+    boxes: list[Any] = field(default_factory=list)
+    scores: list[float] = field(default_factory=list)
+    tracked_target: dict[str, Any] = field(default_factory=dict)
     latency_ms: dict[str, Any] = field(default_factory=dict)
     image_url: str = ""
     status: str = "ok"
@@ -750,11 +763,42 @@ class RealtimeVisionObservation:
             "frameAgeMs": self.frame_age_ms,
             "backend": self.backend,
             "detections": [item.to_dict() for item in self.detections],
+            "boxes": [_bbox(item) for item in self.boxes],
+            "scores": [float(item) for item in self.scores],
             "latencyMs": dict(self.latency_ms),
             "imageUrl": self.image_url,
             "status": self.status,
+            "trackedTarget": dict(self.tracked_target),
             "metadata": dict(self.metadata),
         }
+
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "RealtimeVisionObservation":
+        detections = data.get("detections")
+        boxes = data.get("boxes")
+        scores = data.get("scores")
+        tracked_target = data.get("trackedTarget", data.get("tracked_target"))
+        latency_ms = data.get("latencyMs", data.get("latency_ms"))
+        metadata = data.get("metadata")
+        return cls(
+            frame_id=str(data.get("frameId", data.get("frame_id", "")) or ""),
+            width=int(data["width"]) if data.get("width") is not None else None,
+            height=int(data["height"]) if data.get("height") is not None else None,
+            frame_age_ms=float(data["frameAgeMs"]) if data.get("frameAgeMs") is not None else None,
+            backend=str(data.get("backend", "") or ""),
+            detections=[
+                Detection.from_dict(item)
+                for item in _list(detections if isinstance(detections, (list, tuple)) else None)
+                if isinstance(item, Mapping)
+            ],
+            boxes=[_bbox(item) for item in _list(boxes if isinstance(boxes, (list, tuple)) else None)],
+            scores=[float(item) for item in _list(scores if isinstance(scores, (list, tuple)) else None)],
+            tracked_target=_dict(tracked_target if isinstance(tracked_target, Mapping) else None),
+            latency_ms=_dict(latency_ms if isinstance(latency_ms, Mapping) else None),
+            image_url=str(data.get("imageUrl", data.get("image_url", "")) or ""),
+            status=str(data.get("status", "ok") or "ok"),
+            metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
+        )
 
     def to_event(self, **kwargs: Any) -> EventEnvelope:
         return _round_event(
@@ -764,6 +808,45 @@ class RealtimeVisionObservation:
             priority="realtime",
             **kwargs,
         )
+
+
+def _bbox(value: Any) -> list[Any] | dict[str, Any]:
+    if isinstance(value, Mapping):
+        ordered: dict[str, Any] = {}
+        preferred_keys = (
+            "x",
+            "y",
+            "w",
+            "h",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "left",
+            "top",
+            "right",
+            "bottom",
+            "width",
+            "height",
+        )
+        for key in preferred_keys:
+            if key in value:
+                ordered[key] = value[key]
+        for key in sorted(str(key) for key in value):
+            if key not in ordered:
+                ordered[key] = value[key]
+        return ordered
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
 
 
 @dataclass(slots=True)

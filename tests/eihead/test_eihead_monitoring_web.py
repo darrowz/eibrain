@@ -882,6 +882,14 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert payload["observation"]["stream_id"] == "front-main"
     assert payload["boxes"][0]["x_min"] == 0.1
     assert payload["scores"] == [0.95, 0.72]
+    assert payload["overlay"]["frame"]["width"] == 1280
+    assert payload["overlay"]["frame"]["height"] == 720
+    assert payload["overlay"]["frame"]["image_message"] == "no live frame image yet"
+    assert payload["overlay"]["normalized_boxes"][0]["score_label"] == "person 0.95"
+    assert payload["overlay"]["score_labels"] == ["person 0.95", "cat 0.72"]
+    assert payload["overlay"]["top_target"]["center"] == {"x": 0.25, "y": 0.5}
+    assert payload["overlay"]["top_target"]["error"] == {"x": -0.25, "y": 0.0}
+    assert payload["visual_diagnostic"] == payload["overlay"]
     assert payload["diagnostic"]["top_detection"]["score"] == 0.95
     assert payload["diagnostic"]["detection_count_raw"] == 2
     assert payload["score_threshold"] == 0.0
@@ -901,6 +909,12 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert "Backend" in body
     assert "boxes" in body
     assert "scores" in body
+    assert "Visual Overlay" in body
+    assert "no live frame image yet" in body
+    assert "Stream readiness" in body
+    assert "person 0.95" in body
+    assert "center=(0.25, 0.5)" in body
+    assert "error=(-0.25, 0.0)" in body
     assert "Frame interval" in body
     assert "Jitter guard" in body
     assert "Top K" in body

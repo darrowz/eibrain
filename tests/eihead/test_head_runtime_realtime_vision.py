@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+import json
+import threading
 import time
-from typing import Any
+from typing import Any, Iterator
+from urllib import request
 
 import pytest
 
 from eihead.protocol import RealtimeVisionObservation, VisionObservation
 from eihead.runtime.app import HeadRuntimeApp
+from eihead.runtime.http_api import create_server
 
 
 class FakeBodyRuntime:
@@ -219,6 +224,53 @@ class PollMethodAdapterRuntime(FakeBodyRuntime):
     eye_realtime = Adapter()
 
 
+class NativeEyeService:
+    def __init__(self) -> None:
+        self.poll_calls = 0
+        self.status_calls = 0
+
+    def poll(self) -> dict[str, object]:
+        self.poll_calls += 1
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "primary_mode": True,
+            "stream_id": "native-eye-service",
+            "status": "tracking",
+            "frame_id": "live-native-1",
+        }
+
+    def status(self) -> dict[str, object]:
+        self.status_calls += 1
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "not_wired",
+            "not_wired": True,
+        }
+
+
+class NativeEyeHttpService:
+    def __init__(self) -> None:
+        self.poll_calls = 0
+
+    def poll(self) -> dict[str, object]:
+        self.poll_calls += 1
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "primary_mode": True,
+            "stream_id": "native-eye-http",
+            "status": "tracking",
+            "frame_id": "native-http-1",
+            "backend": "gstreamer_hailo",
+            "camera_device": "/dev/video42",
+            "hailo_device": "/dev/hailo0",
+            "stream_ready": True,
+            "readiness_message": "native stream ready",
+        }
+
+
 class ToDictAdapterRuntime(FakeBodyRuntime):
     class Adapter:
         def to_dict(self) -> dict[str, object]:
@@ -376,6 +428,62 @@ def test_head_runtime_accepts_native_provider_eye_realtime_payload() -> None:
     }
 
 
+def test_head_runtime_polls_native_eye_service_object_before_status() -> None:
+    eye_service = NativeEyeService()
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        native_providers={
+            "eye": eye_service,
+            "ear": {"status": "wired"},
+            "mouth": {"status": "wired"},
+            "neck": {"status": "wired"},
+        },
+        neck_servo_adapter=object(),
+    )
+
+    assert runtime.vision_realtime() == {
+        "kind": "realtime_vision_observation",
+        "mode": "realtime_stream",
+        "primary_mode": True,
+        "stream_id": "native-eye-service",
+        "status": "tracking",
+        "frame_id": "live-native-1",
+    }
+    assert eye_service.poll_calls == 1
+    assert eye_service.status_calls == 0
+
+
+def test_head_runtime_http_realtime_endpoint_uses_native_eye_service_payload() -> None:
+    eye_service = NativeEyeHttpService()
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        native_providers={
+            "eye": eye_service,
+            "ear": {"status": "wired"},
+            "mouth": {"status": "wired"},
+            "neck": {"status": "wired"},
+        },
+        neck_servo_adapter=object(),
+    )
+
+    with _running_server(runtime, clock=lambda: 791.0) as base_url:
+        status_code, payload = _read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["source"] == "vision_realtime"
+    assert payload["observation"]["stream_id"] == "native-eye-http"
+    assert payload["backend"] == "gstreamer_hailo"
+    assert payload["devices"]["camera_device"] == "/dev/video42"
+    assert payload["devices"]["hailo_device"] == "/dev/hailo0"
+    assert payload["stream_ready"] is True
+    assert payload["readiness_message"] == "native stream ready"
+    assert eye_service.poll_calls == 1
+
+
 def test_head_runtime_accepts_snapshot_eye_realtime_payload() -> None:
     runtime = HeadRuntimeApp(body_runtime=SnapshotEyeRealtimeRuntime(), config_path="config/test.yaml")
 
@@ -504,3 +612,23 @@ def _payload_dict(payload: Any) -> dict[str, object]:
         return payload
     assert hasattr(payload, "to_dict")
     return payload.to_dict()
+
+
+@contextmanager
+def _running_server(app: Any, **kwargs: Any) -> Iterator[str]:
+    server = create_server(app, host="127.0.0.1", port=0, **kwargs)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2.0)
+        server.server_close()
+
+
+def _read_json(url: str) -> tuple[int, dict[str, Any]]:
+    req = request.Request(url, headers={"Accept": "application/json"})
+    with request.urlopen(req, timeout=2.0) as response:
+        return response.status, json.loads(response.read().decode("utf-8"))

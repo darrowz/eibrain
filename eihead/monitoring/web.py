@@ -525,6 +525,11 @@ def _render_index(app: Any, timestamp: float) -> str:
     recent_state = _display_value(recent.get("status", "unknown"))
     recent_events_state = _display_value(recent_events.get("status", "unknown"))
     realtime_diagnostic = realtime.get("diagnostic") if isinstance(realtime.get("diagnostic"), Mapping) else {}
+    visual_overlay = realtime.get("overlay")
+    if not isinstance(visual_overlay, Mapping):
+        visual_overlay = realtime.get("visual_diagnostic")
+    if not isinstance(visual_overlay, Mapping):
+        visual_overlay = {}
     vision_status = _display_value(realtime_diagnostic.get("status") or realtime.get("status", "unknown"))
     vision_fps = _display_value(_metric_value(realtime_diagnostic.get("fps")))
     vision_top_detection = _display_value(_top_detection_summary(realtime_diagnostic.get("top_detection")))
@@ -539,6 +544,16 @@ def _render_index(app: Any, timestamp: float) -> str:
     vision_devices = _display_value(_devices_summary(realtime.get("devices")))
     vision_readiness = _display_value(realtime.get("readiness_message") or "unknown")
     vision_parse_errors = _display_value(_metric_value(realtime.get("parse_error_count")))
+    vision_overlay_frame = _display_value(_overlay_frame_summary(visual_overlay.get("frame")))
+    vision_overlay_image = _display_value(_overlay_image_message(visual_overlay.get("frame")))
+    vision_overlay_boxes = _display_value(_overlay_boxes_summary(visual_overlay.get("normalized_boxes")))
+    vision_overlay_scores = _display_value(_overlay_scores_summary(visual_overlay.get("score_labels")))
+    vision_overlay_top_target = _display_value(_overlay_top_target_summary(visual_overlay.get("top_target")))
+    vision_overlay_stream_ready = _display_value(
+        visual_overlay.get("stream_ready")
+        if visual_overlay.get("stream_ready") is not None
+        else realtime.get("stream_ready", "unknown")
+    )
     voice_ear = _display_value(_voice_component_summary(voice.get("ear"), kind="ear"))
     voice_mouth = _display_value(_voice_component_summary(voice.get("mouth"), kind="mouth"))
     voice_dialogue = _display_value(_voice_dialogue_summary(voice.get("dialogue")))
@@ -637,6 +652,15 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Parse errors</div><span class="metric">{vision_parse_errors}</span></div>
     </section>
     <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
+    <h2>Visual Overlay</h2>
+    <section class="grid">
+      <div class="card"><div class="label">Frame size</div><span class="metric">{vision_overlay_frame}</span></div>
+      <div class="card"><div class="label">Frame image</div><span class="metric">{vision_overlay_image}</span></div>
+      <div class="card"><div class="label">Normalized boxes</div><span class="metric">{vision_overlay_boxes}</span></div>
+      <div class="card"><div class="label">Score labels</div><span class="metric">{vision_overlay_scores}</span></div>
+      <div class="card"><div class="label">Top target</div><span class="metric">{vision_overlay_top_target}</span></div>
+      <div class="card"><div class="label">Stream readiness</div><span class="metric">{vision_overlay_stream_ready}</span></div>
+    </section>
     <h2>Neck Diagnostics</h2>
     <section class="grid">
       <div class="card"><div class="label">Status</div><span class="metric">{neck_state}</span></div>
@@ -732,6 +756,66 @@ def _top_detection_summary(value: Any) -> str:
     if score in (None, ""):
         return str(label)
     return f"{label} ({score})"
+
+
+def _overlay_frame_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "unknown"
+    width = value.get("width")
+    height = value.get("height")
+    if width not in (None, "") and height not in (None, ""):
+        return f"{width}x{height}"
+    return "unknown"
+
+
+def _overlay_image_message(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "no live frame image yet"
+    return str(value.get("image_message") or "no live frame image yet")
+
+
+def _overlay_boxes_summary(value: Any) -> str:
+    if not isinstance(value, (list, tuple)):
+        return "none"
+    if not value:
+        return "none"
+    return ", ".join(
+        _overlay_box_summary(item)
+        for item in value
+        if isinstance(item, Mapping)
+    ) or "none"
+
+
+def _overlay_box_summary(value: Mapping[str, Any]) -> str:
+    label = value.get("label") or "target"
+    score_label = value.get("score_label") or label
+    return (
+        f"{score_label} "
+        f"[{value.get('x_min')}, {value.get('y_min')}, {value.get('x_max')}, {value.get('y_max')}]"
+    )
+
+
+def _overlay_scores_summary(value: Any) -> str:
+    if not isinstance(value, (list, tuple)):
+        return "none"
+    if not value:
+        return "none"
+    return ", ".join(str(item) for item in value)
+
+
+def _overlay_top_target_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    score_label = value.get("score_label") or value.get("label") or "target"
+    center = value.get("center")
+    error = value.get("error")
+    if isinstance(center, Mapping) and isinstance(error, Mapping):
+        return (
+            f"{score_label} "
+            f"center=({center.get('x')}, {center.get('y')}) "
+            f"error=({error.get('x')}, {error.get('y')})"
+        )
+    return str(score_label)
 
 
 def _hooks_used_summary(value: Any) -> str:

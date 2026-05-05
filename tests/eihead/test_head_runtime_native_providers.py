@@ -36,6 +36,22 @@ class FakeNeckAdapter:
         return {"status": "ok", "plan_status": plan.get("status")}
 
 
+class FakeEyeService:
+    def status(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.eye.realtime_status.v1",
+            "status": "tracking",
+            "mode": "realtime_stream",
+            "provider": "native-eye-service",
+            "backend": "gstreamer_hailo",
+            "camera_device": "/dev/video42",
+            "hailo_device": "/dev/hailo0",
+            "stream_ready": True,
+            "not_wired": False,
+            "readiness_message": "camera and hailo ready",
+        }
+
+
 def test_from_config_path_reports_native_provider_boundaries_without_hardware(tmp_path: Path) -> None:
     config_path = tmp_path / "eihead.honjia.yaml"
     body_config_path = tmp_path / "eibrain.honjia.yaml"
@@ -163,3 +179,37 @@ def test_native_provider_probe_can_report_degraded_with_truthful_metadata() -> N
         "hardware_verified": True,
         "details": {"fps": 2},
     }
+
+
+def test_native_eye_service_status_feeds_status_and_capability_readiness() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        config_path="config/test.yaml",
+        native_providers={
+            "eye": FakeEyeService(),
+            "ear": {"status": "unknown"},
+            "mouth": {"status": "unknown"},
+            "neck": {"status": "wired"},
+        },
+        neck_servo_adapter=FakeNeckAdapter(),
+    )
+
+    status_payload = runtime.status()
+    eye_status = status_payload["native_providers"]["eye"]
+
+    assert eye_status["status"] == "wired"
+    assert eye_status["provider"] == "native-eye-service"
+    assert eye_status["details"]["backend"] == "gstreamer_hailo"
+    assert eye_status["details"]["camera_device"] == "/dev/video42"
+    assert eye_status["details"]["hailo_device"] == "/dev/hailo0"
+    assert eye_status["details"]["stream_ready"] is True
+    assert eye_status["details"]["not_wired"] is False
+    assert eye_status["details"]["readiness_message"] == "camera and hailo ready"
+
+    capabilities = runtime.capabilities()["capabilities"]
+    assert capabilities["camera"]["details"]["native_camera_device"] == "/dev/video42"
+    assert capabilities["camera"]["details"]["native_stream_ready"] is True
+    assert capabilities["hailo"]["details"]["native_hailo_device"] == "/dev/hailo0"
+    assert capabilities["hailo"]["details"]["native_stream_ready"] is True
+    assert capabilities["vision_backend"]["details"]["native_backend"] == "gstreamer_hailo"
+    assert capabilities["vision_backend"]["details"]["native_hailo_device"] == "/dev/hailo0"

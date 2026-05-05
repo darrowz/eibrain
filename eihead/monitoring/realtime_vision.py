@@ -120,6 +120,8 @@ def build_realtime_vision_payload(
         "readiness_message": diagnostic["readiness_message"],
         "parse_error_count": diagnostic["parse_error_count"],
         "parse_errors": diagnostic["parse_errors"],
+        "overlay": diagnostic["overlay"],
+        "visual_diagnostic": diagnostic["overlay"],
     }
     if not is_wired:
         if derived_message:
@@ -226,6 +228,11 @@ def _build_realtime_diagnostic(
     readiness_message = _string_or_none(_first_nested_present(observation, "readiness_message", "message"))
     parse_error_count = _int_or_none(_first_nested_present(observation, "parse_error_count"))
     parse_errors = _parse_errors(_first_nested_present(observation, "parse_errors", "errors"))
+    overlay = _build_visual_overlay(
+        observation,
+        filtered_detections=filtered_detections,
+        stream_ready=stream_ready,
+    )
 
     return {
         "status": status,
@@ -265,6 +272,8 @@ def _build_realtime_diagnostic(
         "parse_error_count": parse_error_count,
         "parse_errors": parse_errors,
         "detections": filtered_detections,
+        "overlay": overlay,
+        "visual_diagnostic": overlay,
     }
 
 
@@ -493,11 +502,140 @@ def _normalized_detection(raw_detection: Any) -> dict[str, Any] | None:
     return detection
 
 
+def _build_visual_overlay(
+    observation: Mapping[str, Any] | None,
+    *,
+    filtered_detections: list[dict[str, Any]],
+    stream_ready: bool,
+) -> dict[str, Any]:
+    frame_width = _frame_dimension(observation, "width", "frame_width", "image_width")
+    frame_height = _frame_dimension(observation, "height", "frame_height", "image_height")
+    normalized_boxes = [
+        box
+        for box in (
+            _overlay_box(detection, frame_width=frame_width, frame_height=frame_height)
+            for detection in filtered_detections
+        )
+        if box is not None
+    ]
+    score_labels = [
+        box["score_label"]
+        for box in normalized_boxes
+        if box.get("score_label") not in (None, "")
+    ]
+    top_target = _overlay_top_target(normalized_boxes)
+    return {
+        "frame": {
+            "width": frame_width,
+            "height": frame_height,
+            "frame_id": _frame_id(observation),
+            "image_available": False,
+            "image_message": "no live frame image yet",
+        },
+        "stream_ready": bool(stream_ready),
+        "normalized_boxes": normalized_boxes,
+        "score_labels": score_labels,
+        "top_target": top_target,
+    }
+
+
+def _frame_dimension(observation: Mapping[str, Any] | None, *keys: str) -> int | float | None:
+    value = _first_nested_present(observation, *keys)
+    if value is None and observation is not None:
+        for nested_key in ("frame", "image", "frame_size"):
+            nested = observation.get(nested_key)
+            if isinstance(nested, Mapping):
+                value = _first_present(nested, *keys)
+                if value is not None:
+                    break
+    number = _number_or_none(value)
+    if number is None:
+        return None
+    if number.is_integer():
+        return int(number)
+    return _round_overlay_number(number)
+
+
+def _overlay_box(
+    detection: Mapping[str, Any],
+    *,
+    frame_width: int | float | None,
+    frame_height: int | float | None,
+) -> dict[str, Any] | None:
+    raw_box = _normalize_box(detection.get("bbox"))
+    if raw_box is None:
+        return None
+    x_min = _normalized_axis(raw_box.get("x_min"), frame_width)
+    y_min = _normalized_axis(raw_box.get("y_min"), frame_height)
+    x_max = _normalized_axis(raw_box.get("x_max"), frame_width)
+    y_max = _normalized_axis(raw_box.get("y_max"), frame_height)
+    if None in {x_min, y_min, x_max, y_max}:
+        return None
+    label = _string_or_none(_first_present(detection, "label", "class", "name")) or "target"
+    score = _detection_score(detection)
+    overlay_box: dict[str, Any] = {
+        "label": label,
+        "score": score,
+        "score_label": _score_label(label, score),
+        "x_min": x_min,
+        "y_min": y_min,
+        "x_max": x_max,
+        "y_max": y_max,
+    }
+    return overlay_box
+
+
+def _normalized_axis(value: Any, frame_dimension: int | float | None) -> float | None:
+    number = _number_or_none(value)
+    if number is None:
+        return None
+    if frame_dimension and number > 1.0:
+        number = number / float(frame_dimension)
+    return _round_overlay_number(number)
+
+
+def _score_label(label: str | None, score: float | None) -> str:
+    if label and score is not None:
+        return f"{label} {score:.2f}"
+    if label:
+        return label
+    if score is not None:
+        return f"{score:.2f}"
+    return "target"
+
+
+def _overlay_top_target(normalized_boxes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not normalized_boxes:
+        return None
+    top_box = max(
+        normalized_boxes,
+        key=lambda item: item.get("score") if isinstance(item.get("score"), (int, float)) else -1.0,
+    )
+    center_x = _round_overlay_number((float(top_box["x_min"]) + float(top_box["x_max"])) / 2.0)
+    center_y = _round_overlay_number((float(top_box["y_min"]) + float(top_box["y_max"])) / 2.0)
+    return {
+        "label": top_box.get("label"),
+        "score": top_box.get("score"),
+        "score_label": top_box.get("score_label"),
+        "center": {"x": center_x, "y": center_y},
+        "error": {
+            "x": _round_overlay_number(center_x - 0.5),
+            "y": _round_overlay_number(center_y - 0.5),
+        },
+    }
+
+
+def _round_overlay_number(value: float) -> float:
+    rounded = round(float(value), 6)
+    return 0.0 if rounded == 0 else rounded
+
+
 def _normalize_box(raw_box: Any) -> dict[str, Any] | None:
     if raw_box is None:
         return None
     if isinstance(raw_box, Mapping):
-        return {str(k): _json_ready(v) for k, v in raw_box.items()}
+        normalized = _normalize_mapping_box(raw_box)
+        return normalized or {str(k): _json_ready(v) for k, v in raw_box.items()}
     if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
         x_min, y_min, x_max, y_max = raw_box
         return {
@@ -506,6 +644,38 @@ def _normalize_box(raw_box: Any) -> dict[str, Any] | None:
             "x_max": _json_ready(x_max),
             "y_max": _json_ready(y_max),
         }
+    return None
+
+
+def _normalize_mapping_box(raw_box: Mapping[str, Any]) -> dict[str, Any] | None:
+    for keys in (
+        ("x_min", "y_min", "x_max", "y_max"),
+        ("xmin", "ymin", "xmax", "ymax"),
+        ("x1", "y1", "x2", "y2"),
+        ("left", "top", "right", "bottom"),
+    ):
+        if all(key in raw_box for key in keys):
+            x_min, y_min, x_max, y_max = (_json_ready(raw_box[key]) for key in keys)
+            return {
+                "x_min": x_min,
+                "y_min": y_min,
+                "x_max": x_max,
+                "y_max": y_max,
+            }
+    for keys in (("x", "y", "w", "h"), ("x", "y", "width", "height")):
+        if all(key in raw_box for key in keys):
+            x = _number_or_none(raw_box[keys[0]])
+            y = _number_or_none(raw_box[keys[1]])
+            width = _number_or_none(raw_box[keys[2]])
+            height = _number_or_none(raw_box[keys[3]])
+            if None in {x, y, width, height}:
+                return None
+            return {
+                "x_min": _json_ready(x),
+                "y_min": _json_ready(y),
+                "x_max": _json_ready(x + width),
+                "y_max": _json_ready(y + height),
+            }
     return None
 
 

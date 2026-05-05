@@ -863,6 +863,9 @@ def build_vision_frame_event(
     frame_age_ms: float | None = None,
     backend: str = "",
     detections: Iterable[Detection | Mapping[str, Any]] | None = None,
+    boxes: Iterable[Any] | None = None,
+    scores: Iterable[float] | None = None,
+    tracked_target: Mapping[str, Any] | None = None,
     latency_ms: Mapping[str, Any] | None = None,
     image_url: str = "",
     status: str = "ok",
@@ -890,6 +893,9 @@ def build_vision_frame_event(
         frame_age_ms=frame_age_ms,
         backend=backend,
         detections=[_detection(item) for item in detections or ()],
+        boxes=[_bbox(item) for item in boxes or ()],
+        scores=[float(item) for item in scores or ()],
+        tracked_target=dict(tracked_target or {}),
         latency_ms=dict(latency_ms or {}),
         image_url=image_url,
         status=status,
@@ -1020,10 +1026,49 @@ def _detection(value: Detection | Mapping[str, Any]) -> Detection:
     return Detection(
         label=str(value.get("label", "") or ""),
         score=float(value.get("score", 0.0) or 0.0),
-        bbox=list(value.get("bbox", []) or []),
+        bbox=_bbox(value.get("bbox")),
         track_id=str(value.get("trackId", value.get("track_id", "")) or ""),
         metadata=dict(value.get("metadata", {}) or {}),
     )
+
+
+def _bbox(value: Any) -> list[Any] | dict[str, Any]:
+    if isinstance(value, Mapping):
+        ordered: dict[str, Any] = {}
+        preferred_keys = (
+            "x",
+            "y",
+            "w",
+            "h",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "left",
+            "top",
+            "right",
+            "bottom",
+            "width",
+            "height",
+        )
+        for key in preferred_keys:
+            if key in value:
+                ordered[key] = value[key]
+        for key in sorted(str(key) for key in value):
+            if key not in ordered:
+                ordered[key] = value[key]
+        return ordered
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
 
 
 def _head_status_report(

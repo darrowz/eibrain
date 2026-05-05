@@ -18,11 +18,14 @@ from .realtime import (
     RealtimeEyeStatus,
     RealtimeVisionFrame,
 )
+from .service import RealtimeEyeService
+from .tracking import DEFAULT_TRACKING_LABELS, TrackingTarget, select_tracking_target
 
 __all__ = [
     "AdapterReadiness",
     "AdapterRuntimeError",
     "CompatStaticFrameSource",
+    "DEFAULT_TRACKING_LABELS",
     "GStreamerHailoDetector",
     "GStreamerHailoFrameSource",
     "GStreamerHailoRealtimeAdapter",
@@ -31,8 +34,11 @@ __all__ = [
     "HailoMetadataParseError",
     "RealtimeDetection",
     "RealtimeEyePipeline",
+    "RealtimeEyeService",
     "RealtimeEyeStatus",
     "RealtimeVisionFrame",
+    "TrackingTarget",
     "normalize_hailo_detection",
     "parse_hailo_detections",
+    "select_tracking_target",
 ]

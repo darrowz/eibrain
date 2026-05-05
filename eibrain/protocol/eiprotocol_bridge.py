@@ -17,6 +17,7 @@ from eiprotocol.builders import (
     build_memory_prefetch_requested_event,
     build_proactive_activity_proposed_event,
     build_speech_action_plan_event,
+    build_vision_frame_event,
 )
 
 from .capabilities import (
@@ -112,6 +113,14 @@ def payload_to_eiprotocol_event(
     kind = _first_text(payload.get("name"), payload.get("event_name"), payload.get("kind"), payload.get("type"))
     if kind in {"ei.observation.head.status.report", "head_status_report", "head_status"}:
         return head_status_report_to_eiprotocol_event(
+            payload,
+            event_id=event_id,
+            request_id=request_id,
+            sequence=sequence,
+            time=time,
+        )
+    if kind in {"ei.observation.vision.frame", "realtime_vision_frame", "vision_frame", "vision_observation"}:
+        return realtime_vision_payload_to_eiprotocol_event(
             payload,
             event_id=event_id,
             request_id=request_id,
@@ -539,6 +548,57 @@ def audio_turn_to_eiprotocol_event(
     )
 
 
+def realtime_vision_payload_to_eiprotocol_event(
+    payload: Mapping[str, Any],
+    *,
+    source: str | SourceRef | Mapping[str, Any] | None = None,
+    target: str | TargetRef | Mapping[str, Any] | None = None,
+    event_id: str | None = None,
+    request_id: str | None = None,
+    sequence: int | None = None,
+    time: str | None = None,
+) -> EventEnvelope:
+    """Normalize JSON-like realtime vision output into a typed vision-frame event."""
+
+    raw = _coerce_mapping(payload, label="realtime vision payload")
+    trace_id = _first_text(raw.get("trace_id"), raw.get("traceId"))
+    frame_id = _first_text(raw.get("frameId"), raw.get("frame_id"), raw.get("frame"), raw.get("id"), fallback="frame")
+    resolved_event_id = _resolve_event_id(event_id, "realtime_vision_frame", frame_id, trace_id)
+    detections = _vision_detections(raw)
+    return build_vision_frame_event(
+        source=_source_like(
+            source,
+            fallback=_first_text(raw.get("source"), fallback="eihead.honjia"),
+            device_id=_first_text(raw.get("deviceId"), raw.get("device_id")),
+        ),
+        target=_target_like(target, fallback=_first_text(raw.get("target"), fallback="eibrain.honxin")),
+        frame_id=frame_id,
+        width=_optional_int(raw.get("width"), fallback=None),
+        height=_optional_int(raw.get("height"), fallback=None),
+        frame_age_ms=_optional_float(raw.get("frameAgeMs", raw.get("frame_age_ms"))),
+        backend=_first_text(raw.get("backend"), raw.get("vision_backend")),
+        detections=detections,
+        boxes=_vision_boxes(raw, detections),
+        scores=_vision_scores(raw, detections),
+        tracked_target=_vision_tracked_target(raw),
+        latency_ms=_vision_latency_ms(raw),
+        image_url=_first_text(raw.get("imageUrl"), raw.get("image_url")),
+        status=_first_text(raw.get("status"), fallback="ok"),
+        metadata=_dict_from(raw.get("metadata")),
+        event_id=resolved_event_id,
+        request_id=_first_text(request_id, trace_id, resolved_event_id),
+        sequence=_positive_sequence(raw, sequence),
+        time=time or _reported_at(raw),
+        session_id=_first_text(raw.get("sessionId"), raw.get("session_id")),
+        round_id=_first_text(raw.get("roundId"), raw.get("round_id")),
+        correlation_id=_first_text(raw.get("correlationId"), raw.get("correlation_id")),
+        causation_id=_first_text(raw.get("causationId"), raw.get("causation_id")),
+        trace_id=trace_id,
+        ttl_ms=_optional_int(raw.get("ttlMs", raw.get("ttl_ms")), fallback=500),
+        mode=_dict_from(raw.get("mode")),
+    )
+
+
 def vision_observation_to_eiprotocol_event(
     observation: LegacyVisionObservation,
     *,
@@ -557,6 +617,8 @@ def vision_observation_to_eiprotocol_event(
         "frameAgeMs": legacy_payload.get("frameAgeMs", legacy_payload.get("frame_age_ms")),
         "backend": _first_text(legacy_payload.get("backend"), legacy_payload.get("vision_backend")),
         "detections": [dict(item) for item in observation.detections],
+        "boxes": _vision_boxes({"boxes": legacy_payload.get("boxes")}, observation.detections),
+        "scores": _vision_scores({"scores": legacy_payload.get("scores")}, observation.detections),
         "latencyMs": _dict_from(legacy_payload.get("latencyMs") or legacy_payload.get("latency_ms")),
         "imageUrl": observation.image_url,
         "status": observation.status,
@@ -1133,6 +1195,85 @@ def _list_of_text(value: object) -> list[str]:
     return [str(item) for item in value]
 
 
+def _vision_detections(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    detections = payload.get("detections", payload.get("objects"))
+    return _list_of_dicts(detections)
+
+
+def _vision_boxes(payload: Mapping[str, Any], detections: list[Mapping[str, Any]]) -> list[Any]:
+    boxes = payload.get("boxes")
+    if isinstance(boxes, list):
+        return [_vision_bbox(item) for item in boxes]
+    return [_vision_bbox(item.get("bbox")) for item in detections if isinstance(item, Mapping) and item.get("bbox") is not None]
+
+
+def _vision_scores(payload: Mapping[str, Any], detections: list[Mapping[str, Any]]) -> list[float]:
+    scores = payload.get("scores")
+    if isinstance(scores, list):
+        return [float(item) for item in scores]
+    return [float(item["score"]) for item in detections if isinstance(item, Mapping) and item.get("score") is not None]
+
+
+def _vision_tracked_target(payload: Mapping[str, Any]) -> dict[str, Any]:
+    tracked_target = payload.get("trackedTarget", payload.get("tracked_target"))
+    if isinstance(tracked_target, Mapping):
+        return _copy_jsonish(dict(tracked_target))
+    metadata = payload.get("metadata")
+    if isinstance(metadata, Mapping):
+        tracked_target = metadata.get("trackedTarget", metadata.get("tracked_target"))
+        if isinstance(tracked_target, Mapping):
+            return _copy_jsonish(dict(tracked_target))
+    return {}
+
+
+def _vision_latency_ms(payload: Mapping[str, Any]) -> dict[str, Any]:
+    latency_ms = payload.get("latencyMs", payload.get("latency_ms"))
+    if isinstance(latency_ms, Mapping):
+        return _copy_jsonish(dict(latency_ms))
+    if latency_ms not in (None, ""):
+        return {"total": float(latency_ms)}
+    return {}
+
+
+def _vision_bbox(value: object) -> Any:
+    if isinstance(value, Mapping):
+        ordered: dict[str, Any] = {}
+        preferred_keys = (
+            "x",
+            "y",
+            "w",
+            "h",
+            "x1",
+            "y1",
+            "x2",
+            "y2",
+            "x_min",
+            "y_min",
+            "x_max",
+            "y_max",
+            "xmin",
+            "ymin",
+            "xmax",
+            "ymax",
+            "left",
+            "top",
+            "right",
+            "bottom",
+            "width",
+            "height",
+        )
+        for key in preferred_keys:
+            if key in value:
+                ordered[key] = value[key]
+        for key in sorted(str(key) for key in value):
+            if key not in ordered:
+                ordered[key] = value[key]
+        return ordered
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    return []
+
+
 def _first_text(*values: object, fallback: str = "") -> str:
     for value in values:
         if value is None:
@@ -1168,6 +1309,7 @@ __all__ = [
     "head_action_to_eiprotocol_event",
     "head_status_report_to_eiprotocol_event",
     "payload_to_eiprotocol_event",
+    "realtime_vision_payload_to_eiprotocol_event",
     "scheduler_snapshot_to_eiprotocol_events",
     "to_eiprotocol_event",
     "vision_observation_to_eiprotocol_event",

@@ -338,3 +338,78 @@ def test_wave3_bridge_converts_internal_dialogue_payloads_to_typed_events() -> N
     assert stable_payload["content"]["actions"] == [
         {"type": "speak", "text": "Fuzhou fish balls are a classic choice."}
     ]
+
+
+def test_bridge_converts_realtime_vision_payload_to_head_to_brain_frame_event() -> None:
+    from eibrain.protocol.eiprotocol_bridge import realtime_vision_payload_to_eiprotocol_event
+
+    event = realtime_vision_payload_to_eiprotocol_event(
+        {
+            "kind": "realtime_vision_frame",
+            "source": "eihead.honjia.eye",
+            "target": "eibrain.honxin",
+            "device_id": "camera.front",
+            "trace_id": "trace-vision-1",
+            "session_id": "session-vision-1",
+            "frame_id": "frame-bridge-1",
+            "width": 1280,
+            "height": 720,
+            "backend": "hailo",
+            "detections": [
+                {
+                    "label": "person",
+                    "score": 0.91,
+                    "bbox": {"x": 0.2, "y": 0.1, "w": 0.4, "h": 0.6},
+                    "track_id": "track-person-1",
+                }
+            ],
+            "boxes": [{"x": 0.2, "y": 0.1, "w": 0.4, "h": 0.6}],
+            "scores": [0.91],
+            "tracked_target": {"label": "person", "track_id": "track-person-1"},
+            "latency_ms": {"capture": 8.0, "detect": 15.0, "publish": 3.5},
+            "metadata": {"scene": "lab"},
+        },
+        event_id="evt_vision_bridge",
+        request_id="req_vision_bridge",
+        sequence=5,
+        time="2026-05-05T09:40:00.000+08:00",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "realtime_vision_frame")
+    assert payload["name"] == "ei.observation.vision.frame"
+    assert payload["type"] == "observation"
+    assert payload["source"]["domain"] == "eihead"
+    assert payload["source"]["instanceId"] == "honjia"
+    assert payload["source"]["deviceId"] == "camera.front"
+    assert payload["target"]["domain"] == "eibrain"
+    assert payload["content"]["frameId"] == "frame-bridge-1"
+    assert payload["content"]["trackedTarget"] == {"label": "person", "track_id": "track-person-1"}
+    assert payload["content"]["boxes"] == [{"x": 0.2, "y": 0.1, "w": 0.4, "h": 0.6}]
+    assert payload["content"]["scores"] == [0.91]
+    assert payload["content"]["latencyMs"] == {"capture": 8.0, "detect": 15.0, "publish": 3.5}
+    assert payload["content"]["metadata"] == {"scene": "lab"}
+
+
+def test_payload_to_eiprotocol_event_routes_realtime_vision_payload_kind() -> None:
+    from eibrain.protocol.eiprotocol_bridge import payload_to_eiprotocol_event
+
+    event = payload_to_eiprotocol_event(
+        {
+            "type": "ei.observation.vision.frame",
+            "source": "eihead.honjia.eye",
+            "target": "eibrain.honxin",
+            "frameId": "frame-routed-1",
+            "boxes": [[0.1, 0.2, 0.3, 0.4]],
+            "scores": [0.88],
+            "metadata": {"origin": "realtime_detector"},
+        },
+        event_id="evt_vision_payload",
+        request_id="req_vision_payload",
+        sequence=6,
+        time="2026-05-05T09:40:00.050+08:00",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "realtime_vision_frame")
+    assert payload["content"]["frameId"] == "frame-routed-1"
+    assert payload["content"]["boxes"] == [[0.1, 0.2, 0.3, 0.4]]
+    assert payload["content"]["scores"] == [0.88]
