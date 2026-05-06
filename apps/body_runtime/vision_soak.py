@@ -6,8 +6,221 @@ the live Hailo service, web monitor snapshots, or fixture data.
 
 from __future__ import annotations
 
+import json
 from math import ceil
-from typing import Any, Iterable
+from pathlib import Path
+import time
+from typing import Any, Callable, Iterable, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+DEFAULT_STATUS_URL = "http://127.0.0.1:18080/status.json"
+
+
+def make_http_status_source(status_url: str, *, timeout_s: float = 5.0) -> Callable[[], dict[str, Any]]:
+    """Build a small JSON status fetcher for honjia's local monitor endpoint."""
+
+    def _source() -> dict[str, Any]:
+        request = Request(status_url, headers={"Accept": "application/json"})
+        try:
+            with urlopen(request, timeout=max(0.1, float(timeout_s))) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            raise RuntimeError(f"HTTP {exc.code} while reading {status_url}") from exc
+        except URLError as exc:
+            raise RuntimeError(f"could not read {status_url}: {exc.reason}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("vision soak status payload must be a JSON object")
+        return payload
+
+    return _source
+
+
+def collect_vision_soak(
+    status_source: Callable[[], Mapping[str, Any]],
+    *,
+    duration_s: float,
+    interval_s: float,
+    target_fps: float | None = None,
+    thresholds: Mapping[str, Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Sample a status source for ``duration_s`` and return a JSON-ready summary."""
+
+    requested_duration_s = max(0.0, _to_float(duration_s))
+    effective_interval_s = max(0.001, _to_float(interval_s))
+    start = clock()
+    deadline = start + requested_duration_s
+    now = start
+    samples: list[dict[str, Any]] = []
+    errors: list[dict[str, Any]] = []
+
+    while now < deadline:
+        elapsed_s = max(0.0, now - start)
+        try:
+            payload = status_source()
+            samples.append(normalize_vision_status_sample(payload, elapsed_s=elapsed_s, target_fps=target_fps))
+        except Exception as exc:  # noqa: BLE001 - soak collection should survive transient endpoint failures.
+            error = {"elapsed_s": _round(elapsed_s), "type": type(exc).__name__, "message": str(exc)}
+            errors.append(error)
+            samples.append(
+                {
+                    "elapsed_s": elapsed_s,
+                    "fps": 0.0,
+                    "target_fps": target_fps,
+                    "frame_age_ms": None,
+                    "dropped_frames": 0,
+                    "service_state": "error",
+                    "collection_error": dict(error),
+                }
+            )
+        remaining_s = deadline - clock()
+        if remaining_s <= 0.0:
+            break
+        sleeper(min(effective_interval_s, remaining_s))
+        now = clock()
+
+    summary = summarize_vision_soak(samples, target_fps=target_fps, **dict(thresholds or {}))
+    end = clock()
+    summary["collection"] = {
+        "source": "status_source",
+        "requested_duration_s": _round(requested_duration_s),
+        "duration_s": _round(max(0.0, end - start)),
+        "interval_s": _round(effective_interval_s),
+        "error_count": len(errors),
+        "errors": errors,
+    }
+    return summary
+
+
+def run_vision_soak(
+    *,
+    duration_s: float,
+    interval_s: float,
+    status_url: str | None = None,
+    status_source: Callable[[], Mapping[str, Any]] | None = None,
+    output_path: str | Path | None = None,
+    target_fps: float | None = None,
+    thresholds: Mapping[str, Any] | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    """Collect a long-running vision soak and optionally write its JSON summary."""
+
+    source = status_source or make_http_status_source(status_url or DEFAULT_STATUS_URL)
+    summary = collect_vision_soak(
+        source,
+        duration_s=duration_s,
+        interval_s=interval_s,
+        target_fps=target_fps,
+        thresholds=thresholds,
+        clock=clock,
+        sleeper=sleeper,
+    )
+    if status_url:
+        summary["collection"]["status_url"] = status_url
+    if output_path is not None:
+        write_vision_soak_summary(summary, output_path)
+    return summary
+
+
+def write_vision_soak_summary(summary: Mapping[str, Any], output_path: str | Path) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def normalize_vision_status_sample(
+    payload: Mapping[str, Any],
+    *,
+    elapsed_s: float | None = None,
+    target_fps: float | None = None,
+) -> dict[str, Any]:
+    """Flatten honjia monitor status or eye diagnostics into a soak sample."""
+
+    root = dict(payload)
+    eye = _mapping_or_empty(root.get("eye"))
+    visual = _mapping_or_empty(root.get("visual_diagnostics"))
+    diagnostics = _first_mapping(
+        root.get("diagnostics"),
+        eye.get("diagnostics"),
+        visual.get("diagnostics"),
+        visual,
+        eye,
+        root,
+    )
+    soak_summary = _first_mapping(
+        root.get("soak_summary"),
+        diagnostics.get("soak_summary"),
+        visual.get("soak_summary"),
+        eye.get("soak_summary"),
+    )
+    frame_age_ms = _frame_age_ms(diagnostics)
+    if frame_age_ms is None and soak_summary:
+        frame_age_ms = _frame_age_ms(soak_summary)
+    sample: dict[str, Any] = {
+        "elapsed_s": elapsed_s,
+        "fps": _first_present(
+            diagnostics,
+            "fps",
+            "vision_fps",
+            "current_fps",
+            "currentFps",
+        ),
+        "target_fps": target_fps
+        if target_fps is not None
+        else _first_present(diagnostics, "target_fps", "vision_target_fps", "configured_target_fps"),
+        "frame_age_ms": frame_age_ms,
+        "loop_elapsed_ms": _first_present(diagnostics, "loop_elapsed_ms", "vision_loop_elapsed_ms"),
+        "dropped_frames": _first_present(diagnostics, "dropped_frames", "frame_drops", default=0),
+        "dropout": _truthy(_first_present(diagnostics, "dropout", "frame_dropout", default=False)),
+        "service_state": _first_present(
+            diagnostics,
+            "service_state",
+            "vision_service_status",
+            "status",
+            "state",
+            default=eye.get("status")
+            or visual.get("vision_service_status")
+            or visual.get("data_status")
+            or visual.get("tracking_status")
+            or visual.get("status")
+            or root.get("system_health")
+            or root.get("status"),
+        ),
+        "event_count": _first_present(diagnostics, "event_count", "vision_event_count"),
+        "events": _first_list(root.get("events"), eye.get("events"), diagnostics.get("events")),
+        "tracks": _first_list(
+            root.get("tracks"),
+            eye.get("tracks"),
+            diagnostics.get("tracks"),
+            diagnostics.get("objects"),
+            diagnostics.get("tracking_target"),
+        ),
+        "stable_target": _first_mapping(
+            diagnostics.get("stable_target"),
+            diagnostics.get("target"),
+            diagnostics.get("tracking_target"),
+        ),
+        "hailo_metadata": _first_mapping(
+            root.get("hailo_metadata"),
+            diagnostics.get("hailo_metadata"),
+            visual.get("hailo_metadata"),
+            eye.get("hailo_metadata"),
+        ),
+    }
+    if soak_summary:
+        sample.update(
+            {
+                "track_id_switch_count": soak_summary.get("track_id_switch_count"),
+                "target_stability_ratio": soak_summary.get("target_stability_ratio"),
+                "event_rate_hz": soak_summary.get("event_rate_hz"),
+                "frame_drop_tolerance": soak_summary.get("frame_drop_tolerance"),
+            }
+        )
+    return sample
 
 
 def summarize_vision_soak(
@@ -18,6 +231,7 @@ def summarize_vision_soak(
     max_p95_frame_age_ms: float = 500.0,
     max_drop_rate: float = 0.1,
     min_service_ok_ratio: float = 0.95,
+    min_target_stability_ratio: float | None = None,
 ) -> dict[str, Any]:
     """Summarize health from vision telemetry samples.
 
@@ -41,6 +255,8 @@ def summarize_vision_soak(
             "stale_ratio": 0.0,
             "service_ok_ratio": 0.0,
             "bottleneck_reason": "no_samples",
+            "pass_fail_reason": "no_samples",
+            "fail_reason": "no_samples",
             **empty_tracking,
             "metadata": _summary_metadata(empty_tracking, hailo_metadata={}),
         }
@@ -59,7 +275,7 @@ def summarize_vision_soak(
     effective_target_fps = _resolve_target_fps(rows, target_fps)
     fps_avg = _average(fps_values)
     fps_ratio = fps_avg / effective_target_fps if effective_target_fps > 0 else 0.0
-    total_drops = sum(max(0.0, _to_float(row.get("dropped_frames", 0.0))) for row in rows)
+    total_drops = _drop_count(rows)
     drop_rate = total_drops / len(rows)
     stale_count = sum(1 for value in frame_age_values if value > max_p95_frame_age_ms)
     stale_ratio = stale_count / len(rows)
@@ -72,13 +288,19 @@ def summarize_vision_soak(
     low_fps = fps_ratio < min_fps_ratio
     stale_frames = frame_age_summary["p95"] > max_p95_frame_age_ms
     frame_drops = drop_rate > max_drop_rate
+    tracking = _tracking_diagnostics(rows, target_fps=effective_target_fps)
+    target_unstable = (
+        min_target_stability_ratio is not None
+        and tracking["target_observed"]
+        and tracking["target_stability_ratio"] < _to_float(min_target_stability_ratio)
+    )
     reason = _bottleneck_reason(
         service_unstable=service_unstable,
         low_fps=low_fps,
         stale_frames=stale_frames,
         frame_drops=frame_drops,
+        target_unstable=target_unstable,
     )
-    tracking = _tracking_diagnostics(rows, target_fps=effective_target_fps)
     metadata = _summary_metadata(tracking, hailo_metadata=_hailo_metadata(rows))
 
     return {
@@ -94,6 +316,8 @@ def summarize_vision_soak(
         "stale_ratio": stale_ratio,
         "service_ok_ratio": service_ok_ratio,
         "bottleneck_reason": reason,
+        "pass_fail_reason": reason,
+        "fail_reason": None if reason == "healthy" else reason,
         **tracking,
         "metadata": metadata,
     }
@@ -137,7 +361,12 @@ def _resolve_target_fps(samples: list[dict[str, Any]], explicit: float | None) -
 
 
 def _tracking_diagnostics(rows: list[dict[str, Any]], *, target_fps: float) -> dict[str, Any]:
-    track_id_switch_count = _track_id_switch_count(rows)
+    explicit_track_switches = _explicit_numbers(rows, "track_id_switch_count")
+    track_id_switch_count = (
+        int(max(explicit_track_switches))
+        if explicit_track_switches
+        else _track_id_switch_count(rows)
+    )
     target_ids = [_stable_target_track_id(row) for row in rows]
     target_ids = [track_id for track_id in target_ids if track_id]
     target_switch_count = sum(
@@ -151,14 +380,26 @@ def _tracking_diagnostics(rows: list[dict[str, Any]], *, target_fps: float) -> d
         if comparable_targets > 0
         else (1.0 if target_ids else 0.0)
     )
+    explicit_stability = _explicit_numbers(rows, "target_stability_ratio")
+    if not target_ids and explicit_stability:
+        positive = [value for value in explicit_stability if value > 0.0]
+        target_stability_ratio = _average(positive) if positive else 1.0
+    target_observed = bool(target_ids or any(_sample_tracks(row) or row.get("stable_target") for row in rows))
     total_events = sum(_event_count(row) for row in rows)
     duration_s = _duration_s(rows, target_fps=target_fps)
+    explicit_event_rates = _explicit_numbers(rows, "event_rate_hz")
+    explicit_drop_tolerance = _explicit_numbers(rows, "frame_drop_tolerance")
     return {
         "track_id_switch_count": int(track_id_switch_count),
         "target_switch_count": int(target_switch_count),
         "target_stability_ratio": target_stability_ratio,
-        "event_rate_hz": _round(total_events / duration_s) if duration_s > 0.0 else 0.0,
-        "frame_drop_tolerance": int(_frame_drop_tolerance(rows)),
+        "target_observed": target_observed,
+        "event_rate_hz": _round(_average(explicit_event_rates))
+        if explicit_event_rates and total_events == 0
+        else (_round(total_events / duration_s) if duration_s > 0.0 else 0.0),
+        "frame_drop_tolerance": int(max(explicit_drop_tolerance))
+        if explicit_drop_tolerance
+        else int(_frame_drop_tolerance(rows)),
     }
 
 
@@ -231,6 +472,16 @@ def _frame_drop_tolerance(rows: list[dict[str, Any]]) -> int:
         else:
             current_run = 0
     return max_run
+
+
+def _drop_count(rows: list[dict[str, Any]]) -> float:
+    values = [max(0.0, _to_float(row.get("dropped_frames", 0.0))) for row in rows]
+    if not values:
+        return 0.0
+    monotonic = all(current >= previous for previous, current in zip(values, values[1:], strict=False))
+    if monotonic:
+        return values[-1] - values[0] if values[0] == 0.0 else values[-1]
+    return sum(values)
 
 
 def _hailo_metadata(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -386,12 +637,67 @@ def _bbox_center(bbox: Any) -> tuple[float, float]:
     )
 
 
+def _mapping_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _first_mapping(*values: Any) -> dict[str, Any]:
+    for value in values:
+        if isinstance(value, Mapping):
+            return dict(value)
+    return {}
+
+
+def _first_list(*values: Any) -> list[dict[str, Any]]:
+    for value in values:
+        if isinstance(value, list):
+            return [dict(item) for item in value if isinstance(item, Mapping)]
+        if isinstance(value, Mapping):
+            return [dict(value)]
+    return []
+
+
+def _first_present(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return value
+    return default
+
+
+def _frame_age_ms(diagnostics: Mapping[str, Any]) -> float | None:
+    value = _first_present(diagnostics, "frame_age_ms", "vision_frame_age_ms", "p95_frame_age_ms")
+    if value is not None:
+        return _to_float(value)
+    seconds = _first_present(
+        diagnostics,
+        "frame_age_s",
+        "vision_frame_age_s",
+        "last_frame_age_s",
+        "last_frame_age",
+        "frame_age",
+    )
+    if seconds is None:
+        return None
+    return _to_float(seconds) * 1000.0
+
+
+def _explicit_numbers(rows: list[dict[str, Any]], key: str) -> list[float]:
+    return [_to_float(row.get(key)) for row in rows if row.get(key) is not None]
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _service_is_ok(value: Any) -> bool:
     if value is None:
         return True
     if isinstance(value, bool):
         return value
-    return str(value).strip().lower() in {"ok", "active", "running", "healthy", "ready"}
+    return str(value).strip().lower() in {"ok", "active", "running", "healthy", "ready", "live", "tracking"}
 
 
 def _bottleneck_reason(
@@ -400,6 +706,7 @@ def _bottleneck_reason(
     low_fps: bool,
     stale_frames: bool,
     frame_drops: bool,
+    target_unstable: bool = False,
 ) -> str:
     if service_unstable:
         return "service_unstable"
@@ -409,6 +716,8 @@ def _bottleneck_reason(
         return "stale_frames"
     if frame_drops:
         return "frame_drops"
+    if target_unstable:
+        return "target_unstable"
     return "healthy"
 
 

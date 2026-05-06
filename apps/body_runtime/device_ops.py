@@ -45,6 +45,7 @@ def main() -> None:
     speaker_probe = subparsers.add_parser("probe-speaker")
     speaker_probe.add_argument("--output-device", required=True)
     speaker_probe.add_argument("--backend", default="espeak")
+    speaker_probe.add_argument("--playback-backend", default="aplay")
     speaker_probe.add_argument("--api-key-env", default="MINIMAX_API_KEY")
     speaker_probe.add_argument("--api-base-url", default="https://api.minimaxi.com")
     speaker_probe.add_argument("--model", default="speech-2.8-hd")
@@ -53,6 +54,7 @@ def main() -> None:
     speak = subparsers.add_parser("speak")
     speak.add_argument("--output-device", required=True)
     speak.add_argument("--backend", default="espeak")
+    speak.add_argument("--playback-backend", default="aplay")
     speak.add_argument("--api-key-env", default="MINIMAX_API_KEY")
     speak.add_argument("--api-base-url", default="https://api.minimaxi.com")
     speak.add_argument("--model", default="speech-2.8-hd")
@@ -115,6 +117,7 @@ def main() -> None:
         result = probe_tts_playback(
             output_device=args.output_device,
             backend=args.backend,
+            playback_backend=args.playback_backend,
             api_key=os.environ.get(args.api_key_env, ""),
             api_base_url=args.api_base_url,
             model=args.model,
@@ -126,6 +129,7 @@ def main() -> None:
             text=str(payload.get("payload", {}).get("text", "")),
             output_device=args.output_device,
             backend=args.backend,
+            playback_backend=args.playback_backend,
             api_key=os.environ.get(args.api_key_env, ""),
             api_base_url=args.api_base_url,
             model=args.model,

@@ -79,6 +79,38 @@ def test_speak_text_uses_espeak_and_aplay_commands(tmp_path) -> None:
     assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
 
 
+def test_speak_text_can_route_playback_through_pipewire_sink(tmp_path) -> None:
+    from eibrain.body.runtime_linux import speak_text
+
+    calls: list[list[str]] = []
+
+    def _runner(command: list[str], **kwargs):
+        calls.append(command)
+
+        class _Completed:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Completed()
+
+    result = speak_text(
+        text="hello",
+        output_device="alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo",
+        playback_backend="pw-play",
+        runner=_runner,
+        temp_dir=tmp_path,
+    )
+
+    assert result["status"] == "ok"
+    assert calls[1][:3] == [
+        "pw-play",
+        "--target",
+        "alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo",
+    ]
+    assert result["details"]["playback_backend"] == "pw-play"
+
+
 def test_speak_text_uses_minimax_t2a_and_aplay(tmp_path) -> None:
     from eibrain.body.runtime_linux import speak_text
 
@@ -217,6 +249,23 @@ def test_probe_tts_playback_requires_minimax_api_key(monkeypatch) -> None:
 
     assert result["status"] in {"degraded", "unavailable"}
     assert result["details"]["reason"] == "missing_minimax_api_key"
+
+
+def test_probe_tts_playback_uses_pipewire_binary_when_requested(monkeypatch) -> None:
+    from eibrain.body.runtime_linux import probe_tts_playback
+
+    monkeypatch.setattr("eibrain.body.runtime_linux.shutil.which", lambda name: f"/usr/bin/{name}")
+
+    result = probe_tts_playback(
+        output_device="alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo",
+        playback_backend="pw-play",
+        backend="minimax",
+        api_key="secret",
+    )
+
+    assert result["status"] in {"healthy", "degraded"}
+    assert result["details"]["binary"] == "/usr/bin/pw-play"
+    assert result["details"]["playback_backend"] == "pw-play"
 
 
 def test_move_gimbal_uses_injected_driver() -> None:

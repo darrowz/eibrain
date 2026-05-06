@@ -234,6 +234,7 @@ class MouthOrgan(BaseOrgan):
             "voice": voice_id,
             "model": extra.get("model"),
             "output_device": extra.get("output_device"),
+            "playback_backend": extra.get("playback_backend"),
         }
 
     def _driver_subfunction_health(self, name: str) -> SubfunctionHealth:
@@ -270,6 +271,7 @@ class MouthOrgan(BaseOrgan):
                 "voice",
                 "voice_id",
                 "output_device",
+                "playback_backend",
                 "operation",
             )
             if key in details

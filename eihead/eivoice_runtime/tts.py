@@ -115,6 +115,7 @@ class _StreamingTtsRoundState:
     cancel_reason: str = ""
     completed: bool = False
     provider_state: dict[str, Any] = field(default_factory=dict)
+    last_error: dict[str, Any] | None = None
 
 
 class StreamingTtsSession:
@@ -183,6 +184,11 @@ class StreamingTtsSession:
     def interrupt(self, *, round_id: str | None = None, reason: str = "interrupt") -> dict[str, Any]:
         return self.cancel(round_id=round_id, reason=reason)
 
+    def close(self) -> None:
+        close = getattr(self.provider, "close", None)
+        if callable(close):
+            close()
+
     def status(self, *, round_id: str | None = None) -> dict[str, Any]:
         target_round_id = round_id or self._active_round_id or self._last_round_id
         if target_round_id is None or target_round_id not in self._rounds:
@@ -238,6 +244,17 @@ class StreamingTtsSession:
             return
         state.cancelled = True
         state.cancel_reason = str(reason or "cancelled")
+        cancel = getattr(self.provider, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel(state.cancel_reason)
+            except TypeError:
+                try:
+                    cancel()
+                except BaseException as exc:  # pragma: no cover - defensive provider boundary
+                    state.last_error = _error_record(exc, context="cancel")
+            except BaseException as exc:  # pragma: no cover - defensive provider boundary
+                state.last_error = _error_record(exc, context="cancel")
         state.provider_state = self._provider_status()
 
     def _is_cancelled_or_stale(self, state: _StreamingTtsRoundState) -> bool:
@@ -384,6 +401,7 @@ class StreamingTtsSession:
             "reason": state.cancel_reason,
             "completed": state.completed,
             "provider_state": provider_state,
+            "last_error": dict(state.last_error) if state.last_error is not None else None,
         }
 
     def _provider_status(self) -> dict[str, Any]:
@@ -399,6 +417,12 @@ def _split_text(text: str, chunk_chars: int) -> list[str]:
     if not cleaned:
         return []
     return [cleaned[index : index + chunk_chars] for index in range(0, len(cleaned), chunk_chars)]
+
+
+def _error_record(error: BaseException | str, *, context: str) -> dict[str, Any]:
+    if isinstance(error, BaseException):
+        return {"kind": type(error).__name__, "message": str(error), "context": context}
+    return {"kind": "Error", "message": str(error), "context": context}
 
 
 __all__ = [

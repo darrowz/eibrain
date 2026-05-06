@@ -107,6 +107,7 @@ def speak_text(
     text: str,
     output_device: str,
     backend: str = "espeak",
+    playback_backend: str = "aplay",
     api_key: str = "",
     api_base_url: str = "https://api.minimaxi.com",
     model: str = "speech-2.8-hd",
@@ -130,6 +131,7 @@ def speak_text(
         return _speak_text_with_minimax(
             text=text,
             output_device=output_device,
+            playback_backend=playback_backend,
             api_key=api_key,
             api_base_url=api_base_url,
             model=model,
@@ -160,21 +162,13 @@ def speak_text(
         )
         if synth.returncode != 0:
             return {"status": "error", "details": {"stderr": synth.stderr.strip(), "stdout": synth.stdout.strip()}}
-        playback = runner(
-            ["aplay", "-D", output_device, str(wav_path)],
-            capture_output=True,
-            text=True,
-            check=False,
+        return _play_audio_file(
+            audio_path=wav_path,
+            output_device=output_device,
+            playback_backend=playback_backend,
+            runner=runner,
+            details={"output_device": output_device, "backend": backend},
         )
-        return {
-            "status": "ok" if playback.returncode == 0 else "error",
-            "details": {
-                "output_device": output_device,
-                "returncode": playback.returncode,
-                "stdout": playback.stdout.strip(),
-                "stderr": playback.stderr.strip(),
-            },
-        }
     finally:
         wav_path.unlink(missing_ok=True)
 
@@ -183,16 +177,19 @@ def probe_tts_playback(
     *,
     output_device: str,
     backend: str = "espeak",
+    playback_backend: str = "aplay",
     api_key: str = "",
     api_base_url: str = "https://api.minimaxi.com",
     model: str = "speech-2.8-hd",
     voice_id: str = "female-shaonv",
 ) -> dict[str, object]:
-    playback_probe = probe_binary_device(binary_name="aplay", device_path="/dev/snd", label=f"speaker:{output_device}")
+    binary_name = _normalize_playback_backend(playback_backend)
+    playback_probe = probe_binary_device(binary_name=binary_name, device_path="/dev/snd", label=f"speaker:{output_device}")
     details = dict(playback_probe.get("details", {}))
     details.update(
         {
             "backend": backend,
+            "playback_backend": binary_name,
             "output_device": output_device,
             "api_base_url": api_base_url,
             "model": model,
@@ -219,6 +216,7 @@ def _speak_text_with_minimax(
     *,
     text: str,
     output_device: str,
+    playback_backend: str,
     api_key: str,
     api_base_url: str,
     model: str,
@@ -245,6 +243,7 @@ def _speak_text_with_minimax(
                 "backend": "minimax",
                 "reason": "missing_minimax_api_key",
                 "output_device": output_device,
+                "playback_backend": playback_backend,
             },
         }
     if audio_format.lower() != "wav":
@@ -255,6 +254,7 @@ def _speak_text_with_minimax(
                 "reason": "unsupported_playback_format",
                 "audio_format": audio_format,
                 "output_device": output_device,
+                "playback_backend": playback_backend,
             },
         }
 
@@ -277,9 +277,11 @@ def _speak_text_with_minimax(
         return _play_minimax_audio_file(
             audio_path=cache_path,
             output_device=output_device,
+            playback_backend=playback_backend,
             runner=runner,
             details={
                 "backend": "minimax",
+                "playback_backend": playback_backend,
                 "model": model,
                 "voice_id": voice_id,
                 "audio_format": audio_format.lower(),
@@ -332,6 +334,7 @@ def _speak_text_with_minimax(
             {
                 "backend": "minimax",
                 "output_device": output_device,
+                "playback_backend": playback_backend,
                 "cache_hit": False,
                 "cache_key": cache_path.stem if cache_path is not None else "",
                 "cache_path": str(cache_path) if cache_path is not None else "",
@@ -342,6 +345,7 @@ def _speak_text_with_minimax(
         return _play_minimax_audio_file(
             audio_path=audio_path,
             output_device=output_device,
+            playback_backend=playback_backend,
             runner=runner,
             details=synth_details,
         )
@@ -407,17 +411,43 @@ def _write_temp_audio(*, audio_bytes: bytes, audio_format: str, temp_dir: str | 
         return Path(handle.name)
 
 
-def _play_minimax_audio_file(*, audio_path: Path, output_device: str, runner, details: dict[str, object]) -> dict[str, object]:
-    playback = runner(
-        ["aplay", "-D", output_device, str(audio_path)],
-        capture_output=True,
-        text=True,
-        check=False,
+def _play_minimax_audio_file(
+    *,
+    audio_path: Path,
+    output_device: str,
+    playback_backend: str,
+    runner,
+    details: dict[str, object],
+) -> dict[str, object]:
+    return _play_audio_file(
+        audio_path=audio_path,
+        output_device=output_device,
+        playback_backend=playback_backend,
+        runner=runner,
+        details=details,
     )
+
+
+def _play_audio_file(
+    *,
+    audio_path: Path,
+    output_device: str,
+    playback_backend: str,
+    runner,
+    details: dict[str, object],
+) -> dict[str, object]:
+    command = build_audio_playback_command(
+        audio_path=audio_path,
+        output_device=output_device,
+        playback_backend=playback_backend,
+    )
+    playback = runner(command, capture_output=True, text=True, check=False)
     playback_details = dict(details)
     playback_details.update(
         {
             "audio_path": str(audio_path),
+            "playback_backend": _normalize_playback_backend(playback_backend),
+            "playback_command": command[0],
             "returncode": playback.returncode,
             "stdout": playback.stdout.strip(),
             "stderr": playback.stderr.strip(),
@@ -427,6 +457,24 @@ def _play_minimax_audio_file(*, audio_path: Path, output_device: str, runner, de
         "status": "ok" if playback.returncode == 0 else "error",
         "details": playback_details,
     }
+
+
+def build_audio_playback_command(*, audio_path: Path, output_device: str, playback_backend: str = "aplay") -> list[str]:
+    backend = _normalize_playback_backend(playback_backend)
+    if backend == "pw-play":
+        command = ["pw-play"]
+        if output_device:
+            command.extend(["--target", output_device])
+        command.append(str(audio_path))
+        return command
+    return ["aplay", "-D", output_device, str(audio_path)]
+
+
+def _normalize_playback_backend(value: str) -> str:
+    normalized = str(value or "aplay").strip().lower()
+    if normalized in {"pipewire", "pwplay", "pw-play"}:
+        return "pw-play"
+    return "aplay"
 
 
 def synthesize_minimax_speech(

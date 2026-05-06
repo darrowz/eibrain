@@ -236,6 +236,31 @@ class StreamingAsrSession:
         self._events.clear()
         return events
 
+    def cancel(self, reason: str = "cancelled") -> dict[str, Any]:
+        cancel = getattr(self.provider, "cancel", None)
+        if callable(cancel):
+            try:
+                result = cancel(reason)
+            except TypeError:
+                result = cancel()
+            except BaseException as exc:  # pragma: no cover - defensive provider boundary
+                self._errors.append(_error_record(exc, context="cancel"))
+                return {"cancelled": False, "reason": reason, "error": str(exc)}
+            return dict(result) if isinstance(result, Mapping) else {"cancelled": True, "reason": reason}
+        self._pending.clear()
+        return {"cancelled": True, "reason": reason}
+
+    def close(self) -> None:
+        close = getattr(self.provider, "close", None)
+        if callable(close):
+            try:
+                close()
+            except BaseException as exc:  # pragma: no cover - defensive provider boundary
+                self._errors.append(_error_record(exc, context="close"))
+
+    def status(self) -> dict[str, Any]:
+        return self.diagnostics()
+
     def diagnostics(self) -> dict[str, Any]:
         provider_diagnostics = _provider_diagnostics(self.provider)
         provider_errors = provider_diagnostics.get("errors")
@@ -351,5 +376,27 @@ def _provider_name(provider: StreamingAsrProvider, diagnostics: Mapping[str, Any
 
 def _error_record(error: BaseException | str, *, context: str) -> dict[str, Any]:
     if isinstance(error, BaseException):
-        return {"kind": type(error).__name__, "message": str(error), "context": context}
-    return {"kind": "Error", "message": str(error), "context": context}
+        return {"kind": type(error).__name__, "message": _redact_common_secret_text(str(error)), "context": context}
+    return {"kind": "Error", "message": _redact_common_secret_text(str(error)), "context": context}
+
+
+def _redact_common_secret_text(text: str) -> str:
+    parts = str(text).split()
+    redacted: list[str] = []
+    redact_next = False
+    for part in parts:
+        if redact_next:
+            redacted.append(_redact_secret(part))
+            redact_next = False
+            continue
+        redacted.append(part)
+        if part.lower().rstrip(":") == "bearer":
+            redact_next = True
+    return " ".join(redacted)
+
+
+def _redact_secret(value: str) -> str:
+    text = str(value)
+    if len(text) <= 2:
+        return "*" * len(text)
+    return f"{text[0]}***{text[-1]}"

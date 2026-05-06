@@ -215,7 +215,9 @@ body:
             - apps.body_runtime.device_ops
             - probe-speaker
             - --output-device
-            - plughw:2,0
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
             - --backend
             - minimax
             - --model
@@ -228,7 +230,9 @@ body:
             - apps.body_runtime.device_ops
             - probe-speaker
             - --output-device
-            - plughw:2,0
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
             - --backend
             - minimax
             - --model
@@ -245,7 +249,9 @@ body:
             - apps.body_runtime.device_ops
             - speak
             - --output-device
-            - plughw:2,0
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
             - --backend
             - minimax
             - --model
@@ -264,7 +270,9 @@ body:
             - apps.body_runtime.device_ops
             - probe-speaker
             - --output-device
-            - plughw:2,0
+            - alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+            - --playback-backend
+            - pw-play
             - --backend
             - minimax
             - --model
@@ -272,7 +280,8 @@ body:
             - --voice-id
             - female-shaonv
           backend: minimax
-          output_device: plughw:2,0
+          output_device: alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo
+          playback_backend: pw-play
           model: speech-2.8-hd
           voice_id: female-shaonv
           audio_format: wav
