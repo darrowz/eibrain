@@ -143,8 +143,10 @@ def normalize_vision_status_sample(
     root = dict(payload)
     eye = _mapping_or_empty(root.get("eye"))
     visual = _mapping_or_empty(root.get("visual_diagnostics"))
+    body_camera = _body_eye_camera_details(root)
     diagnostics = _first_mapping(
         root.get("diagnostics"),
+        body_camera or None,
         eye.get("diagnostics"),
         visual.get("diagnostics"),
         visual,
@@ -160,9 +162,16 @@ def normalize_vision_status_sample(
     soak_summary = _first_mapping(*soak_summary_candidates)
     monitor = _monitor_snapshot(root, visual=visual, eye=eye, diagnostics=diagnostics)
     restart_evidence = _service_restart_evidence(root, diagnostics=diagnostics, visual=visual, eye=eye)
+    body_frame_age_ms = _frame_age_ms(body_camera)
     summary_frame_age_ms = _first_frame_age_ms(*soak_summary_candidates)
     diagnostic_frame_age_ms = _frame_age_ms(diagnostics)
-    frame_age_ms = summary_frame_age_ms if summary_frame_age_ms is not None else diagnostic_frame_age_ms
+    frame_age_ms = (
+        body_frame_age_ms
+        if body_frame_age_ms is not None
+        else summary_frame_age_ms
+        if summary_frame_age_ms is not None
+        else diagnostic_frame_age_ms
+    )
     sample: dict[str, Any] = {
         "elapsed_s": elapsed_s,
         "fps": _first_present(
@@ -693,6 +702,16 @@ def _first_list(*values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _body_eye_camera_details(root: Mapping[str, Any]) -> dict[str, Any]:
+    body = _mapping_or_empty(root.get("body"))
+    body_state = _first_mapping(root.get("body_state"), body.get("body_state"))
+    organs = _mapping_or_empty(body_state.get("organs"))
+    eye = _mapping_or_empty(organs.get("eye"))
+    subfunctions = _mapping_or_empty(eye.get("subfunctions"))
+    camera = _mapping_or_empty(subfunctions.get("camera"))
+    return _first_mapping(camera.get("details"), camera)
+
+
 def _first_frame_age_ms(*values: Any) -> float | None:
     for value in values:
         if not isinstance(value, Mapping):
@@ -721,6 +740,8 @@ def _frame_age_ms(diagnostics: Mapping[str, Any]) -> float | None:
         "vision_frame_age_s",
         "last_frame_age_s",
         "last_frame_age",
+        "state_age_s",
+        "frame_state_age_s",
         "frame_age",
     )
     if seconds is None:

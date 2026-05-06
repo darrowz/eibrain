@@ -300,6 +300,42 @@ def test_vision_soak_prefers_embedded_soak_summary_frame_age_over_display_frame_
     assert sample["frame_age_ms"] == 88.4
 
 
+def test_vision_soak_prefers_body_camera_state_age_over_rolling_summary_age():
+    sample = normalize_vision_status_sample(
+        {
+            "body": {
+                "body_state": {
+                    "organs": {
+                        "eye": {
+                            "subfunctions": {
+                                "camera": {
+                                    "details": {
+                                        "state_age_s": 0.12,
+                                        "fps": 10.4,
+                                        "status": "live",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "visual_diagnostics": {
+                "vision_fps": 9.9,
+                "vision_target_fps": 10.0,
+                "vision_frame_age_s": 1.05,
+                "vision_service_status": "ok",
+                "soak_summary": {"p95_frame_age_ms": 1210.0},
+            },
+        },
+        elapsed_s=1.0,
+    )
+
+    assert sample["fps"] == 10.4
+    assert sample["frame_age_ms"] == 120.0
+    assert sample["service_state"] == "live"
+
+
 def test_target_stability_threshold_ignores_missing_target_when_only_zero_placeholder_exists():
     samples = [
         {
