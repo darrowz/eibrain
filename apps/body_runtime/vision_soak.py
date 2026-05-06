@@ -159,9 +159,9 @@ def normalize_vision_status_sample(
     )
     monitor = _monitor_snapshot(root, visual=visual, eye=eye, diagnostics=diagnostics)
     restart_evidence = _service_restart_evidence(root, diagnostics=diagnostics, visual=visual, eye=eye)
-    frame_age_ms = _frame_age_ms(diagnostics)
-    if frame_age_ms is None and soak_summary:
-        frame_age_ms = _frame_age_ms(soak_summary)
+    summary_frame_age_ms = _frame_age_ms(soak_summary) if soak_summary else None
+    diagnostic_frame_age_ms = _frame_age_ms(diagnostics)
+    frame_age_ms = summary_frame_age_ms if summary_frame_age_ms is not None else diagnostic_frame_age_ms
     sample: dict[str, Any] = {
         "elapsed_s": elapsed_s,
         "fps": _first_present(

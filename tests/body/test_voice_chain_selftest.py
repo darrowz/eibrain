@@ -88,3 +88,32 @@ def test_honjia_readiness_report_runs_offline_without_live_dependencies() -> Non
     assert report["voice_chain_selftest"]["codeReady"] is True
     assert report["vision_soak"]["collection"]["source"] == "synthetic"
     assert report["checks"]["monitor_active"]["ok"] is None
+
+
+def test_honjia_readiness_report_loads_dotenv_without_overwriting_existing_env(tmp_path, monkeypatch) -> None:
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "honjia_readiness_report.py"
+    spec = importlib.util.spec_from_file_location("honjia_readiness_report", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "EIVOICE_MINIMAX_API_KEY=from-file",
+                "EIVOICE_DASHSCOPE_API_KEY='dash-file'",
+                "IGNORED_WITHOUT_EQUALS",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EIVOICE_MINIMAX_API_KEY", "existing")
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+
+    result = module._load_env_file(env_file)
+
+    assert result["loaded"] == 1
+    assert result["status"] == "loaded"
+    assert result["path"] == str(env_file)
+    assert module.os.environ["EIVOICE_MINIMAX_API_KEY"] == "existing"
+    assert module.os.environ["EIVOICE_DASHSCOPE_API_KEY"] == "dash-file"

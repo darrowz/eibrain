@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -111,9 +112,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--duration", type=float, default=15.0, help="Vision soak duration for live status sampling.")
     parser.add_argument("--interval", type=float, default=5.0, help="Vision soak sample interval for live status sampling.")
     parser.add_argument("--require-provider-config", action="store_true", help="Fail the report when cloud provider env is not configured.")
+    parser.add_argument("--env-file", type=Path, default=Path(".env"), help="Load provider env values from this dotenv file before checks.")
+    parser.add_argument("--no-env-file", action="store_true", help="Do not auto-load a dotenv file before checks.")
     parser.add_argument("--service", action="append", default=[], help="Additional systemd services to inspect with systemctl show.")
     parser.add_argument("--pretty", action="store_true", help="Print indented JSON.")
     args = parser.parse_args(argv)
+
+    if not args.no_env_file:
+        _load_env_file(args.env_file)
 
     report = build_report(
         live=bool(args.live),
@@ -127,6 +133,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     indent = 2 if args.pretty else None
     print(json.dumps(report, ensure_ascii=False, indent=indent, sort_keys=True))
     return 0 if report["overall"]["pass"] else 1
+
+
+def _load_env_file(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.exists():
+        return {"loaded": 0, "path": str(path) if path is not None else None, "status": "missing"}
+    loaded = 0
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        os.environ[key] = _unquote_env_value(value.strip())
+        loaded += 1
+    return {"loaded": loaded, "path": str(path), "status": "loaded"}
+
+
+def _unquote_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
 
 
 def _vision_report(

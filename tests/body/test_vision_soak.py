@@ -276,6 +276,29 @@ def test_vision_soak_normalizes_operator_console_visual_diagnostics_shape():
     assert sample["tracks"][0]["trackId"] == "person-7"
 
 
+def test_vision_soak_prefers_embedded_soak_summary_frame_age_over_display_frame_age():
+    sample = normalize_vision_status_sample(
+        {
+            "visual_diagnostics": {
+                "vision_fps": 9.9,
+                "vision_target_fps": 10.0,
+                "vision_frame_age_s": 1.05,
+                "vision_service_status": "ok",
+                "soak_summary": {
+                    "p95_frame_age_ms": 88.4,
+                    "track_id_switch_count": 0,
+                    "target_stability_ratio": 1.0,
+                    "event_rate_hz": 0.2,
+                    "frame_drop_tolerance": 0,
+                },
+            }
+        },
+        elapsed_s=1.0,
+    )
+
+    assert sample["frame_age_ms"] == 88.4
+
+
 def test_target_stability_threshold_ignores_missing_target_when_only_zero_placeholder_exists():
     samples = [
         {
