@@ -151,15 +151,16 @@ def normalize_vision_status_sample(
         eye,
         root,
     )
-    soak_summary = _first_mapping(
+    soak_summary_candidates = (
         root.get("soak_summary"),
         diagnostics.get("soak_summary"),
         visual.get("soak_summary"),
         eye.get("soak_summary"),
     )
+    soak_summary = _first_mapping(*soak_summary_candidates)
     monitor = _monitor_snapshot(root, visual=visual, eye=eye, diagnostics=diagnostics)
     restart_evidence = _service_restart_evidence(root, diagnostics=diagnostics, visual=visual, eye=eye)
-    summary_frame_age_ms = _frame_age_ms(soak_summary) if soak_summary else None
+    summary_frame_age_ms = _first_frame_age_ms(*soak_summary_candidates)
     diagnostic_frame_age_ms = _frame_age_ms(diagnostics)
     frame_age_ms = summary_frame_age_ms if summary_frame_age_ms is not None else diagnostic_frame_age_ms
     sample: dict[str, Any] = {
@@ -692,6 +693,16 @@ def _first_list(*values: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _first_frame_age_ms(*values: Any) -> float | None:
+    for value in values:
+        if not isinstance(value, Mapping):
+            continue
+        frame_age_ms = _frame_age_ms(value)
+        if frame_age_ms is not None:
+            return frame_age_ms
+    return None
+
+
 def _first_present(mapping: Mapping[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         value = mapping.get(key)
@@ -703,7 +714,7 @@ def _first_present(mapping: Mapping[str, Any], *keys: str, default: Any = None) 
 def _frame_age_ms(diagnostics: Mapping[str, Any]) -> float | None:
     value = _first_present(diagnostics, "frame_age_ms", "vision_frame_age_ms", "p95_frame_age_ms")
     if value is not None:
-        return _to_float(value)
+        return _try_float(value)
     seconds = _first_present(
         diagnostics,
         "frame_age_s",
@@ -714,7 +725,10 @@ def _frame_age_ms(diagnostics: Mapping[str, Any]) -> float | None:
     )
     if seconds is None:
         return None
-    return _to_float(seconds) * 1000.0
+    parsed = _try_float(seconds)
+    if parsed is None:
+        return None
+    return parsed * 1000.0
 
 
 def _explicit_numbers(rows: list[dict[str, Any]], key: str) -> list[float]:
@@ -911,6 +925,13 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _try_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _int_from_mapping(mapping: Mapping[str, Any], *keys: str) -> int:

@@ -279,6 +279,7 @@ def test_vision_soak_normalizes_operator_console_visual_diagnostics_shape():
 def test_vision_soak_prefers_embedded_soak_summary_frame_age_over_display_frame_age():
     sample = normalize_vision_status_sample(
         {
+            "soak_summary": {"p95_frame_age_ms": "not_ready"},
             "visual_diagnostics": {
                 "vision_fps": 9.9,
                 "vision_target_fps": 10.0,
