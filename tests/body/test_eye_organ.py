@@ -208,6 +208,9 @@ def test_eye_organ_reads_vision_service_state_without_capturing(tmp_path, monkey
                     "score": 0.95,
                     "bbox": {"x_min": 0.4, "y_min": 0.1, "x_max": 0.6, "y_max": 0.5},
                 },
+                "fps": 9.8,
+                "pipeline": {"target_fps": 10.0, "interval_s": 0.1},
+                "telemetry": {"loop_elapsed_ms": 12.4, "configured_interval_s": 0.1},
                 "scene_summary": "1 face",
             }
         ),
@@ -241,6 +244,9 @@ def test_eye_organ_reads_vision_service_state_without_capturing(tmp_path, monkey
     assert heartbeat.subfunctions["camera"].details["driver"] == "vision_state"
     assert heartbeat.subfunctions["detection"].details["detection_count"] == 1
     assert heartbeat.subfunctions["detection"].details["top_detection"]["label"] == "face"
+    assert heartbeat.subfunctions["detection"].details["fps"] == 9.8
+    assert heartbeat.subfunctions["detection"].details["pipeline"]["target_fps"] == 10.0
+    assert heartbeat.subfunctions["detection"].details["telemetry"]["loop_elapsed_ms"] == 12.4
     assert heartbeat.subfunctions["identity"].details["face_candidate_count"] == 1
     assert organ.latest_frame_path == str(frame_path)
 

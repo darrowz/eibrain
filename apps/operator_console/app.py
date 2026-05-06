@@ -541,6 +541,36 @@ class OperatorConsoleApp:
         visual_tracking = body_snapshot.get("visual_tracking", {})
         if not isinstance(visual_tracking, dict):
             visual_tracking = {}
+        vision_metric_sources = self._nested_dict_sources(detection_details, camera_details, visual_tracking)
+        vision_fps = self._first_numeric_from_sources(
+            vision_metric_sources,
+            keys=("vision_fps", "fps", "current_fps"),
+        )
+        vision_target_fps = self._first_numeric_from_sources(
+            vision_metric_sources,
+            keys=("vision_target_fps", "target_fps", "configured_target_fps"),
+        )
+        vision_loop_interval_s = self._first_numeric_from_sources(
+            vision_metric_sources,
+            keys=("vision_loop_interval_s", "interval_s", "configured_interval_s", "loop_interval_s"),
+        )
+        if vision_target_fps is None and isinstance(vision_loop_interval_s, (int, float)) and vision_loop_interval_s > 0:
+            vision_target_fps = round(1.0 / float(vision_loop_interval_s), 4)
+        if vision_loop_interval_s is None and isinstance(vision_target_fps, (int, float)) and vision_target_fps > 0:
+            vision_loop_interval_s = round(1.0 / float(vision_target_fps), 4)
+        explicit_frame_age_s = self._first_numeric_from_sources(
+            vision_metric_sources,
+            keys=("vision_frame_age_s", "frame_age_s", "last_frame_age_s", "last_frame_age"),
+        )
+        frame_age_s = explicit_frame_age_s if explicit_frame_age_s is not None else self._age_seconds(frame_captured_at_ts)
+        vision_frame_status = str(
+            self._first_present(
+                *vision_metric_sources,
+                keys=("vision_frame_status", "frame_status", "freshness_status"),
+                default="",
+            )
+            or ""
+        )
         registered_identity = body_snapshot.get("identity_registry", {})
         if not isinstance(registered_identity, dict):
             registered_identity = {}
@@ -598,6 +628,8 @@ class OperatorConsoleApp:
             data_health = "healthy"
         elif data_status == "sleeping":
             data_health = "healthy"
+        if not vision_frame_status:
+            vision_frame_status = "live" if data_status == "live" else data_status
 
         top_detection = detection_details.get("top_detection")
         top_detection_bbox = top_detection.get("bbox") if isinstance(top_detection, dict) else None
@@ -608,6 +640,7 @@ class OperatorConsoleApp:
             "frame_available": bool(frame_path),
             "frame_url": "/vision/latest.jpg" if frame_path else None,
             "frame_captured_at_ts": frame_captured_at_ts,
+            "frame_status": vision_frame_status,
             "camera_health": camera.get("health", "unknown"),
             "detection_health": detection.get("health", "unknown"),
             "identity_health": identity.get("health", "unknown"),
@@ -629,7 +662,12 @@ class OperatorConsoleApp:
             "state_path": detection_details.get("state_path") or camera_details.get("state_path"),
             "state_age_s": detection_details.get("state_age_s", camera_details.get("state_age_s")),
             "state_updated_at_ts": detection_details.get("state_updated_at_ts", camera_details.get("state_updated_at_ts")),
-            "frame_age_s": self._age_seconds(frame_captured_at_ts),
+            "frame_age_s": frame_age_s,
+            "vision_fps": vision_fps,
+            "vision_target_fps": vision_target_fps,
+            "vision_loop_interval_s": vision_loop_interval_s,
+            "vision_frame_age_s": frame_age_s,
+            "vision_frame_status": vision_frame_status,
             "tracking_status": visual_tracking.get("status", "idle"),
             "tracking_updated_at_ts": visual_tracking.get("updated_at_ts"),
             "tracking_age_s": self._age_seconds(visual_tracking.get("updated_at_ts")),
@@ -796,6 +834,36 @@ class OperatorConsoleApp:
             if isinstance(candidate, (int, float)):
                 return candidate
         return None
+
+    @classmethod
+    def _first_numeric_from_sources(
+        cls,
+        sources: list[dict[str, object]],
+        *,
+        keys: tuple[str, ...],
+    ) -> float | int | None:
+        for source in sources:
+            value = cls._first_numeric_value(source, keys=keys)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _nested_dict_sources(*values: object) -> list[dict[str, object]]:
+        sources: list[dict[str, object]] = []
+
+        def add(value: object, *, depth: int) -> None:
+            if depth > 3 or not isinstance(value, dict):
+                return
+            source = dict(value)
+            sources.append(source)
+            for nested in value.values():
+                if isinstance(nested, dict):
+                    add(nested, depth=depth + 1)
+
+        for value in values:
+            add(value, depth=0)
+        return sources
 
     @staticmethod
     def _age_seconds(timestamp: object) -> float | None:

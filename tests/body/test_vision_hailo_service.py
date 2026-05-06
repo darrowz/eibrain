@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 
 def test_detector_from_config_preserves_legacy_single_model_config() -> None:
     from apps.body_runtime.vision_hailo_service import SingleFrameHailoDetector
@@ -364,3 +366,63 @@ def test_vision_service_enriches_detection_frames_with_realtime_scene_events(tmp
     assert second["source"] == {"backend": "fake_hailo", "mode": "realtime_simulated"}
     assert second["last_detection_summary"] == "Observed cup; realtime events: attention, moved"
     assert "detections" not in second["scene"]
+
+
+def test_vision_service_exposes_configured_interval_and_target_fps(tmp_path) -> None:
+    from apps.body_runtime.vision_hailo_service import VisionHailoService
+    from eibrain.body.vision_state import VisionStateWriter
+
+    class _Detector:
+        def detect_once(self):
+            return {
+                "status": "ok",
+                "backend": "fake_hailo",
+                "frame_id": "frame-telemetry",
+                "frame_captured_at_ts": 100.0,
+                "detections": [],
+                "pipeline": {"model_id": "personface"},
+            }
+
+    service = VisionHailoService(
+        detector=_Detector(),
+        writer=VisionStateWriter(tmp_path / "state.json"),
+        interval_s=0.1,
+        clock=lambda: 100.0,
+    )
+
+    state = service.process_once()
+
+    assert state["fps"] == 0.0
+    assert state["pipeline"]["model_id"] == "personface"
+    assert state["pipeline"]["interval_s"] == pytest.approx(0.1)
+    assert state["pipeline"]["target_fps"] == pytest.approx(10.0)
+    assert state["telemetry"]["interval_s"] == pytest.approx(0.1)
+    assert state["telemetry"]["target_fps"] == pytest.approx(10.0)
+
+
+def test_vision_service_caps_effective_target_fps_at_15_hz(tmp_path) -> None:
+    from apps.body_runtime.vision_hailo_service import VisionHailoService
+    from eibrain.body.vision_state import VisionStateWriter
+
+    class _Detector:
+        def detect_once(self):
+            return {
+                "status": "ok",
+                "backend": "fake_hailo",
+                "frame_id": "frame-telemetry-cap",
+                "frame_captured_at_ts": 100.0,
+                "detections": [],
+            }
+
+    service = VisionHailoService(
+        detector=_Detector(),
+        writer=VisionStateWriter(tmp_path / "state.json"),
+        interval_s=0.01,
+        clock=lambda: 100.0,
+    )
+
+    state = service.process_once()
+
+    assert state["telemetry"]["configured_interval_s"] == pytest.approx(0.01)
+    assert state["telemetry"]["interval_s"] == pytest.approx(1.0 / 15.0, abs=0.001)
+    assert state["telemetry"]["target_fps"] == pytest.approx(15.0)

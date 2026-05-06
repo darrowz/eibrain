@@ -19,6 +19,113 @@ def test_neck_fusion_holds_inside_center_deadband() -> None:
     assert recommendation.reason == "inside_deadband"
 
 
+def test_neck_fusion_holds_center_jitter_without_pan_commands() -> None:
+    from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
+
+    policy = NeckFusionPolicy(
+        NeckFusionConfig(home_angle=90, deadband=0.08, hysteresis=0.03)
+    )
+
+    last_action = None
+    recommendations = []
+    for index, target_x in enumerate([0.49, 0.52, 0.48, 0.51]):
+        recommendation = policy.recommend(
+            target_x=target_x,
+            score=0.96,
+            current_angle=90,
+            last_action=last_action,
+            now_ts=1.0 + (index * 0.2),
+        )
+        recommendations.append(recommendation)
+        last_action = recommendation.last_action
+
+    assert [recommendation.action for recommendation in recommendations] == [
+        "hold",
+        "hold",
+        "hold",
+        "hold",
+    ]
+    assert [recommendation.target_angle for recommendation in recommendations] == [
+        90,
+        90,
+        90,
+        90,
+    ]
+    assert recommendations[-1].last_action["stable_error_count"] == 0
+    assert recommendations[-1].last_action["target_jitter_reason"] == "inside_deadband"
+
+
+def test_neck_fusion_holds_offsets_until_beyond_hysteresis_threshold() -> None:
+    from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
+
+    policy = NeckFusionPolicy(
+        NeckFusionConfig(
+            home_angle=90,
+            deadband=0.08,
+            hysteresis=0.03,
+            consecutive_bias_required=2,
+        )
+    )
+
+    first = policy.recommend(
+        target_x=0.59,
+        score=0.96,
+        current_angle=90,
+        last_action=None,
+        now_ts=1.0,
+    )
+    second = policy.recommend(
+        target_x=0.60,
+        score=0.96,
+        current_angle=90,
+        last_action=first.last_action,
+        now_ts=1.3,
+    )
+
+    assert first.action == "hold"
+    assert second.action == "hold"
+    assert second.reason == "within_hysteresis"
+    assert second.target_angle == 90
+
+
+def test_neck_fusion_pans_right_after_stable_offset_beyond_hysteresis() -> None:
+    from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
+
+    policy = NeckFusionPolicy(
+        NeckFusionConfig(
+            home_angle=90,
+            deadband=0.08,
+            hysteresis=0.03,
+            consecutive_bias_required=2,
+            pan_step_gain=30.0,
+            max_step_degrees=10,
+        )
+    )
+
+    first = policy.recommend(
+        target_x=0.62,
+        score=0.96,
+        current_angle=90,
+        last_action=None,
+        now_ts=1.0,
+    )
+    second = policy.recommend(
+        target_x=0.63,
+        score=0.96,
+        current_angle=90,
+        last_action=first.last_action,
+        now_ts=1.3,
+    )
+
+    assert first.action == "hold"
+    assert first.reason == "bias_not_confirmed"
+    assert first.last_action["stable_error_count"] == 1
+    assert second.action == "pan_right"
+    assert second.target_angle > 90
+    assert second.reason == "offset_confirmed"
+    assert second.last_action["stable_error_count"] == 2
+
+
 def test_neck_fusion_holds_low_confidence_target() -> None:
     from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
 

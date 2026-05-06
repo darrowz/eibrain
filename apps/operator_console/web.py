@@ -519,6 +519,10 @@ class MonitoringWebServer:
       return typeof value === 'number' ? `${{value.toFixed(2)}} s` : '—';
     }}
 
+    function fmtFps(value) {{
+      return typeof value === 'number' ? `${{value.toFixed(1)}} FPS` : '—';
+    }}
+
     function fmtBool(value) {{
       if (value === true) return 'present';
       if (value === false) return 'missing';
@@ -656,6 +660,7 @@ class MonitoringWebServer:
       const topDetection = visual.top_detection || {{}};
       const topBbox = visual.top_detection_bbox || topDetection.bbox || {{}};
       const trackingDecision = visual.tracking_decision || {{}};
+      const panProof = (report.neck_control_diagnostics || {{}}).pan_motion_proof || {{}};
       const topLabel = topDetection.label ? `${{topDetection.label}} ${{Number(topDetection.score || 0).toFixed(2)}}` : 'none';
       const bboxSummary = topBbox.x_min !== undefined
         ? `x:${{Number(topBbox.x_min || 0).toFixed(2)}}-${{Number(topBbox.x_max || 0).toFixed(2)}} y:${{Number(topBbox.y_min || 0).toFixed(2)}}-${{Number(topBbox.y_max || 0).toFixed(2)}}`
@@ -665,13 +670,20 @@ class MonitoringWebServer:
       const trackingDecisionSummary = trackingDecision.action
         ? `${{trackingDecision.action}} / ${{trackingDecision.reason || '-'}}`
         : 'pending';
+      const frameAge = typeof visual.vision_frame_age_s === 'number' ? visual.vision_frame_age_s : visual.frame_age_s;
+      const frameStatus = visual.vision_frame_status || visual.frame_status || '';
+      const frameAgeText = frameStatus ? `${{fmtSeconds(frameAge)}} / ${{frameStatus}}` : fmtSeconds(frameAge);
+      const panProofSummary = panProof.verified ? 'verified' : (panProof.status || 'missing');
+      const suppressProofSummary = `${{visual.tracking_suppressed_reason || 'none'}} / ${{panProofSummary}}`;
       const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
       document.getElementById('identity-action-status').textContent = registeredIdentity.registered
         ? `Registered: ${{identityName || 'known person'}}`
         : 'Session identity not registered';
       document.getElementById('vision-summary').innerHTML = [
+        ['FPS', fmtFps(visual.vision_fps)],
+        ['Target FPS', fmtFps(visual.vision_target_fps)],
         ['Frame', visual.frame_available ? 'live' : 'missing'],
-        ['Frame age', fmtSeconds(visual.frame_age_s)],
+        ['Frame age', frameAgeText],
         ['Data', visual.data_status || 'unknown'],
         ['Backend', visual.backend || 'unknown'],
         ['Service', visual.vision_service_status || 'unknown'],
@@ -681,7 +693,7 @@ class MonitoringWebServer:
         ['Track error', trackingError],
         ['Track angle', trackingAngle],
         ['Track decision', trackingDecisionSummary],
-        ['Suppress', visual.tracking_suppressed_reason || 'none'],
+        ['Suppress/Pan proof', suppressProofSummary],
         ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
         ['Top', topLabel],

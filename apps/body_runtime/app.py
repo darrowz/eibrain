@@ -44,7 +44,7 @@ class BodyRuntimeApp:
         )
         self._recent_events: deque[dict[str, object]] = deque(maxlen=50)
         self.ear_processor: EarStreamProcessor | None = None
-        self._neck_fusion = NeckFusionPolicy(NeckFusionConfig(consecutive_bias_required=1))
+        self._neck_fusion = NeckFusionPolicy(self._build_neck_fusion_config())
         self._neck_fusion_last_action: dict[str, object] | None = None
         self._last_visual_tracking_decision: dict[str, object] = {}
         self._visual_tracking_misses = 0
@@ -120,6 +120,40 @@ class BodyRuntimeApp:
                 continue
             organs.append(organ_cls(config=organ_config))
         return organs
+
+    def _build_neck_fusion_config(self) -> NeckFusionConfig:
+        neck_cfg = self.config.body.organs.get("neck")
+        motor_cfg = neck_cfg.subfunctions.get("motor") if neck_cfg is not None else None
+        extra = motor_cfg.driver.extra if motor_cfg is not None else {}
+        config = NeckFusionConfig(consecutive_bias_required=1)
+        int_fields = {
+            "home_angle": "home_angle",
+            "pan_min": "pan_min_angle",
+            "pan_max": "pan_max_angle",
+            "tracking_max_step": "max_step_degrees",
+            "tracking_min_step": "min_step_degrees",
+            "tracking_consecutive_bias_required": "consecutive_bias_required",
+        }
+        float_fields = {
+            "tracking_deadband": "deadband",
+            "tracking_hysteresis": "hysteresis",
+            "tracking_step_gain": "pan_step_gain",
+            "tracking_min_interval_s": "min_command_interval_s",
+            "tracking_cooldown_s": "cooldown_s",
+            "tracking_recenter_after_missing_s": "recenter_after_missing_s",
+            "tracking_min_confidence": "min_confidence",
+        }
+        for source_key, field_name in int_fields.items():
+            if source_key in extra:
+                value = self._int_or_none(extra.get(source_key))
+                if value is not None:
+                    setattr(config, field_name, value)
+        for source_key, field_name in float_fields.items():
+            if source_key in extra:
+                value = self._coerce_optional_float(extra.get(source_key))
+                if value is not None:
+                    setattr(config, field_name, value)
+        return config
 
     def simulate_transcript(self, *, text: str, session_id: str, actor_id: str) -> AudioTranscriptFinal:
         return AudioTranscriptFinal(
@@ -827,6 +861,7 @@ class BodyRuntimeApp:
             actor_id=actor_id,
         )
         if action is None:
+            self._note_visual_target_locked(tracking_target, neck_action=False)
             self._update_visual_tracking_state(
                 status="holding_target",
                 target=tracking_target,
@@ -1315,22 +1350,22 @@ class BodyRuntimeApp:
         self.interaction_state["last_voice_activity_at_ts"] = now_ts
         self.interaction_state["updated_at_ts"] = now_ts
 
-    def _note_visual_target_locked(self, target: dict[str, object]) -> None:
+    def _note_visual_target_locked(self, target: dict[str, object], *, neck_action: bool = True) -> None:
         now_ts = time.time()
-        self.interaction_state.update(
-            {
-                "tracking_locked": True,
-                "tracking_target_label": str(target.get("label", "target")),
-                "tracking_target_score": self._coerce_float(target.get("score"), default=0.0),
-                "tracking_target_x": self._coerce_float(target.get("target_x"), default=0.5),
-                "tracking_raw_target_x": self._coerce_float(target.get("raw_target_x"), default=0.5),
-                "tracking_stable_count": int(target.get("tracking_stable_count", 1)),
-                "tracking_miss_count": 0,
-                "last_attention_at_ts": now_ts,
-                "last_neck_action_at_ts": now_ts,
-                "updated_at_ts": now_ts,
-            }
-        )
+        state_update: dict[str, object] = {
+            "tracking_locked": True,
+            "tracking_target_label": str(target.get("label", "target")),
+            "tracking_target_score": self._coerce_float(target.get("score"), default=0.0),
+            "tracking_target_x": self._coerce_float(target.get("target_x"), default=0.5),
+            "tracking_raw_target_x": self._coerce_float(target.get("raw_target_x"), default=0.5),
+            "tracking_stable_count": int(target.get("tracking_stable_count", 1)),
+            "tracking_miss_count": 0,
+            "last_attention_at_ts": now_ts,
+            "updated_at_ts": now_ts,
+        }
+        if neck_action:
+            state_update["last_neck_action_at_ts"] = now_ts
+        self.interaction_state.update(state_update)
         self._refresh_interaction_mode(force_mode="attention", force_reason="visual_target_locked")
 
     def _note_visual_miss(self, *, reason: str = "visual_target_missing") -> None:

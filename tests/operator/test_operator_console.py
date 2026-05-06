@@ -758,6 +758,61 @@ def test_operator_console_exposes_visual_tracking_decision_diagnostics() -> None
     assert visual["tracking_suppressed_reason"] == "rate_limited"
 
 
+def test_operator_console_reads_visual_loop_metrics_from_organ_details() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True},
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {
+                            "health": "healthy",
+                            "details": {
+                                "status": "live",
+                                "frame_path": "/tmp/latest.jpg",
+                                "frame_age_s": 0.14,
+                                "frame_status": "fresh",
+                            },
+                        },
+                        "detection": {
+                            "health": "healthy",
+                            "details": {
+                                "status": "live",
+                                "fps": 8.5,
+                                "details": {
+                                    "telemetry": {
+                                        "target_fps": 10.0,
+                                        "interval_s": 0.1,
+                                    },
+                                    "pipeline": {
+                                        "configured_interval_s": 0.1,
+                                        "target_fps": 10.0,
+                                    },
+                                },
+                                "detections": [],
+                            },
+                        },
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    visual = report["visual_diagnostics"]
+    assert visual["vision_fps"] == 8.5
+    assert visual["vision_target_fps"] == 10.0
+    assert visual["vision_loop_interval_s"] == 0.1
+    assert visual["vision_frame_age_s"] == 0.14
+    assert visual["vision_frame_status"] == "fresh"
+
+
 def test_operator_console_exposes_pan_motion_proof_file(tmp_path, monkeypatch) -> None:
     from apps.operator_console.app import OperatorConsoleApp
 
@@ -804,6 +859,9 @@ def test_monitoring_web_keeps_visual_tracking_diagnostics_visible() -> None:
 
     html = MonitoringWebServer._render_html({"generated_at_ts": 0.0})
 
+    assert "FPS" in html
+    assert "Target FPS" in html
+    assert "Frame age" in html
     assert "Track error" in html
     assert "Track angle" in html
     assert "Track decision" in html

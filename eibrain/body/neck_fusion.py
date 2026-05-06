@@ -32,6 +32,9 @@ class NeckFusionActionState:
     last_seen_at_ts: float | None = None
     last_seen_target_x: float | None = None
     last_score: float = 0.0
+    filtered_error: float = 0.0
+    stable_error_count: int = 0
+    target_jitter_reason: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -44,6 +47,9 @@ class NeckFusionActionState:
             "last_seen_at_ts": self.last_seen_at_ts,
             "last_seen_target_x": self.last_seen_target_x,
             "last_score": self.last_score,
+            "filtered_error": self.filtered_error,
+            "stable_error_count": self.stable_error_count,
+            "target_jitter_reason": self.target_jitter_reason,
         }
 
 
@@ -74,29 +80,63 @@ class NeckFusionPolicy:
 
         if target_x is None:
             return self._recommend_missing_target(state, current, home, now_ts)
+        error = self._target_error(target_x)
         if score < self.config.min_confidence:
-            next_state = self._state_for_hold(state, current, target_x, score, now_ts)
+            next_state = self._state_for_hold(
+                state,
+                current,
+                target_x,
+                score,
+                now_ts,
+                filtered_error=error,
+                target_jitter_reason="low_confidence",
+            )
             return self._recommend("hold", current, "low_confidence", next_state)
 
-        error = max(-0.5, min(0.5, float(target_x) - 0.5))
         if abs(error) <= self.config.deadband:
-            next_state = self._state_for_hold(state, current, target_x, score, now_ts)
+            next_state = self._state_for_hold(
+                state,
+                current,
+                target_x,
+                score,
+                now_ts,
+                filtered_error=error,
+                target_jitter_reason="inside_deadband",
+            )
             return self._recommend("hold", current, "inside_deadband", next_state)
 
+        activation_threshold = self.config.deadband + self.config.hysteresis
+        if abs(error) <= activation_threshold:
+            next_state = self._state_for_hold(
+                state,
+                current,
+                target_x,
+                score,
+                now_ts,
+                filtered_error=error,
+                target_jitter_reason="within_hysteresis",
+            )
+            return self._recommend("hold", current, "within_hysteresis", next_state)
+
         direction = "right" if error > 0 else "left"
-        bias_count = state.bias_count + 1 if state.bias_direction == direction else 1
+        stable_error_count = (
+            state.stable_error_count + 1 if state.bias_direction == direction else 1
+        )
         next_state = NeckFusionActionState(
             action="hold",
             target_angle=state.target_angle if state.target_angle is not None else current,
             acted_at_ts=state.acted_at_ts,
             bias_direction=direction,
-            bias_count=bias_count,
+            bias_count=stable_error_count,
             missing_since_ts=None,
             last_seen_at_ts=now_ts,
             last_seen_target_x=target_x,
             last_score=score,
+            filtered_error=error,
+            stable_error_count=stable_error_count,
+            target_jitter_reason=None,
         )
-        if bias_count < max(1, self.config.consecutive_bias_required):
+        if stable_error_count < max(1, self.config.consecutive_bias_required):
             return self._recommend("hold", current, "bias_not_confirmed", next_state)
 
         desired_action = "pan_right" if direction == "right" else "pan_left"
@@ -145,6 +185,9 @@ class NeckFusionPolicy:
             last_seen_at_ts=state.last_seen_at_ts,
             last_seen_target_x=state.last_seen_target_x,
             last_score=0.0,
+            filtered_error=state.filtered_error,
+            stable_error_count=0,
+            target_jitter_reason="target_missing",
         )
         if current == home:
             return self._recommend("hold", home, "target_missing_centered", next_state)
@@ -162,6 +205,9 @@ class NeckFusionPolicy:
         target_x: float,
         score: float,
         now_ts: float,
+        filtered_error: float = 0.0,
+        stable_error_count: int = 0,
+        target_jitter_reason: str | None = None,
     ) -> NeckFusionActionState:
         return NeckFusionActionState(
             action="hold",
@@ -173,6 +219,9 @@ class NeckFusionPolicy:
             last_seen_at_ts=now_ts,
             last_seen_target_x=target_x,
             last_score=score,
+            filtered_error=filtered_error,
+            stable_error_count=stable_error_count,
+            target_jitter_reason=target_jitter_reason,
         )
 
     def _is_hysteresis_cooldown_active(
@@ -234,8 +283,26 @@ class NeckFusionPolicy:
                 last_seen_at_ts=_float_or_none(value.get("last_seen_at_ts")),
                 last_seen_target_x=_float_or_none(value.get("last_seen_target_x")),
                 last_score=float(value.get("last_score") or 0.0),
+                filtered_error=_float_or_none(value.get("filtered_error")) or 0.0,
+                stable_error_count=max(
+                    0,
+                    int(
+                        value.get("stable_error_count")
+                        if value.get("stable_error_count") is not None
+                        else (value.get("bias_count") or 0)
+                    ),
+                ),
+                target_jitter_reason=(
+                    None
+                    if value.get("target_jitter_reason") is None
+                    else str(value.get("target_jitter_reason"))
+                ),
             )
         return NeckFusionActionState()
+
+    @staticmethod
+    def _target_error(target_x: float) -> float:
+        return max(-0.5, min(0.5, float(target_x) - 0.5))
 
 
 def _float_or_none(value: object) -> float | None:

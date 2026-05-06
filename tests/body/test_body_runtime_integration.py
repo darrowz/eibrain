@@ -106,6 +106,50 @@ def test_body_runtime_holds_visual_tracking_action_in_deadband() -> None:
     assert action is None
 
 
+def test_body_runtime_uses_neck_tracking_config_from_motor_driver() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.infra.config import BodyConfig
+    from eibrain.infra.config import DriverConfig
+    from eibrain.infra.config import EIBrainConfig
+    from eibrain.infra.config import OrganConfig
+    from eibrain.infra.config import SubfunctionConfig
+
+    runtime = BodyRuntimeApp(
+        config=EIBrainConfig(
+            body=BodyConfig(
+                organs={
+                    "neck": OrganConfig(
+                        subfunctions={
+                            "motor": SubfunctionConfig(
+                                driver=DriverConfig(
+                                    extra={
+                                        "home_angle": 92,
+                                        "pan_min": 50,
+                                        "pan_max": 130,
+                                        "tracking_deadband": 0.22,
+                                        "tracking_step_gain": 10.0,
+                                        "tracking_max_step": 4,
+                                        "tracking_min_interval_s": 0.9,
+                                    }
+                                )
+                            )
+                        }
+                    )
+                }
+            )
+        )
+    )
+
+    fusion_config = runtime._neck_fusion.config
+    assert fusion_config.home_angle == 92
+    assert fusion_config.pan_min_angle == 50
+    assert fusion_config.pan_max_angle == 130
+    assert fusion_config.deadband == 0.22
+    assert fusion_config.pan_step_gain == 10.0
+    assert fusion_config.max_step_degrees == 4
+    assert fusion_config.min_command_interval_s == 0.9
+
+
 def test_body_runtime_can_dispatch_visual_tracking_to_neck() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
@@ -346,7 +390,7 @@ def test_body_runtime_holds_neck_command_when_target_shift_is_small() -> None:
                 {
                     "label": "face",
                     "score": 0.90,
-                    "bbox": {"x_min": 0.52, "x_max": 0.72},
+                    "bbox": {"x_min": 0.50, "x_max": 0.70},
                 },
             ]
             self._index = 0
@@ -407,9 +451,9 @@ def test_body_runtime_holds_neck_command_when_target_shift_is_small() -> None:
     first = runtime.track_visual_target_once(session_id="track-3", actor_id="vision-3")
     second = runtime.track_visual_target_once(session_id="track-4", actor_id="vision-4")
 
-    assert first is not None
+    assert first is None
     assert second is None
-    assert len(neck.actions) == 1
+    assert len(neck.actions) == 0
     assert runtime.interaction_state["current_mode"] == "attention"
     assert runtime.visual_tracking_state["status"] == "holding_target"
     assert runtime.snapshot()["visual_tracking"]["target"]["label"] == "face"

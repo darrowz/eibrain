@@ -111,6 +111,9 @@ COCO80_LABELS = [
     "toothbrush",
 ]
 
+MAX_VISION_TARGET_FPS = 15.0
+MIN_VISION_INTERVAL_S = 1.0 / MAX_VISION_TARGET_FPS
+
 
 @dataclass(frozen=True, slots=True)
 class ModelConfig:
@@ -366,9 +369,10 @@ class VisionHailoService:
     ) -> None:
         self.detector = detector
         self.writer = writer
-        self.interval_s = interval_s
+        self.configured_interval_s = max(0.0, float(interval_s))
+        self.interval_s = max(self.configured_interval_s, MIN_VISION_INTERVAL_S)
         self.engagement_reader = engagement_reader
-        self.sleeping_interval_s = max(float(sleeping_interval_s), interval_s)
+        self.sleeping_interval_s = max(float(sleeping_interval_s), self.interval_s)
         self.clock = clock
         self.realtime_simulator = realtime_simulator or RealtimeVisionSimulator()
         self._last_frame_ts: float | None = None
@@ -386,18 +390,23 @@ class VisionHailoService:
 
     def process_once(self) -> float | dict[str, Any]:
         if self._should_run_vision():
-            state = self._enrich_realtime_state(self.detector.detect_once())
+            loop_started = time.monotonic()
+            detected_state = self.detector.detect_once()
+            loop_elapsed_ms = _round_float((time.monotonic() - loop_started) * 1000.0)
+            state = self._enrich_realtime_state(detected_state, loop_elapsed_ms=loop_elapsed_ms)
             self.writer.write(state)
             return state
 
         self._stop_detector_pipeline()
-        state = build_vision_state(
-            detections=[],
-            frame_path=None,
-            status="sleeping",
-            backend="vision_sleep_gate",
-            pipeline={"mode": "sleeping", "reason": "conversation_inactive"},
-            details={"engagement": self.engagement_reader.read() if self.engagement_reader else {}},
+        state = self._with_timing_metadata(
+            build_vision_state(
+                detections=[],
+                frame_path=None,
+                status="sleeping",
+                backend="vision_sleep_gate",
+                pipeline={"mode": "sleeping", "reason": "conversation_inactive"},
+                details={"engagement": self.engagement_reader.read() if self.engagement_reader else {}},
+            )
         )
         self.writer.write(state)
         return self.sleeping_interval_s
@@ -418,7 +427,7 @@ class VisionHailoService:
         if callable(stop):
             stop()
 
-    def _enrich_realtime_state(self, state: dict[str, Any]) -> dict[str, Any]:
+    def _enrich_realtime_state(self, state: dict[str, Any], *, loop_elapsed_ms: float | None = None) -> dict[str, Any]:
         frame_ts = _float_or_none(state.get("frame_captured_at_ts"))
         observed_at = str(state.get("observed_at") or state.get("observedAt") or frame_ts or self.clock())
         frame_id = str(state.get("frame_id") or state.get("frameId") or f"frame-{int((frame_ts or self.clock()) * 1000)}")
@@ -454,9 +463,46 @@ class VisionHailoService:
                 "last_detection_summary": str(snapshot.get("sceneGraphSummary") or scene_content.get("summary") or ""),
             }
         )
+        enriched = self._with_timing_metadata(enriched, loop_elapsed_ms=loop_elapsed_ms)
         if frame_ts is not None:
             self._last_frame_ts = frame_ts
         return enriched
+
+    def _with_timing_metadata(
+        self,
+        state: dict[str, Any],
+        *,
+        loop_elapsed_ms: float | None = None,
+    ) -> dict[str, Any]:
+        enriched = dict(state)
+        telemetry = self._timing_telemetry(loop_elapsed_ms=loop_elapsed_ms)
+        pipeline = enriched.get("pipeline")
+        pipeline_map = dict(pipeline) if isinstance(pipeline, dict) else {}
+        pipeline_map.update(
+            {
+                "configured_interval_s": telemetry["configured_interval_s"],
+                "interval_s": telemetry["interval_s"],
+                "target_fps": telemetry["target_fps"],
+            }
+        )
+        existing_telemetry = enriched.get("telemetry")
+        telemetry_map = dict(existing_telemetry) if isinstance(existing_telemetry, dict) else {}
+        telemetry_map.update(telemetry)
+        enriched["pipeline"] = pipeline_map
+        enriched["telemetry"] = telemetry_map
+        return enriched
+
+    def _timing_telemetry(self, *, loop_elapsed_ms: float | None = None) -> dict[str, Any]:
+        raw_interval_s = max(0.0, float(self.interval_s))
+        interval_s = _round_float(raw_interval_s)
+        telemetry: dict[str, Any] = {
+            "configured_interval_s": _round_float(self.configured_interval_s),
+            "interval_s": interval_s,
+            "target_fps": _round_float(1.0 / raw_interval_s) if raw_interval_s > 0 else 0.0,
+        }
+        if loop_elapsed_ms is not None:
+            telemetry["loop_elapsed_ms"] = _round_float(loop_elapsed_ms)
+        return telemetry
 
     def _fps(self, frame_ts: float | None) -> float:
         if frame_ts is None or self._last_frame_ts is None:
