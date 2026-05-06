@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from urllib.error import HTTPError, URLError
 from urllib import request
 from pathlib import Path
@@ -441,13 +442,22 @@ def _play_audio_file(
         output_device=output_device,
         playback_backend=playback_backend,
     )
-    playback = runner(command, capture_output=True, text=True, check=False)
+    playback_kwargs = {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+    playback_env = _playback_env(playback_backend)
+    if playback_env is not None:
+        playback_kwargs["env"] = playback_env
+    playback = runner(command, **playback_kwargs)
     playback_details = dict(details)
     playback_details.update(
         {
             "audio_path": str(audio_path),
             "playback_backend": _normalize_playback_backend(playback_backend),
             "playback_command": command[0],
+            "pipewire_runtime_dir": (playback_env or {}).get("XDG_RUNTIME_DIR", ""),
             "returncode": playback.returncode,
             "stdout": playback.stdout.strip(),
             "stderr": playback.stderr.strip(),
@@ -475,6 +485,20 @@ def _normalize_playback_backend(value: str) -> str:
     if normalized in {"pipewire", "pwplay", "pw-play"}:
         return "pw-play"
     return "aplay"
+
+
+def _playback_env(playback_backend: str) -> dict[str, str] | None:
+    if _normalize_playback_backend(playback_backend) != "pw-play":
+        return None
+    env = dict(os.environ)
+    if env.get("XDG_RUNTIME_DIR"):
+        return env
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid):
+        runtime_dir = f"/run/user/{getuid()}"
+        if Path(runtime_dir).exists():
+            env["XDG_RUNTIME_DIR"] = runtime_dir
+    return env
 
 
 def synthesize_minimax_speech(

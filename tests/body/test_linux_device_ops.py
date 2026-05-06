@@ -79,13 +79,16 @@ def test_speak_text_uses_espeak_and_aplay_commands(tmp_path) -> None:
     assert calls[1][:3] == ["aplay", "-D", "plughw:2,0"]
 
 
-def test_speak_text_can_route_playback_through_pipewire_sink(tmp_path) -> None:
+def test_speak_text_can_route_playback_through_pipewire_sink(monkeypatch, tmp_path) -> None:
     from eibrain.body.runtime_linux import speak_text
 
     calls: list[list[str]] = []
+    envs: list[dict[str, str] | None] = []
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
 
     def _runner(command: list[str], **kwargs):
         calls.append(command)
+        envs.append(kwargs.get("env"))
 
         class _Completed:
             returncode = 0
@@ -109,6 +112,8 @@ def test_speak_text_can_route_playback_through_pipewire_sink(tmp_path) -> None:
         "alsa_output.usb-Generic_Philips_SPA3700_20170726905923-00.analog-stereo",
     ]
     assert result["details"]["playback_backend"] == "pw-play"
+    assert result["details"]["pipewire_runtime_dir"] == "/run/user/1000"
+    assert envs[1]["XDG_RUNTIME_DIR"] == "/run/user/1000"
 
 
 def test_speak_text_uses_minimax_t2a_and_aplay(tmp_path) -> None:
