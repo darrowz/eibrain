@@ -275,3 +275,143 @@ def test_runner_reports_no_work_when_sources_and_queues_are_empty() -> None:
     assert status["worker_metrics"]["capture_empty_polls"] == 1
     assert status["worker_metrics"]["receive_empty_polls"] == 1
     assert status["worker_metrics"]["idle_steps"] == 1
+
+
+def test_noop_acoustic_frontend_config_reports_aec_ns_vad_loopback_diagnostics() -> None:
+    from eihead.eivoice_runtime import AcousticFrontendConfig, NoOpAcousticFrontend
+
+    default_readiness = NoOpAcousticFrontend().readiness()
+    assert default_readiness["healthy"] is True
+
+    frontend = NoOpAcousticFrontend(
+        AcousticFrontendConfig(
+            aec_enabled=True,
+            aec_available=False,
+            ns_enabled=True,
+            ns_available=True,
+            vad_enabled=False,
+            vad_available=False,
+            loopback_enabled=True,
+            loopback_available=True,
+        )
+    )
+
+    processed = frontend.process_capture(_pcm_frame(31))
+    readiness = frontend.readiness()
+
+    assert processed.sequence == 31
+    assert readiness["mode"] == "noop"
+    assert readiness["aec"] == {"enabled": True, "available": False, "state": "unavailable"}
+    assert readiness["ns"] == {"enabled": True, "available": True, "state": "ready"}
+    assert readiness["vad"] == {"enabled": False, "available": False, "state": "disabled"}
+    assert readiness["loopback"] == {"enabled": True, "available": True, "state": "ready"}
+    assert readiness["processed_frames"] == 1
+    assert readiness["last_frame_duration_ms"] == 20
+    assert "AEC configured but unavailable" in readiness["warnings"]
+
+
+def test_runner_ws_send_queue_keeps_latest_frames_when_transport_is_slow() -> None:
+    from eihead.eivoice_runtime import AcousticFrontendConfig, NoOpAcousticFrontend
+
+    runner = EiVoiceRuntimeRunner(
+        capture_source=FakeCaptureSource(*[_pcm_frame(sequence) for sequence in range(30)]),
+        audio_frontend=NoOpAcousticFrontend(
+            AcousticFrontendConfig(
+                aec_enabled=True,
+                aec_available=True,
+                ns_enabled=True,
+                ns_available=True,
+                vad_enabled=True,
+                vad_available=True,
+                loopback_enabled=True,
+                loopback_available=True,
+            )
+        ),
+        codec=FakeCodec(),
+        playback_sink=FakePlaybackSink(),
+    )
+
+    for _ in range(30):
+        assert runner.step_capture() is True
+        assert runner.step_encode() is True
+
+    status = runner.status()
+    queued_sequences: list[int] = []
+    while True:
+        frame = runner.core.ws_send_queue.pop()
+        if frame is None:
+            break
+        queued_sequences.append(frame.sequence)
+
+    assert queued_sequences == list(range(5, 30))
+    assert status["queues"]["ws_send_queue"]["depth"] == 25
+    assert status["queues"]["ws_send_queue"]["dropped_oldest"] == 5
+    assert status["diagnostics"]["queues"]["ws_send_queue"]["dropped_oldest"] == 5
+    assert status["diagnostics"]["audio_frame"]["last_capture_duration_ms"] == 20
+    assert status["diagnostics"]["upstream"]["queue_depth"] == 25
+
+
+def test_runner_status_exposes_joyinside_like_audio_chain_diagnostics() -> None:
+    from eihead.eivoice_runtime import AcousticFrontendConfig, NoOpAcousticFrontend
+
+    transport = FakeWebSocketTransport()
+    transport.open()
+    runner = EiVoiceRuntimeRunner(
+        capture_source=FakeCaptureSource(_pcm_frame(41)),
+        audio_frontend=NoOpAcousticFrontend(
+            AcousticFrontendConfig(
+                aec_enabled=True,
+                aec_available=True,
+                ns_enabled=True,
+                ns_available=True,
+                vad_enabled=True,
+                vad_available=True,
+                loopback_enabled=True,
+                loopback_available=True,
+            )
+        ),
+        codec=FakeCodec(),
+        transport=transport,
+        playback_sink=FakePlaybackSink(),
+        uid="darrow",
+        mid="mid-diagnostics",
+    )
+
+    assert runner.step_capture() is True
+    assert runner.step_encode() is True
+    assert runner.step_send() is True
+
+    outbound = transport.recv_from_client()
+    assert outbound is not None
+    assert outbound["content"]["durationMs"] == 20
+    assert outbound["content"]["sampleRateHz"] == 16000
+    assert outbound["content"]["channels"] == 1
+
+    transport.deliver_from_server(
+        {
+            "contentType": "TTS",
+            "content": {
+                "eventType": "TTS",
+                "index": 42,
+                "durationMs": 120,
+                "audioBase64": base64.b64encode(b"remote-opus").decode("ascii"),
+            },
+        }
+    )
+
+    assert runner.step_receive() is True
+    assert runner.step_decode() is True
+    assert runner.step_playback() is True
+
+    diagnostics = runner.status()["diagnostics"]
+
+    assert diagnostics["schema"] == "eihead.eivoice_runtime.diagnostics.v1"
+    assert diagnostics["audio_frame"]["last_capture_duration_ms"] == 20
+    assert diagnostics["audio_frame"]["last_receive_duration_ms"] == 120
+    assert diagnostics["audio_frontend"]["aec"]["enabled"] is True
+    assert diagnostics["audio_frontend"]["ns"]["enabled"] is True
+    assert diagnostics["audio_frontend"]["vad"]["enabled"] is True
+    assert diagnostics["upstream"]["state"] == "connected"
+    assert diagnostics["downstream"]["state"] == "connected"
+    assert diagnostics["heartbeat"]["due"] is False
+    assert diagnostics["reconnect"]["ready"] is False

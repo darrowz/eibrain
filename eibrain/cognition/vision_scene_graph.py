@@ -25,6 +25,8 @@ _FRAME_KEYS = {
     "detections",
     "objects",
     "tracks",
+    "previousScene",
+    "previous_scene",
 }
 
 
@@ -33,8 +35,11 @@ def build_vision_scene_graph(
     *,
     tracks: list[Mapping[str, Any]] | None = None,
     frame_metadata: Mapping[str, Any] | None = None,
+    previous_scene: Mapping[str, Any] | None = None,
     near_area_threshold: float = 0.10,
     near_relation_gap: float = 0.12,
+    motion_threshold: float = 0.08,
+    approach_area_delta: float = 0.04,
 ) -> dict[str, Any]:
     """Build people, objects, relations, regions, and summary from one frame."""
 
@@ -45,12 +50,18 @@ def build_vision_scene_graph(
         frame=frame,
         near_area_threshold=near_area_threshold,
     )
+    temporal = _temporal_analysis(
+        objects=objects,
+        previous_scene=previous_scene,
+        motion_threshold=motion_threshold,
+        approach_area_delta=approach_area_delta,
+    )
     people = [dict(item) for item in objects if item["kind"] == "person"]
     relations = _build_relations(objects, near_relation_gap=near_relation_gap)
     regions = _build_regions(objects)
     dominant_target = _dominant_target(objects)
     safety = {"pathClear": None, "nearObstacle": None}
-    summary = _summary(objects, relations, dominant_target, safety)
+    summary = _summary(objects, relations, dominant_target, safety, temporal)
     scene_id = _scene_id(frame, objects, relations)
 
     return {
@@ -64,6 +75,8 @@ def build_vision_scene_graph(
         "regions": regions,
         "dominant_target": dominant_target,
         "summary": summary,
+        "temporal": temporal,
+        "event_summary": temporal["eventSummary"],
         "safety": safety,
         "metadata": _public_metadata(frame),
     }
@@ -75,6 +88,7 @@ def build_scene_graph(
     detections: list[Mapping[str, Any]] | None = None,
     tracks: list[Mapping[str, Any]] | None = None,
     frame_metadata: Mapping[str, Any] | None = None,
+    previous_scene: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Payload-style wrapper for callers that already hold a vision frame dict."""
 
@@ -83,6 +97,7 @@ def build_scene_graph(
             detections=detections,
             tracks=tracks,
             frame_metadata=frame_metadata,
+            previous_scene=previous_scene,
         )
 
     metadata = {key: value for key, value in payload.items() if key not in _FRAME_KEYS}
@@ -92,6 +107,7 @@ def build_scene_graph(
         detections=detections if detections is not None else _mapping_list(payload.get("detections", payload.get("objects"))),
         tracks=tracks if tracks is not None else _mapping_list(payload.get("tracks")),
         frame_metadata=metadata,
+        previous_scene=previous_scene or _first_mapping(payload.get("previousScene"), payload.get("previous_scene")),
     )
 
 
@@ -99,7 +115,7 @@ def to_eiprotocol_scene_content(scene: Mapping[str, Any]) -> dict[str, Any]:
     """Map a scene graph to generic VisionSceneObservation content."""
 
     metadata = dict(scene.get("metadata") if isinstance(scene.get("metadata"), Mapping) else {})
-    return {
+    content = {
         "sceneId": str(scene.get("sceneId", "")),
         "observedAt": str(scene.get("observedAt", "")),
         "summary": str(scene.get("summary", "")),
@@ -109,6 +125,11 @@ def to_eiprotocol_scene_content(scene: Mapping[str, Any]) -> dict[str, Any]:
         "imageUrl": str(metadata.get("imageUrl", "")),
         "metadata": metadata,
     }
+    if isinstance(scene.get("temporal"), Mapping):
+        content["temporal"] = dict(scene["temporal"])  # type: ignore[index]
+    if scene.get("event_summary"):
+        content["eventSummary"] = str(scene.get("event_summary"))
+    return content
 
 
 def _build_objects(
@@ -244,6 +265,144 @@ def _build_regions(objects: list[dict[str, Any]]) -> dict[str, list[dict[str, An
     return regions
 
 
+def _temporal_analysis(
+    *,
+    objects: list[dict[str, Any]],
+    previous_scene: Mapping[str, Any] | None,
+    motion_threshold: float,
+    approach_area_delta: float,
+) -> dict[str, Any]:
+    previous_objects = _previous_object_map(previous_scene)
+    current_objects = {_object_key(item): item for item in objects}
+    events: list[dict[str, Any]] = []
+    states: list[dict[str, Any]] = []
+
+    if not previous_objects:
+        default_state = "appeared" if isinstance(previous_scene, Mapping) else "observed"
+        for item in objects:
+            _set_temporal_state(item, default_state)
+            state_item = _temporal_state_item(item, default_state)
+            states.append(state_item)
+            if default_state == "appeared":
+                events.append(_temporal_event(state_item, event_type="appeared", from_region="", to_region=str(item.get("region", ""))))
+        return _temporal_payload(states, events)
+
+    for key, item in sorted(current_objects.items()):
+        previous = previous_objects.get(key)
+        if previous is None:
+            state = "appeared"
+            _set_temporal_state(item, state)
+            state_item = _temporal_state_item(item, state)
+            states.append(state_item)
+            events.append(_temporal_event(state_item, event_type=state, from_region="", to_region=str(item.get("region", ""))))
+            continue
+
+        distance = _distance_between_objects(previous, item)
+        area_delta = _coerce_float(item.get("area"), default=0.0) - _coerce_float(previous.get("area"), default=_area_from_object(previous))
+        from_region = _first_text(previous.get("region"))
+        to_region = _first_text(item.get("region"))
+        state = _matched_temporal_state(
+            distance=distance,
+            area_delta=area_delta,
+            from_region=from_region,
+            to_region=to_region,
+            motion_threshold=motion_threshold,
+            approach_area_delta=approach_area_delta,
+        )
+        _set_temporal_state(item, state)
+        state_item = _temporal_state_item(
+            item,
+            state,
+            from_region=from_region,
+            to_region=to_region,
+            distance=distance,
+            area_delta=area_delta,
+        )
+        states.append(state_item)
+        if state != "stationary":
+            events.append(_temporal_event(state_item, event_type=state, from_region=from_region, to_region=to_region))
+
+    for key, previous in sorted(previous_objects.items()):
+        if key in current_objects:
+            continue
+        state_item = _temporal_state_item(previous, "disappeared", from_region=_first_text(previous.get("region")), to_region="")
+        states.append(state_item)
+        events.append(_temporal_event(state_item, event_type="disappeared", from_region=state_item["fromRegion"], to_region=""))
+
+    return _temporal_payload(states, events)
+
+
+def _previous_object_map(previous_scene: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    if not isinstance(previous_scene, Mapping):
+        return {}
+    objects = _mapping_list(previous_scene.get("objects"))
+    return {_object_key(item): item for item in objects if _object_key(item)}
+
+
+def _object_key(item: Mapping[str, Any]) -> str:
+    return _first_text(item.get("trackId"), item.get("track_id"), item.get("id"))
+
+
+def _set_temporal_state(item: dict[str, Any], state: str) -> None:
+    item["temporalState"] = state
+
+
+def _temporal_state_item(
+    item: Mapping[str, Any],
+    state: str,
+    *,
+    from_region: str = "",
+    to_region: str = "",
+    distance: float = 0.0,
+    area_delta: float = 0.0,
+) -> dict[str, Any]:
+    return {
+        "trackId": _object_key(item),
+        "label": _first_text(item.get("label")),
+        "state": state,
+        "fromRegion": from_region,
+        "toRegion": to_region or _first_text(item.get("region")),
+        "distance": round(float(distance), 3),
+        "areaDelta": round(float(area_delta), 4),
+    }
+
+
+def _temporal_event(
+    state_item: Mapping[str, Any],
+    *,
+    event_type: str,
+    from_region: str,
+    to_region: str,
+) -> dict[str, Any]:
+    return {
+        "eventType": event_type,
+        "trackId": state_item.get("trackId", ""),
+        "label": state_item.get("label", ""),
+        "fromRegion": from_region,
+        "toRegion": to_region,
+        "distance": state_item.get("distance", 0.0),
+        "areaDelta": state_item.get("areaDelta", 0.0),
+    }
+
+
+def _temporal_payload(states: list[dict[str, Any]], events: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "states": states,
+        "events": events,
+        "eventSummary": _temporal_summary(states),
+    }
+
+
+def _temporal_summary(states: list[dict[str, Any]]) -> str:
+    if not states:
+        return "no temporal changes"
+    return "; ".join(
+        f"{item['state']} {item['trackId']}"
+        for item in sorted(states, key=lambda value: (str(value.get("state")), str(value.get("trackId"))))
+        if item.get("trackId")
+    )
+
+
 def _dominant_target(objects: list[dict[str, Any]]) -> dict[str, Any]:
     if not objects:
         return {}
@@ -273,6 +432,7 @@ def _summary(
     relations: list[dict[str, Any]],
     dominant_target: Mapping[str, Any],
     safety: Mapping[str, Any],
+    temporal: Mapping[str, Any],
 ) -> str:
     path_clear = "unknown" if safety.get("pathClear") is None else str(safety.get("pathClear")).lower()
     near_obstacle = "unknown" if safety.get("nearObstacle") is None else str(safety.get("nearObstacle")).lower()
@@ -293,7 +453,8 @@ def _summary(
     target_region = str(dominant_target.get("region", ""))
     return (
         f"Observed {observed}; dominant target {target_label} in {target_region}; "
-        f"relations: {relation_summary}; pathClear {path_clear}; nearObstacle {near_obstacle}"
+        f"relations: {relation_summary}; temporal: {temporal.get('eventSummary', 'no temporal changes')}; "
+        f"pathClear {path_clear}; nearObstacle {near_obstacle}"
     )
 
 
@@ -404,6 +565,13 @@ def _mapping_list(value: Any) -> list[Mapping[str, Any]]:
     return [item for item in value if isinstance(item, Mapping)]
 
 
+def _first_mapping(*values: Any) -> Mapping[str, Any] | None:
+    for value in values:
+        if isinstance(value, Mapping):
+            return value
+    return None
+
+
 def _first_text(*values: Any) -> str:
     for value in values:
         if value is None:
@@ -470,8 +638,38 @@ def _object_center(obj: Mapping[str, Any]) -> tuple[float, float]:
     return _center(bbox) if isinstance(bbox, Mapping) else (0.0, 0.0)
 
 
+def _distance_between_objects(previous: Mapping[str, Any], current: Mapping[str, Any]) -> float:
+    previous_center = _object_center(previous)
+    current_center = _object_center(current)
+    return math.hypot(previous_center[0] - current_center[0], previous_center[1] - current_center[1])
+
+
 def _area(bbox: Mapping[str, float]) -> float:
     return max(0.0, float(bbox["x_max"]) - float(bbox["x_min"])) * max(0.0, float(bbox["y_max"]) - float(bbox["y_min"]))
+
+
+def _area_from_object(item: Mapping[str, Any]) -> float:
+    area = _coerce_float(item.get("area"), default=-1.0)
+    if area >= 0.0:
+        return area
+    bbox = item.get("bbox")
+    return _area(bbox) if isinstance(bbox, Mapping) else 0.0
+
+
+def _matched_temporal_state(
+    *,
+    distance: float,
+    area_delta: float,
+    from_region: str,
+    to_region: str,
+    motion_threshold: float,
+    approach_area_delta: float,
+) -> str:
+    if area_delta >= max(0.0, approach_area_delta) and distance < motion_threshold and from_region == to_region:
+        return "approaching"
+    if distance >= motion_threshold or (from_region and to_region and from_region != to_region):
+        return "moving"
+    return "stationary"
 
 
 def _overlap_area(a: Mapping[str, float], b: Mapping[str, float]) -> float:

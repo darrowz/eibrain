@@ -241,6 +241,46 @@ def test_realtime_eye_service_preserves_degraded_poll_status() -> None:
     assert observation["degraded"] is True
 
 
+def test_realtime_eye_service_scene_bridge_diagnostics_are_monitor_consumable() -> None:
+    service = RealtimeEyeService(
+        adapter=FakeAdapter(
+            initial_status={
+                "mode": "realtime_stream",
+                "status": "ok",
+                "backend": "fake_realtime",
+                "stream_ready": True,
+                "placeholder": False,
+                "not_wired": False,
+                "last_frame_id": "frame-diag",
+                "last_frame_captured_at_ts": 123.25,
+                "last_frame_age": 0.07,
+                "fps": 14.2,
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.91,
+                        "confidence": 0.91,
+                        "bbox": {"x_min": 0.36, "y_min": 0.20, "x_max": 0.62, "y_max": 0.86},
+                    }
+                ],
+            },
+            polled_statuses=[],
+        )
+    )
+
+    observation = service.latest_observation()
+    diagnostics = observation["scene_bridge"]
+
+    assert observation["fps"] == 14.2
+    assert observation["last_frame_age"] == 0.07
+    assert diagnostics["fps"] == 14.2
+    assert diagnostics["frame_age"] == 0.07
+    assert diagnostics["track_count"] == 1
+    assert diagnostics["stable_target"]["label"] == "person"
+    assert diagnostics["event_count"] == 1
+    assert diagnostics["last_event"]["eventType"] == "appeared"
+
+
 def test_realtime_eye_service_is_exported_from_package() -> None:
     from eihead.eye import RealtimeEyeService as ExportedService
 

@@ -501,7 +501,7 @@ def scheduler_snapshot_to_eiprotocol_events(
         scheduler,
         keys=("proactive_activity", "proactiveActivity", "activity", "activity_proposal"),
     )
-    if activity is not None:
+    if activity is not None and _activity_should_emit(activity):
         events.append(
             build_proactive_activity_proposed_event(
                 source=brain_source,
@@ -1598,6 +1598,13 @@ def _truthy(value: object) -> bool:
     if isinstance(value, (int, float)):
         return value != 0
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "emit", "active"}
+
+
+def _activity_should_emit(activity: Mapping[str, Any]) -> bool:
+    if _truthy(activity.get("shouldEmit", activity.get("should_emit"))):
+        return True
+    channel = _first_text(activity.get("channel")).strip().lower()
+    return channel not in {"", "silent", "none", "off"}
 
 
 def _cancellation_is_applied(cancellation: Mapping[str, Any]) -> bool:

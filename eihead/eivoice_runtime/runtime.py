@@ -11,6 +11,96 @@ from .core import AudioFrame, EiVoiceRuntimeCore, OpusCodec
 from .transport import VoiceStreamTransport
 
 
+@dataclass(frozen=True)
+class AcousticFrontendConfig:
+    """Configurable placeholder for the acoustic front-end contract."""
+
+    aec_enabled: bool = False
+    aec_available: bool = False
+    ns_enabled: bool = False
+    ns_available: bool = False
+    vad_enabled: bool = False
+    vad_available: bool = False
+    loopback_enabled: bool = False
+    loopback_available: bool = False
+    capture_enabled: bool = True
+    capture_available: bool = True
+    mode: str = "noop"
+    warnings: tuple[str, ...] = ()
+
+    def diagnostics(
+        self,
+        *,
+        processed_frames: int = 0,
+        dropped_frames: int = 0,
+        last_frame_duration_ms: int | None = None,
+    ) -> dict[str, Any]:
+        warnings = list(self.warnings)
+        warnings.extend(_frontend_component_warnings(self))
+        return {
+            "mode": self.mode,
+            "capture": _frontend_component(
+                enabled=self.capture_enabled,
+                available=self.capture_available,
+            ),
+            "aec": _frontend_component(
+                enabled=self.aec_enabled,
+                available=self.aec_available,
+            ),
+            "ns": _frontend_component(
+                enabled=self.ns_enabled,
+                available=self.ns_available,
+            ),
+            "vad": _frontend_component(
+                enabled=self.vad_enabled,
+                available=self.vad_available,
+            ),
+            "loopback": _frontend_component(
+                enabled=self.loopback_enabled,
+                available=self.loopback_available,
+            ),
+            "healthy": self._healthy,
+            "processed_frames": processed_frames,
+            "dropped_frames": dropped_frames,
+            "last_frame_duration_ms": last_frame_duration_ms,
+            "warnings": list(dict.fromkeys(warnings)),
+        }
+
+    @property
+    def _healthy(self) -> bool:
+        return all(
+            (
+                self.capture_available if self.capture_enabled else True,
+                self.aec_available if self.aec_enabled else True,
+                self.ns_available if self.ns_enabled else True,
+                self.vad_available if self.vad_enabled else True,
+                self.loopback_available if self.loopback_enabled else True,
+            )
+        )
+
+
+class NoOpAcousticFrontend:
+    """Pass-through acoustic front-end with explicit AEC/NS/VAD diagnostics."""
+
+    def __init__(self, config: AcousticFrontendConfig | None = None) -> None:
+        self.config = config or AcousticFrontendConfig()
+        self.processed_frames = 0
+        self.dropped_frames = 0
+        self.last_frame_duration_ms: int | None = None
+
+    def process_capture(self, frame: AudioFrame) -> AudioFrame | None:
+        self.processed_frames += 1
+        self.last_frame_duration_ms = frame.duration_ms
+        return frame
+
+    def readiness(self) -> dict[str, Any]:
+        return self.config.diagnostics(
+            processed_frames=self.processed_frames,
+            dropped_frames=self.dropped_frames,
+            last_frame_duration_ms=self.last_frame_duration_ms,
+        )
+
+
 class AudioCaptureSource(Protocol):
     def read_frame(self) -> AudioFrame | None:
         ...
@@ -61,8 +151,14 @@ class RuntimeWorkerMetrics:
     playback_frames_cleared: int = 0
     decode_frames_cleared: int = 0
     transport_inbound_events_cleared: int = 0
+    last_capture_frame_duration_ms: int | None = None
+    last_encode_frame_duration_ms: int | None = None
+    last_send_frame_duration_ms: int | None = None
+    last_receive_frame_duration_ms: int | None = None
+    last_decode_frame_duration_ms: int | None = None
+    last_playback_frame_duration_ms: int | None = None
 
-    def to_dict(self) -> dict[str, int]:
+    def to_dict(self) -> dict[str, int | None]:
         return {
             "step_once_calls": self.step_once_calls,
             "idle_steps": self.idle_steps,
@@ -86,6 +182,12 @@ class RuntimeWorkerMetrics:
             "playback_frames_cleared": self.playback_frames_cleared,
             "decode_frames_cleared": self.decode_frames_cleared,
             "transport_inbound_events_cleared": self.transport_inbound_events_cleared,
+            "last_capture_frame_duration_ms": self.last_capture_frame_duration_ms,
+            "last_encode_frame_duration_ms": self.last_encode_frame_duration_ms,
+            "last_send_frame_duration_ms": self.last_send_frame_duration_ms,
+            "last_receive_frame_duration_ms": self.last_receive_frame_duration_ms,
+            "last_decode_frame_duration_ms": self.last_decode_frame_duration_ms,
+            "last_playback_frame_duration_ms": self.last_playback_frame_duration_ms,
         }
 
 
@@ -133,6 +235,7 @@ class EiVoiceRuntimeRunner:
             self.worker_metrics.capture_queue_full += 1
             return False
         self.worker_metrics.capture_frames += 1
+        self.worker_metrics.last_capture_frame_duration_ms = processed.duration_ms
         return True
 
     def step_encode(self) -> bool:
@@ -143,6 +246,7 @@ class EiVoiceRuntimeRunner:
         encoded = self.core.codec.encode(frame)
         self.core.ws_send_queue.push(encoded, block=False)
         self.worker_metrics.encode_frames += 1
+        self.worker_metrics.last_encode_frame_duration_ms = encoded.duration_ms
         return True
 
     def step_send(self) -> bool:
@@ -158,12 +262,17 @@ class EiVoiceRuntimeRunner:
             mid=self.mid,
             index=frame.sequence,
             audio_base64=base64.b64encode(frame.payload or frame.pcm).decode("ascii"),
-        )
+        ).to_dict()
+        content = event.setdefault("content", {})
+        content["durationMs"] = frame.duration_ms
+        content["sampleRateHz"] = frame.sample_rate_hz
+        content["channels"] = frame.channels
         accepted = self.transport.send_event(event)
         if not accepted:
             self.worker_metrics.send_rejected += 1
             return False
         self.worker_metrics.send_frames += 1
+        self.worker_metrics.last_send_frame_duration_ms = frame.duration_ms
         return True
 
     def step_receive(self) -> bool:
@@ -179,6 +288,7 @@ class EiVoiceRuntimeRunner:
             self.worker_metrics.receive_queue_full += 1
             return False
         self.worker_metrics.receive_frames += 1
+        self.worker_metrics.last_receive_frame_duration_ms = frame.duration_ms
         return True
 
     def step_decode(self) -> bool:
@@ -192,6 +302,7 @@ class EiVoiceRuntimeRunner:
             self.worker_metrics.decode_queue_full += 1
             return False
         self.worker_metrics.decode_frames += 1
+        self.worker_metrics.last_decode_frame_duration_ms = decoded.duration_ms
         return True
 
     def step_playback(self) -> bool:
@@ -201,6 +312,7 @@ class EiVoiceRuntimeRunner:
             return False
         self.playback_sink.play(frame)
         self.worker_metrics.playback_frames += 1
+        self.worker_metrics.last_playback_frame_duration_ms = frame.duration_ms
         return True
 
     def interrupt_playback(self) -> int:
@@ -218,11 +330,67 @@ class EiVoiceRuntimeRunner:
 
     def status(self) -> dict[str, Any]:
         status = dict(self.core.status())
+        audio_frontend = self._audio_frontend_readiness()
+        transport_status: dict[str, Any] = {}
         status["worker_metrics"] = self.worker_metrics.to_dict()
-        status["audio_frontend"] = self._audio_frontend_readiness()
+        status["audio_frontend"] = audio_frontend
         if self.transport is not None:
-            status["transport"] = self.transport.status()
+            transport_status = self.transport.status()
+            status["transport"] = transport_status
+        status["diagnostics"] = self._diagnostics(
+            queues=status["queues"],
+            audio_frontend=audio_frontend,
+            transport_status=transport_status,
+        )
         return status
+
+    def _diagnostics(
+        self,
+        *,
+        queues: Mapping[str, Any],
+        audio_frontend: Mapping[str, Any],
+        transport_status: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        ws_send_queue = _mapping(queues.get("ws_send_queue"))
+        opus_decode_queue = _mapping(queues.get("opus_decode_queue"))
+        playback_queue = _mapping(queues.get("audio_playback_queue"))
+        transport_state = _transport_state(transport_status)
+        heartbeat = _heartbeat_status(transport_status)
+        reconnect = _reconnect_status(transport_status)
+        return {
+            "schema": "eihead.eivoice_runtime.diagnostics.v1",
+            "audio_frame": {
+                "last_capture_duration_ms": self.worker_metrics.last_capture_frame_duration_ms,
+                "last_encode_duration_ms": self.worker_metrics.last_encode_frame_duration_ms,
+                "last_send_duration_ms": self.worker_metrics.last_send_frame_duration_ms,
+                "last_receive_duration_ms": self.worker_metrics.last_receive_frame_duration_ms,
+                "last_decode_duration_ms": self.worker_metrics.last_decode_frame_duration_ms,
+                "last_playback_duration_ms": self.worker_metrics.last_playback_frame_duration_ms,
+            },
+            "queues": {str(name): dict(_mapping(queue)) for name, queue in queues.items()},
+            "audio_frontend": dict(audio_frontend),
+            "upstream": {
+                "state": transport_state,
+                "queue": "ws_send_queue",
+                "queue_depth": _optional_int(ws_send_queue.get("depth")) or 0,
+                "drop_count": _queue_drop_count(ws_send_queue),
+                "last_frame_duration_ms": self.worker_metrics.last_send_frame_duration_ms
+                or self.worker_metrics.last_encode_frame_duration_ms
+                or self.worker_metrics.last_capture_frame_duration_ms,
+            },
+            "downstream": {
+                "state": transport_state,
+                "queue": "opus_decode_queue",
+                "queue_depth": _optional_int(opus_decode_queue.get("depth")) or 0,
+                "playback_queue_depth": _optional_int(playback_queue.get("depth")) or 0,
+                "drop_count": _queue_drop_count(opus_decode_queue) + _queue_drop_count(playback_queue),
+                "last_frame_duration_ms": self.worker_metrics.last_playback_frame_duration_ms
+                or self.worker_metrics.last_decode_frame_duration_ms
+                or self.worker_metrics.last_receive_frame_duration_ms,
+            },
+            "heartbeat": heartbeat,
+            "reconnect": reconnect,
+        }
 
     def _audio_frontend_readiness(self) -> dict[str, Any]:
         readiness = self.audio_frontend.readiness()
@@ -245,6 +413,7 @@ def _audio_frame_from_event(event: Mapping[str, Any]) -> AudioFrame | None:
     content = event.get("content")
     if not isinstance(content, Mapping):
         content = {}
+    metadata = _mapping(content.get("metadata"))
     encoded = (
         content.get("audioBase64")
         or content.get("audio_base64")
@@ -263,7 +432,108 @@ def _audio_frame_from_event(event: Mapping[str, Any]) -> AudioFrame | None:
         event.get("chunkIndex"),
         event.get("index"),
     )
-    return AudioFrame(payload=payload, sequence=sequence or 0)
+    duration_ms = _optional_int(
+        content.get("durationMs"),
+        content.get("duration_ms"),
+        metadata.get("durationMs"),
+        metadata.get("duration_ms"),
+        event.get("durationMs"),
+        event.get("duration_ms"),
+    )
+    sample_rate_hz = _optional_int(
+        content.get("sampleRateHz"),
+        content.get("sample_rate_hz"),
+        content.get("sampleRate"),
+        metadata.get("sampleRateHz"),
+        metadata.get("sample_rate_hz"),
+        event.get("sampleRateHz"),
+        event.get("sample_rate_hz"),
+    )
+    channels = _optional_int(
+        content.get("channels"),
+        metadata.get("channels"),
+        event.get("channels"),
+    )
+    return AudioFrame(
+        payload=payload,
+        sequence=sequence or 0,
+        duration_ms=duration_ms or 60,
+        sample_rate_hz=sample_rate_hz or 16000,
+        channels=channels or 1,
+    )
+
+
+def _frontend_component(*, enabled: bool, available: bool) -> dict[str, bool | str]:
+    enabled_b = bool(enabled)
+    available_b = bool(available)
+    if enabled_b and available_b:
+        state = "ready"
+    elif enabled_b:
+        state = "unavailable"
+    else:
+        state = "disabled"
+    return {
+        "enabled": enabled_b,
+        "available": available_b,
+        "state": state,
+    }
+
+
+def _frontend_component_warnings(config: AcousticFrontendConfig) -> list[str]:
+    warnings: list[str] = []
+    for label, enabled, available in (
+        ("AEC", config.aec_enabled, config.aec_available),
+        ("NS", config.ns_enabled, config.ns_available),
+        ("VAD", config.vad_enabled, config.vad_available),
+        ("loopback", config.loopback_enabled, config.loopback_available),
+        ("capture", config.capture_enabled, config.capture_available),
+    ):
+        if enabled and not available:
+            warnings.append(f"{label} configured but unavailable")
+    return warnings
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _transport_state(transport_status: Mapping[str, Any]) -> str:
+    if not transport_status:
+        return "not_configured"
+    connection = _mapping(transport_status.get("connection"))
+    return str(transport_status.get("state") or connection.get("state") or "unknown")
+
+
+def _heartbeat_status(transport_status: Mapping[str, Any]) -> dict[str, Any]:
+    heartbeat = _mapping(transport_status.get("heartbeat"))
+    defaults: dict[str, Any] = {
+        "due": False,
+        "awaiting_pong": False,
+        "timed_out": False,
+        "latency_ms": None,
+    }
+    defaults.update(heartbeat)
+    return defaults
+
+
+def _reconnect_status(transport_status: Mapping[str, Any]) -> dict[str, Any]:
+    reconnect = _mapping(transport_status.get("reconnect"))
+    defaults: dict[str, Any] = {
+        "attempt": 0,
+        "backoff_s": None,
+        "next_retry_at": None,
+        "ready": False,
+        "reason": None,
+    }
+    defaults.update(reconnect)
+    return defaults
+
+
+def _queue_drop_count(queue: Mapping[str, Any]) -> int:
+    return (
+        (_optional_int(queue.get("dropped_oldest"), queue.get("droppedOldest")) or 0)
+        + (_optional_int(queue.get("dropped_newest"), queue.get("droppedNewest")) or 0)
+    )
 
 
 def _drain_queue(queue: Any) -> int:

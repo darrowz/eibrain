@@ -60,6 +60,15 @@ class RealtimeVisionSceneBridge:
         event_contents = _event_contents(snapshot)
         self.latest_scene_id = str(scene_snapshot.get("sceneId", ""))
         object_count = len(scene_snapshot.get("objects", []))
+        stable_target = _stable_target_from_scene(scene_snapshot)
+        last_event = dict(event_contents[-1]) if event_contents else None
+        diagnostics = _diagnostics(
+            observation,
+            track_count=object_count,
+            stable_target=stable_target,
+            event_count=len(event_contents),
+            last_event=last_event,
+        )
 
         return {
             "kind": "realtime_vision_scene_bridge",
@@ -78,12 +87,17 @@ class RealtimeVisionSceneBridge:
             "scene_snapshot": scene_snapshot,
             "scene_summary": str(snapshot.get("sceneGraphSummary", "")),
             "sceneGraphSummary": str(snapshot.get("sceneGraphSummary", "")),
+            "event_summary": str(snapshot.get("eventSummary") or scene_snapshot.get("eventSummary") or ""),
             "event_contents": event_contents,
             "events": event_contents,
             "tracks": [dict(item) for item in scene_snapshot.get("objects", []) if isinstance(item, Mapping)],
             "target": _target_from_scene(scene_snapshot),
+            "stable_target": stable_target,
             "object_count": object_count,
             "track_count": object_count,
+            "event_count": len(event_contents),
+            "last_event": last_event,
+            "diagnostics": diagnostics,
         }
 
     def _non_live_result(self, *, frame_id: str, observed_at: str, reason: str) -> dict[str, Any]:
@@ -119,12 +133,25 @@ class RealtimeVisionSceneBridge:
             "scene_snapshot": scene_snapshot,
             "scene_summary": scene_snapshot["summary"],
             "sceneGraphSummary": scene_snapshot["summary"],
+            "event_summary": "",
             "event_contents": [],
             "events": [],
             "tracks": [],
             "target": None,
+            "stable_target": None,
             "object_count": 0,
             "track_count": 0,
+            "event_count": 0,
+            "last_event": None,
+            "diagnostics": {
+                "fps": 0.0,
+                "frame_age": None,
+                "frame_age_s": None,
+                "track_count": 0,
+                "stable_target": None,
+                "event_count": 0,
+                "last_event": None,
+            },
         }
 
 
@@ -184,6 +211,9 @@ def _truthy(value: Any) -> bool:
 
 
 def _target_from_scene(scene_snapshot: Mapping[str, Any]) -> dict[str, Any] | None:
+    stable_target = _stable_target_from_scene(scene_snapshot)
+    if stable_target:
+        return stable_target
     attention = scene_snapshot.get("attention")
     if isinstance(attention, Mapping) and attention:
         track_id = str(attention.get("trackId") or "")
@@ -196,14 +226,65 @@ def _target_from_scene(scene_snapshot: Mapping[str, Any]) -> dict[str, Any] | No
     return None
 
 
+def _stable_target_from_scene(scene_snapshot: Mapping[str, Any]) -> dict[str, Any] | None:
+    for key in ("stableTarget", "stable_target", "attention"):
+        value = scene_snapshot.get(key)
+        if not isinstance(value, Mapping) or not value:
+            continue
+        track_id = str(value.get("trackId") or value.get("track_id") or "")
+        if track_id:
+            for item in scene_snapshot.get("objects", []):
+                if isinstance(item, Mapping) and str(item.get("trackId") or item.get("track_id") or "") == track_id:
+                    return _target_from_object(item)
+        return _target_from_object(value)
+    return None
+
+
 def _target_from_object(item: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "track_id": item.get("trackId"),
+        "trackId": item.get("trackId"),
         "label": item.get("label"),
         "score": item.get("confidence"),
         "center": dict(item.get("center")) if isinstance(item.get("center"), Mapping) else None,
         "bbox": dict(item.get("bbox")) if isinstance(item.get("bbox"), Mapping) else None,
+        "temporalState": item.get("temporalState"),
     }
+
+
+def _diagnostics(
+    observation: Mapping[str, Any],
+    *,
+    track_count: int,
+    stable_target: Mapping[str, Any] | None,
+    event_count: int,
+    last_event: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    frame_age = _number_or_none(
+        observation.get("last_frame_age", observation.get("last_frame_age_s", observation.get("frame_age")))
+    )
+    return {
+        "fps": _number_or_zero(observation.get("fps")),
+        "frame_age": frame_age,
+        "frame_age_s": frame_age,
+        "track_count": int(track_count),
+        "stable_target": dict(stable_target) if isinstance(stable_target, Mapping) else None,
+        "event_count": int(event_count),
+        "last_event": dict(last_event) if isinstance(last_event, Mapping) else None,
+    }
+
+
+def _number_or_zero(value: Any) -> float:
+    number = _number_or_none(value)
+    return 0.0 if number is None else number
+
+
+def _number_or_none(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
 
 
 def _new_simulator(*, match_distance: float, move_threshold: float, max_missing_frames: int) -> Any:
@@ -235,6 +316,8 @@ def _scene_content(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "imageUrl": "",
         "metadata": dict(scene.get("metadata")) if isinstance(scene.get("metadata"), Mapping) else {},
         "attention": dict(scene.get("attention")) if isinstance(scene.get("attention"), Mapping) else {},
+        "stableTarget": dict(scene.get("stableTarget")) if isinstance(scene.get("stableTarget"), Mapping) else {},
+        "eventSummary": str(snapshot.get("eventSummary") or scene.get("eventSummary") or ""),
     }
 
 

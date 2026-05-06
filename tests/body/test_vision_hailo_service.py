@@ -364,7 +364,7 @@ def test_vision_service_enriches_detection_frames_with_realtime_scene_events(tmp
     assert second["freshness"]["source"] == "fake_hailo"
     assert second["freshness"]["age_s"] == 0.1
     assert second["source"] == {"backend": "fake_hailo", "mode": "realtime_simulated"}
-    assert second["last_detection_summary"] == "Observed cup; realtime events: attention, moved"
+    assert second["last_detection_summary"] == "Observed cup; realtime events: moved; temporal states: moving"
     assert "detections" not in second["scene"]
 
 

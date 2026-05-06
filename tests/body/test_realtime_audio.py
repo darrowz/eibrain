@@ -36,6 +36,21 @@ def test_pcm_ring_buffer_keeps_recent_audio_window() -> None:
     assert ring.stats()["buffer_ms"] == 240
 
 
+def test_pcm_ring_buffer_reports_drop_oldest_diagnostics() -> None:
+    ring = PcmRingBuffer(max_duration_ms=160, sample_rate=16000, channels=1)
+
+    ring.append(b"a", duration_ms=80, captured_at_s=1.00)
+    ring.append(b"b", duration_ms=80, captured_at_s=1.08)
+    ring.append(b"c", duration_ms=80, captured_at_s=1.16)
+
+    snapshot = ring.snapshot()
+    stats = ring.stats()
+
+    assert snapshot.chunks == [b"b", b"c"]
+    assert stats["dropped_oldest_chunks"] == 1
+    assert stats["dropped_oldest_duration_ms"] == 80
+
+
 def test_realtime_wake_detector_emits_transcript_from_recent_ring_buffer() -> None:
     ring = PcmRingBuffer(max_duration_ms=2000, sample_rate=16000, channels=1)
     ring.append(b"wake-audio", duration_ms=480, captured_at_s=1.0)

@@ -28,6 +28,66 @@ def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _without_empty(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in payload.items() if item not in (None, "", [], {})}
+
+
+def _context_summary(persona_state: Any, emotion_state: Any) -> dict[str, Any]:
+    return _json_ready(
+        {
+            "persona": _persona_summary(persona_state),
+            "emotion": _emotion_summary(emotion_state),
+        }
+    )
+
+
+def _persona_summary(persona_state: Any) -> dict[str, Any]:
+    if not isinstance(persona_state, Mapping):
+        return {}
+    response_policy = persona_state.get("response_policy")
+    response_policy = response_policy if isinstance(response_policy, Mapping) else {}
+    speaking_style = persona_state.get("speaking_style")
+    speaking_style = speaking_style if isinstance(speaking_style, Mapping) else {}
+    return _without_empty(
+        {
+            "personaCode": persona_state.get("personaCode")
+            or persona_state.get("persona_code")
+            or persona_state.get("persona_id"),
+            "voice_code": persona_state.get("voice_code") or persona_state.get("voiceCode"),
+            "tone": speaking_style.get("tone") or persona_state.get("tone") or persona_state.get("style"),
+            "max_chars": response_policy.get("max_chars"),
+        }
+    )
+
+
+def _emotion_summary(emotion_state: Any) -> dict[str, Any]:
+    if not isinstance(emotion_state, Mapping):
+        return {}
+    nested = emotion_state.get("emotion_state")
+    state = nested if isinstance(nested, Mapping) else emotion_state
+    environment = state.get("environment")
+    environment = environment if isinstance(environment, Mapping) else {}
+    strategy = emotion_state.get("response_strategy")
+    strategy = strategy if isinstance(strategy, Mapping) else {}
+    return _without_empty(
+        {
+            "mood": state.get("mood") or state.get("state") or _emotion_hint_label(emotion_state),
+            "energy": state.get("energy"),
+            "noise": environment.get("noise"),
+            "time": environment.get("time"),
+            "proximity": environment.get("proximity"),
+            "tone": strategy.get("tone") or emotion_state.get("tone"),
+        }
+    )
+
+
+def _emotion_hint_label(emotion_state: Mapping[str, Any]) -> str:
+    hint = emotion_state.get("emotion_hint")
+    if isinstance(hint, Mapping):
+        return str(hint.get("label") or "")
+    return ""
+
+
 @dataclass(slots=True)
 class FastThinkOutput:
     """JSON-ready output from the fast lane.
@@ -41,6 +101,7 @@ class FastThinkOutput:
     hypotheses: list[dict[str, Any]] = field(default_factory=list)
     micro_feedback: dict[str, Any] = field(default_factory=dict)
     intent_hints: list[dict[str, Any]] = field(default_factory=list)
+    context_summary: dict[str, Any] = field(default_factory=dict)
     stable: bool = False
     source: str = "fast_think"
 
@@ -61,6 +122,7 @@ class FastThinkOutput:
                 "hypotheses": self.hypotheses,
                 "micro_feedback": self.micro_feedback,
                 "intent_hints": self.intent_hints,
+                "context_summary": self.context_summary,
                 "stable": False,
                 "source": self.source,
             }
@@ -107,6 +169,7 @@ class FastThinkEngine:
         hypotheses = [self.sanitize_hypothesis(item) for item in self._build_hypotheses(text, merged_vision, merged_emotion)]
         intent_hints = [self.sanitize_hypothesis(item) for item in self._build_intent_hints(hypotheses)]
         micro_feedback = self._micro_feedback(text=text, emotion_hint=merged_emotion, hypotheses=hypotheses)
+        context_summary = _context_summary(_value(turn, "persona_state", {}), merged_emotion)
 
         self._record_hypotheses(turn, hypotheses)
         self._record_intents(turn, intent_hints)
@@ -118,6 +181,7 @@ class FastThinkEngine:
             hypotheses=hypotheses,
             micro_feedback=micro_feedback,
             intent_hints=intent_hints,
+            context_summary=context_summary,
             stable=False,
         )
 
@@ -313,18 +377,37 @@ class FastThinkEngine:
         return _json_ready(merged)
 
     def _emotion_confidence(self, hint: Mapping[str, Any]) -> float:
-        label = str(hint.get("label") or hint.get("emotion") or "").lower()
-        stress = float(hint.get("stress", 0.0) or 0.0)
-        arousal = float(hint.get("arousal", 0.0) or 0.0)
+        label = self._emotion_label(hint)
+        stress = self._signal_float(hint.get("stress", 0.0))
+        arousal = self._signal_float(hint.get("arousal", 0.0))
         if label in self._STRESS_LABELS or stress >= 0.6 or arousal >= 0.7:
             return 0.64
         return 0.45
 
     def _emotion_needs_softening(self, hint: Mapping[str, Any]) -> bool:
-        label = str(hint.get("label") or hint.get("emotion") or "").lower()
-        stress = float(hint.get("stress", 0.0) or 0.0)
-        arousal = float(hint.get("arousal", 0.0) or 0.0)
+        label = self._emotion_label(hint)
+        stress = self._signal_float(hint.get("stress", 0.0))
+        arousal = self._signal_float(hint.get("arousal", 0.0))
         return label in self._STRESS_LABELS or stress >= 0.6 or arousal >= 0.7
+
+    def _emotion_label(self, hint: Mapping[str, Any]) -> str:
+        label = str(hint.get("label") or hint.get("emotion") or "").lower()
+        if label:
+            return label
+        nested = hint.get("emotion_hint")
+        if isinstance(nested, Mapping):
+            return str(nested.get("label") or "").lower()
+        return ""
+
+    def _signal_float(self, value: Any) -> float:
+        if isinstance(value, str):
+            band = {"low": 0.2, "medium": 0.5, "high": 0.8}.get(value.lower())
+            if band is not None:
+                return band
+        try:
+            return float(value or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 __all__ = ["FastThinkEngine", "FastThinkOutput"]

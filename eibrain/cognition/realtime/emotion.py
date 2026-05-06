@@ -57,12 +57,25 @@ class EmotionContextBuilder:
 
         emotion_hint = self._emotion_hint(prosody_hints, vision_hints)
         noise_policy = self._noise_policy(environment_hints)
+        emotion_state = self._emotion_state(
+            prosody_hints=prosody_hints,
+            environment_hints=environment_hints,
+            vision_hints=vision_hints,
+            emotion_hint=emotion_hint,
+            noise_policy=noise_policy,
+        )
+        response_strategy = self._response_strategy(
+            emotion_state=emotion_state,
+            noise_policy=noise_policy,
+        )
         response_style = self._response_style(emotion_hint=emotion_hint, noise_policy=noise_policy)
 
         return to_json_ready(
             {
                 "emotion_hint": emotion_hint,
+                "emotion_state": emotion_state,
                 "noise_policy": noise_policy,
+                "response_strategy": response_strategy,
                 "response_style": response_style,
                 "inputs": {
                     "prosody": prosody_hints,
@@ -136,6 +149,89 @@ class EmotionContextBuilder:
             "noise_db": noise_db if noise_db >= 0 else None,
         }
 
+    def _emotion_state(
+        self,
+        *,
+        prosody_hints: Mapping[str, Any],
+        environment_hints: Mapping[str, Any],
+        vision_hints: Mapping[str, Any],
+        emotion_hint: Mapping[str, Any],
+        noise_policy: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        arousal_value = _as_float(prosody_hints.get("arousal"), default=0.5)
+        valence_value = _as_float(prosody_hints.get("valence"), default=0.0)
+        stress = _as_float(prosody_hints.get("stress"))
+        fatigue = _as_float(prosody_hints.get("fatigue"))
+        energy_hint = str(prosody_hints.get("energy") or "").lower()
+        expression = str(vision_hints.get("face_expression", "")).lower()
+        attention = str(vision_hints.get("attention", "")).lower()
+
+        if stress >= 0.7 or emotion_hint.get("label") == "stressed":
+            mood = "stressed"
+        elif fatigue >= 0.65 or energy_hint == "low" or expression == "tired":
+            mood = "tired"
+        elif valence_value <= -0.25 or expression in {"sad", "concerned"}:
+            mood = "sad"
+        elif valence_value >= 0.25 or attention == "present":
+            mood = "engaged"
+        else:
+            mood = "calm"
+
+        if energy_hint in {"low", "medium", "high"}:
+            energy = energy_hint
+        elif fatigue >= 0.65 or arousal_value <= 0.35:
+            energy = "low"
+        elif arousal_value >= 0.7:
+            energy = "high"
+        else:
+            energy = "medium"
+
+        return {
+            "mood": mood,
+            "energy": energy,
+            "arousal": _band(arousal_value, low=0.35, high=0.7),
+            "valence": _valence_label(valence_value),
+            "environment": {
+                "noise": _noise_label(noise_policy),
+                "time": _time_label(environment_hints),
+                "proximity": _proximity_label(vision_hints),
+            },
+            "confidence": emotion_hint.get("confidence", 0.5),
+            "sources": list(emotion_hint.get("sources") or []),
+            "stability": "stable_hint",
+        }
+
+    def _response_strategy(
+        self,
+        *,
+        emotion_state: Mapping[str, Any],
+        noise_policy: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        environment = emotion_state.get("environment")
+        environment = environment if isinstance(environment, Mapping) else {}
+        mood = str(emotion_state.get("mood") or "calm")
+        noise = str(environment.get("noise") or _noise_label(noise_policy))
+        time_of_day = str(environment.get("time") or "day")
+        proximity = str(environment.get("proximity") or "near")
+        vulnerable = mood in {"sad", "anxious", "stressed", "lonely", "tired"}
+        constrained_channel = noise == "high" or time_of_day == "night" or proximity == "far"
+
+        if noise == "high" and (time_of_day == "night" or proximity == "far"):
+            brevity = "very_concise"
+        elif noise in {"high", "medium"} or constrained_channel:
+            brevity = "concise"
+        else:
+            brevity = "normal"
+
+        return {
+            "tone": "gentle" if vulnerable else "warm",
+            "pace": "slow" if vulnerable else "normal",
+            "brevity": brevity,
+            "micro_ack": vulnerable or constrained_channel,
+            "nonverbal_preferred": constrained_channel,
+            "speech_risk": "cautious" if vulnerable or constrained_channel else "normal",
+        }
+
     def _response_style(
         self,
         *,
@@ -150,6 +246,49 @@ class EmotionContextBuilder:
             "brevity": "concise" if noisy else "normal",
             "micro_ack": stressed or noisy,
         }
+
+
+def _band(value: float, *, low: float, high: float) -> str:
+    if value <= low:
+        return "low"
+    if value >= high:
+        return "high"
+    return "medium"
+
+
+def _valence_label(value: float) -> str:
+    if value <= -0.25:
+        return "negative"
+    if value >= 0.25:
+        return "positive"
+    return "neutral"
+
+
+def _noise_label(noise_policy: Mapping[str, Any]) -> str:
+    mode = str(noise_policy.get("mode") or "")
+    if mode == "reduce_verbal_density":
+        return "high"
+    if mode == "confirm_hearing":
+        return "medium"
+    return "low"
+
+
+def _time_label(environment_hints: Mapping[str, Any]) -> str:
+    value = str(environment_hints.get("time_of_day") or environment_hints.get("time") or "").lower()
+    if value in {"night", "late_night", "sleeping_hours"}:
+        return "night"
+    if value in {"morning", "afternoon", "evening", "day"}:
+        return value
+    return "day"
+
+
+def _proximity_label(vision_hints: Mapping[str, Any]) -> str:
+    distance = _as_float(vision_hints.get("distance_m"), default=-1.0)
+    if distance >= 2.0:
+        return "far"
+    if 0 <= distance <= 1.2:
+        return "near"
+    return "mid"
 
 
 __all__ = ["EmotionContextBuilder"]

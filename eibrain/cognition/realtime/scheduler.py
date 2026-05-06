@@ -82,6 +82,10 @@ class RealtimeCognitiveScheduler:
         fast_result = self.fast_engine.process_partial(turn, observed_text, deadline_ms=deadline_ms)
         fast_latency_ms = round(max(0.0, time.perf_counter() - fast_started) * 1000, 3)
         fast_payload = _to_dict(fast_result)
+        context_summary = fast_payload.get("context_summary")
+        if not isinstance(context_summary, Mapping):
+            context_summary = _context_summary(turn)
+            fast_payload["context_summary"] = context_summary
         microfeedback = _first_text(
             fast_payload.get("microfeedback"),
             _mapping_text(fast_payload.get("micro_feedback"), "text"),
@@ -98,6 +102,7 @@ class RealtimeCognitiveScheduler:
                 "microfeedback": microfeedback,
                 "intent_hypotheses": intent_hypotheses,
                 "deadline_ms": fast_payload.get("deadline_ms", deadline_ms),
+                "context_summary": context_summary,
                 "stable": False,
             },
             source="scheduler_fast_lane",
@@ -247,6 +252,7 @@ class RealtimeCognitiveScheduler:
             round_id=turn.round_id,
             cancellation_token=turn.cancellation_token,
         )
+        turn.safety_state["proactive_activity"] = activity
         memory_trace = (
             self._auto_commit_decision_memory(
                 turn,
@@ -299,6 +305,7 @@ class RealtimeCognitiveScheduler:
     def snapshot(self) -> dict[str, Any]:
         payload = self.turn_manager.status_payload()
         current = payload.get("current") or {}
+        turn = self.turn_manager.current_turn()
         payload["lanes"] = self._lane_snapshots(self.turn_manager.current_turn())
         payload["scheduler"] = {
             "lane": "realtime_cognitive_scheduler",
@@ -307,6 +314,11 @@ class RealtimeCognitiveScheduler:
             "stable_decision_count": len(current.get("stable_decisions") or []),
             "memory_candidate_count": len(current.get("memory_candidates") or []),
             "memory_trace_count": len(current.get("memory_traces") or []),
+            "persona": _persona_summary(turn.persona_state if turn is not None else {}),
+            "emotion": _emotion_summary(turn.emotion_state if turn is not None else {}),
+            "proactive_activity": _proactive_summary(
+                turn.safety_state.get("proactive_activity") if turn is not None else None
+            ),
         }
         return payload
 
@@ -344,11 +356,16 @@ class RealtimeCognitiveScheduler:
         if persona_context:
             turn.persona_state.update(dict(persona_context))
         if emotion_context:
-            turn.emotion_state.update(dict(emotion_context))
+            turn.emotion_state.update(_expand_emotion_context(emotion_context))
         if environment_context:
             environment = dict(turn.emotion_state.get("environment", {}))
             environment.update(dict(environment_context))
             turn.emotion_state["environment"] = environment
+            nested = turn.emotion_state.get("emotion_state")
+            if isinstance(nested, dict):
+                nested_environment = dict(nested.get("environment", {}))
+                nested_environment.update(dict(environment_context))
+                nested["environment"] = nested_environment
 
     def _set_lane_metric(self, turn: TurnBlackboard, lane: str, *, latency_ms: float) -> None:
         metrics = turn.safety_state.setdefault("lane_metrics", {})
@@ -706,3 +723,88 @@ def _merge_memory_candidates(
         seen.add(key)
         merged.append(item)
     return merged
+
+
+def _expand_emotion_context(emotion_context: Mapping[str, Any]) -> dict[str, Any]:
+    payload = dict(emotion_context)
+    nested = payload.get("emotion_state")
+    if isinstance(nested, Mapping):
+        for key in ("mood", "state", "energy", "arousal", "valence", "environment", "confidence", "stability"):
+            if key in nested:
+                payload[key] = nested[key]
+    return payload
+
+
+def _context_summary(turn: TurnBlackboard) -> dict[str, Any]:
+    return {
+        "persona": _persona_summary(turn.persona_state),
+        "emotion": _emotion_summary(turn.emotion_state),
+    }
+
+
+def _persona_summary(persona_state: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(persona_state, Mapping):
+        return {}
+    speaking_style = persona_state.get("speaking_style")
+    speaking_style = speaking_style if isinstance(speaking_style, Mapping) else {}
+    response_policy = persona_state.get("response_policy")
+    response_policy = response_policy if isinstance(response_policy, Mapping) else {}
+    return _without_empty(
+        {
+            "personaCode": persona_state.get("personaCode")
+            or persona_state.get("persona_code")
+            or persona_state.get("persona_id"),
+            "voice_code": persona_state.get("voice_code") or persona_state.get("voiceCode"),
+            "tone": speaking_style.get("tone") or persona_state.get("tone") or persona_state.get("style"),
+            "max_chars": response_policy.get("max_chars"),
+        }
+    )
+
+
+def _emotion_summary(emotion_state: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(emotion_state, Mapping):
+        return {}
+    nested = emotion_state.get("emotion_state")
+    state = nested if isinstance(nested, Mapping) else emotion_state
+    environment = state.get("environment")
+    environment = environment if isinstance(environment, Mapping) else {}
+    strategy = emotion_state.get("response_strategy")
+    strategy = strategy if isinstance(strategy, Mapping) else {}
+    return _without_empty(
+        {
+            "mood": state.get("mood") or state.get("state") or _emotion_hint_label(emotion_state),
+            "energy": state.get("energy"),
+            "noise": environment.get("noise"),
+            "time": environment.get("time"),
+            "proximity": environment.get("proximity"),
+            "tone": strategy.get("tone") or emotion_state.get("tone"),
+        }
+    )
+
+
+def _emotion_hint_label(emotion_state: Mapping[str, Any]) -> str:
+    hint = emotion_state.get("emotion_hint")
+    if isinstance(hint, Mapping):
+        return str(hint.get("label") or "")
+    return ""
+
+
+def _proactive_summary(activity: Any) -> dict[str, Any]:
+    if not isinstance(activity, Mapping):
+        return {}
+    summary = activity.get("summary")
+    if isinstance(summary, Mapping):
+        return dict(summary)
+    return _without_empty(
+        {
+            "channel": activity.get("channel"),
+            "reason": activity.get("reason"),
+            "should_emit": activity.get("should_emit"),
+            "disturbance": activity.get("disturbance"),
+            "urgency": activity.get("urgency"),
+        }
+    )
+
+
+def _without_empty(payload: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): item for key, item in payload.items() if item not in (None, "", [], {})}

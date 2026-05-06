@@ -124,6 +124,8 @@ class RealtimeEyeService:
             "scores": scores,
             "tracked_target": _tracked_target(top_detection),
             "captured_at_ts": captured_at_ts,
+            "fps": status.get("fps", 0.0),
+            "last_frame_age": status.get("last_frame_age", status.get("last_frame_age_s")),
             "status": status.get("status") or "unknown",
             "stream_ready": bool(status.get("stream_ready", False)),
             "placeholder": bool(status.get("placeholder", False)),
@@ -195,6 +197,9 @@ class RealtimeEyeService:
         scene = _json_mapping(scene_result.get("scene_snapshot")) or {}
         events = _json_list(scene_result.get("event_contents") or scene_result.get("events"))
         tracks = _json_list(scene.get("objects"))
+        diagnostics = _json_mapping(scene_result.get("diagnostics")) or {}
+        stable_target = _json_mapping(scene_result.get("stable_target")) or _json_mapping(diagnostics.get("stable_target"))
+        last_event = _json_mapping(scene_result.get("last_event")) or (events[-1] if events else None)
         observation.update(
             {
                 "scene": scene,
@@ -202,15 +207,22 @@ class RealtimeEyeService:
                 "scene_id": scene_result.get("latest_scene_id") or scene.get("sceneId") or "",
                 "scene_summary": scene_result.get("sceneGraphSummary") or scene.get("summary") or "",
                 "sceneGraphSummary": scene_result.get("sceneGraphSummary") or scene.get("summary") or "",
+                "event_summary": scene_result.get("event_summary") or scene.get("eventSummary") or "",
                 "events": events,
                 "tracks": tracks,
+                "stable_target": stable_target,
                 "scene_bridge": {
                     "kind": scene_result.get("kind"),
                     "live": scene_result.get("live"),
                     "reason": scene_result.get("reason"),
                     "object_count": scene_result.get("object_count", len(tracks)),
                     "track_count": scene_result.get("track_count", len(tracks)),
-                    "event_count": len(events),
+                    "fps": diagnostics.get("fps", observation.get("fps", 0.0)),
+                    "frame_age": diagnostics.get("frame_age", observation.get("last_frame_age")),
+                    "frame_age_s": diagnostics.get("frame_age_s", observation.get("last_frame_age")),
+                    "stable_target": stable_target,
+                    "event_count": scene_result.get("event_count", len(events)),
+                    "last_event": last_event,
                 },
             }
         )

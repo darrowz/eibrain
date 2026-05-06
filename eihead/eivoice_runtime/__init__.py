@@ -11,8 +11,10 @@ from .core import (
 )
 from .runtime import (
     AcousticFrontend,
+    AcousticFrontendConfig,
     AudioCaptureSource,
     EiVoiceRuntimeRunner,
+    NoOpAcousticFrontend,
     PlaybackSink,
     RuntimeWorkerMetrics,
     WsReceiveSource,
@@ -22,12 +24,14 @@ from .transport import FakeWebSocketTransport, InMemoryVoiceStreamTransport, Voi
 __all__ = [
     "AudioFrame",
     "AcousticFrontend",
+    "AcousticFrontendConfig",
     "AudioCaptureSource",
     "BoundedAudioQueue",
     "EiVoiceRuntimeCore",
     "EiVoiceRuntimeRunner",
     "FakeWebSocketTransport",
     "InMemoryVoiceStreamTransport",
+    "NoOpAcousticFrontend",
     "OpusCodec",
     "PassthroughOpusCodec",
     "PlaybackSink",

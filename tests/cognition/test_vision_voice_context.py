@@ -183,3 +183,51 @@ def test_recent_visual_events_are_compacted_into_voice_safe_summary() -> None:
         },
     ]
     assert "events: attention person center_middle; appeared person center_middle" in context["dialogue_context_text"]
+
+
+def test_voice_context_keeps_semantic_snapshot_and_skips_stationary_frame_events() -> None:
+    context = build_vision_voice_context(
+        visual_state={
+            "updated_at_ts": 500.0,
+            "frame_payload": b"raw-frame-not-for-voice",
+        },
+        scene={
+            "objects": [
+                {
+                    "label": "person",
+                    "trackId": "person-001",
+                    "region": "center_middle",
+                    "confidence": 0.89,
+                    "temporalState": "stationary",
+                    "bbox": {"x_min": 0.35, "y_min": 0.18, "x_max": 0.62, "y_max": 0.88},
+                }
+            ],
+        },
+        events=[
+            {
+                "eventType": "stationary",
+                "observedAtTs": 500.0,
+                "subject": {"label": "person", "trackId": "person-001"},
+                "details": {"toRegion": "center_middle"},
+            },
+            {
+                "eventType": "appeared",
+                "observedAtTs": 499.8,
+                "subject": {"label": "person", "trackId": "person-001"},
+                "details": {"toRegion": "center_middle"},
+            },
+        ],
+        now_ts=500.1,
+    )
+
+    assert context["objects"] == [
+        {
+            "label": "person",
+            "track_id": "person-001",
+            "region": "center_middle",
+            "confidence": 0.89,
+            "temporal_state": "stationary",
+        }
+    ]
+    assert [event["type"] for event in context["events"]] == ["appeared"]
+    assert "raw-frame-not-for-voice" not in str(context)

@@ -44,6 +44,8 @@ class PcmRingBuffer:
         self._chunks: deque[_BufferedChunk] = deque()
         self._duration_ms = 0
         self._sequence = 0
+        self._dropped_oldest_chunks = 0
+        self._dropped_oldest_duration_ms = 0
         self._lock = threading.RLock()
 
     def append(self, payload: bytes, *, duration_ms: int, captured_at_s: float | None = None) -> None:
@@ -95,12 +97,16 @@ class PcmRingBuffer:
                 "sample_rate": self.sample_rate,
                 "channels": self.channels,
                 "sequence": self._sequence,
+                "dropped_oldest_chunks": self._dropped_oldest_chunks,
+                "dropped_oldest_duration_ms": self._dropped_oldest_duration_ms,
             }
 
     def _trim_locked(self) -> None:
         while self._duration_ms > self.max_duration_ms and self._chunks:
             old = self._chunks.popleft()
             self._duration_ms -= old.duration_ms
+            self._dropped_oldest_chunks += 1
+            self._dropped_oldest_duration_ms += old.duration_ms
 
 
 class RealtimeAudioCaptureWorker:

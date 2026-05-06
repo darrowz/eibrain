@@ -112,16 +112,18 @@ def _compact_objects(source: Mapping[str, Any]) -> list[dict[str, Any]]:
         region = _clean_text(raw.get("region") or raw.get("position") or raw.get("location"))
         if not region and bbox is not None:
             region = _region(_center(bbox))
-        objects.append(
-            {
-                "label": label,
-                "track_id": _clean_text(
-                    raw.get("track_id") or raw.get("trackId") or raw.get("stable_id") or raw.get("stableId") or raw.get("id")
-                ),
-                "region": region,
-                "confidence": round(_confidence(raw), 3),
-            }
-        )
+        item = {
+            "label": label,
+            "track_id": _clean_text(
+                raw.get("track_id") or raw.get("trackId") or raw.get("stable_id") or raw.get("stableId") or raw.get("id")
+            ),
+            "region": region,
+            "confidence": round(_confidence(raw), 3),
+        }
+        temporal_state = _clean_text(raw.get("temporal_state") or raw.get("temporalState"))
+        if temporal_state:
+            item["temporal_state"] = temporal_state
+        objects.append(item)
     return objects
 
 
@@ -205,6 +207,8 @@ def _compact_events(
             continue
         event_type = _clean_text(raw.get("type") or raw.get("eventType") or raw.get("event_type"))
         if not event_type:
+            continue
+        if event_type.strip().lower() == "stationary":
             continue
         subject = raw.get("subject") if isinstance(raw.get("subject"), Mapping) else {}
         details = raw.get("details") if isinstance(raw.get("details"), Mapping) else {}

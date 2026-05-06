@@ -125,3 +125,67 @@ def test_accepts_payload_style_input_and_maps_to_eiprotocol_content() -> None:
     assert content["objects"] == scene["objects"]
     assert content["relationships"] == scene["relations"]
     assert content["metadata"]["frameId"] == "frame-payload"
+
+
+def test_scene_graph_derives_temporal_states_and_event_summary_from_previous_scene() -> None:
+    previous = build_vision_scene_graph(
+        tracks=[
+            {
+                "track_id": "person-007",
+                "label": "person",
+                "confidence": 0.9,
+                "bbox": {"x_min": 0.40, "y_min": 0.25, "x_max": 0.58, "y_max": 0.75},
+            },
+            {
+                "track_id": "cup-001",
+                "label": "cup",
+                "confidence": 0.82,
+                "bbox": {"x_min": 0.12, "y_min": 0.50, "x_max": 0.22, "y_max": 0.62},
+            },
+            {
+                "track_id": "book-001",
+                "label": "book",
+                "confidence": 0.74,
+                "bbox": {"x_min": 0.72, "y_min": 0.52, "x_max": 0.84, "y_max": 0.64},
+            },
+        ],
+        frame_metadata={"frame_id": "frame-prev"},
+    )
+
+    current = build_vision_scene_graph(
+        tracks=[
+            {
+                "track_id": "person-007",
+                "label": "person",
+                "confidence": 0.92,
+                "bbox": {"x_min": 0.34, "y_min": 0.18, "x_max": 0.64, "y_max": 0.88},
+            },
+            {
+                "track_id": "cup-001",
+                "label": "cup",
+                "confidence": 0.83,
+                "bbox": {"x_min": 0.121, "y_min": 0.501, "x_max": 0.221, "y_max": 0.621},
+            },
+            {
+                "track_id": "plant-001",
+                "label": "plant",
+                "confidence": 0.7,
+                "bbox": {"x_min": 0.78, "y_min": 0.20, "x_max": 0.92, "y_max": 0.48},
+            },
+        ],
+        frame_metadata={"frame_id": "frame-current"},
+        previous_scene=previous,
+        motion_threshold=0.08,
+        approach_area_delta=0.04,
+    )
+
+    states = {item["trackId"]: item["temporalState"] for item in current["objects"]}
+    temporal_events = {(event["eventType"], event["trackId"]) for event in current["temporal"]["events"]}
+
+    assert states["person-007"] == "approaching"
+    assert states["cup-001"] == "stationary"
+    assert states["plant-001"] == "appeared"
+    assert ("disappeared", "book-001") in temporal_events
+    assert ("approaching", "person-007") in temporal_events
+    assert "stationary cup-001" in current["temporal"]["eventSummary"]
+    assert "disappeared book-001" in current["event_summary"]

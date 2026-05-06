@@ -99,6 +99,41 @@ def test_scene_bridge_keeps_simulator_track_ids_stable_across_frames() -> None:
     assert second["event_contents"][0]["subject"]["trackId"] == first_track
 
 
+def test_scene_bridge_keeps_snapshot_but_suppresses_unchanged_frame_events() -> None:
+    bridge = RealtimeVisionSceneBridge(move_threshold=0.08, max_missing_frames=1)
+
+    first = bridge.update(
+        _observation(
+            frame_id="frame-001",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[_det("person", (0.40, 0.20, 0.60, 0.80), 0.91)],
+            fps=12.5,
+            last_frame_age=0.04,
+        )
+    )
+    second = bridge.update(
+        _observation(
+            frame_id="frame-002",
+            observed_at="2026-05-05T10:00:00.100+08:00",
+            detections=[_det("person", (0.405, 0.205, 0.605, 0.805), 0.90)],
+            fps=12.5,
+            last_frame_age=0.03,
+        )
+    )
+
+    track_id = first["scene_snapshot"]["objects"][0]["trackId"]
+
+    assert second["scene_snapshot"]["objects"][0]["trackId"] == track_id
+    assert second["scene_snapshot"]["objects"][0]["temporalState"] == "stationary"
+    assert second["event_contents"] == []
+    assert second["event_count"] == 0
+    assert second["last_event"] is None
+    assert second["stable_target"]["trackId"] == track_id
+    assert second["diagnostics"]["fps"] == 12.5
+    assert second["diagnostics"]["frame_age"] == 0.03
+    assert second["diagnostics"]["track_count"] == 1
+
+
 def test_scene_bridge_accepts_latest_status_dicts_from_realtime_eye_service() -> None:
     bridge = RealtimeVisionSceneBridge()
 

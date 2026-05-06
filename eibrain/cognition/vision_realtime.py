@@ -24,6 +24,8 @@ class _Track:
     last_seen_frame: str
     last_observed_at: str
     missing_frames: int = 0
+    temporal_state: str = "appeared"
+    stationary_frames: int = 0
 
 
 class RealtimeVisionSimulator:
@@ -34,13 +36,18 @@ class RealtimeVisionSimulator:
         *,
         match_distance: float = 0.35,
         move_threshold: float = 0.12,
+        approach_area_delta: float = 0.04,
         max_missing_frames: int = 1,
+        attention_switch_margin: float = 0.20,
     ) -> None:
         self.match_distance = float(match_distance)
         self.move_threshold = float(move_threshold)
+        self.approach_area_delta = max(0.0, float(approach_area_delta))
         self.max_missing_frames = int(max_missing_frames)
+        self.attention_switch_margin = max(0.0, float(attention_switch_margin))
         self._tracks: dict[str, _Track] = {}
         self._next_ids: dict[str, int] = {}
+        self._attention_track_id = ""
 
     def update(
         self,
@@ -52,7 +59,6 @@ class RealtimeVisionSimulator:
         normalized = [_normalize_detection(item) for item in detections]
         normalized = [item for item in normalized if item is not None]
         events: list[dict[str, Any]] = []
-        active_before = {track_id: track for track_id, track in self._tracks.items() if track.missing_frames == 0}
         matches = self._match_detections(normalized)
         matched_detection_indexes = {detection_index for detection_index, _ in matches}
         matched_track_ids = {track_id for _, track_id in matches}
@@ -63,17 +69,28 @@ class RealtimeVisionSimulator:
             previous_bbox = dict(track.bbox)
             previous_region = _region(_center(previous_bbox))
             distance = _distance(_center(previous_bbox), _center(detection["bbox"]))
+            area_delta = _area(detection["bbox"]) - _area(previous_bbox)
             track.bbox = dict(detection["bbox"])
             track.confidence = float(detection["confidence"])
             track.last_seen_frame = frame_id
             track.last_observed_at = observed_at
             track.missing_frames = 0
             current_region = _region(_center(track.bbox))
-            if distance >= self.move_threshold or previous_region != current_region:
+            temporal_state = _matched_temporal_state(
+                distance=distance,
+                area_delta=area_delta,
+                previous_region=previous_region,
+                current_region=current_region,
+                move_threshold=self.move_threshold,
+                approach_area_delta=self.approach_area_delta,
+            )
+            track.temporal_state = temporal_state
+            track.stationary_frames = track.stationary_frames + 1 if temporal_state == "stationary" else 0
+            if temporal_state in {"moving", "approaching"}:
                 events.append(
                     _event(
                         scene_id="",
-                        event_type="moved",
+                        event_type="approaching" if temporal_state == "approaching" else "moved",
                         observed_at=observed_at,
                         frame_id=frame_id,
                         track=track,
@@ -81,6 +98,8 @@ class RealtimeVisionSimulator:
                         from_region=previous_region,
                         to_region=current_region,
                         distance=distance,
+                        temporal_state=temporal_state,
+                        area_delta=area_delta,
                     )
                 )
 
@@ -88,6 +107,7 @@ class RealtimeVisionSimulator:
             if detection_index in matched_detection_indexes:
                 continue
             track = self._new_track(detection, frame_id=frame_id, observed_at=observed_at)
+            track.temporal_state = "appeared"
             self._tracks[track.track_id] = track
             matched_track_ids.add(track.track_id)
             events.append(
@@ -101,6 +121,7 @@ class RealtimeVisionSimulator:
                     from_region="",
                     to_region=_region(_center(track.bbox)),
                     distance=0.0,
+                    temporal_state="appeared",
                 )
             )
 
@@ -109,6 +130,7 @@ class RealtimeVisionSimulator:
                 continue
             track.missing_frames += 1
             if track.missing_frames > self.max_missing_frames:
+                track.temporal_state = "disappeared"
                 events.append(
                     _event(
                         scene_id="",
@@ -120,6 +142,7 @@ class RealtimeVisionSimulator:
                         from_region=_region(_center(track.bbox)),
                         to_region="",
                         distance=0.0,
+                        temporal_state="disappeared",
                     )
                 )
                 del self._tracks[track_id]
@@ -128,12 +151,18 @@ class RealtimeVisionSimulator:
             [track for track in self._tracks.values() if track.missing_frames == 0],
             key=lambda item: item.track_id,
         )
-        attention = _attention_track(active_tracks)
-        if attention is not None:
+        previous_attention_track_id = self._attention_track_id
+        attention = _attention_track(
+            active_tracks,
+            current_track_id=previous_attention_track_id,
+            switch_margin=self.attention_switch_margin,
+        )
+        self._attention_track_id = attention.track_id if attention is not None else ""
+        if attention is not None and previous_attention_track_id and attention.track_id != previous_attention_track_id:
             events.append(
                 _event(
                     scene_id="",
-                    event_type="attention",
+                    event_type="attention_changed",
                     observed_at=observed_at,
                     frame_id=frame_id,
                     track=attention,
@@ -141,26 +170,34 @@ class RealtimeVisionSimulator:
                     from_region="",
                     to_region=_region(_center(attention.bbox)),
                     distance=0.0,
+                    temporal_state="attention_changed",
                 )
             )
 
         objects = [_track_object(track) for track in active_tracks]
         relationships = _relationships(objects)
         summary = _summary(objects, events)
+        event_summary = _event_summary(objects, events)
         scene_id = _scene_id(frame_id, observed_at, objects, relationships)
+        attention_object = _attention_object(attention)
         scene_snapshot = {
             "sceneId": scene_id,
             "observedAt": observed_at,
             "frameId": frame_id,
             "objects": objects,
             "relationships": relationships,
-            "attention": _attention_object(attention),
+            "attention": attention_object,
+            "stableTarget": dict(attention_object),
             "summary": summary,
+            "eventSummary": event_summary,
             "metadata": {
                 "frameId": frame_id,
                 "realtime": True,
                 "simulator": "software",
                 "trackCount": len(objects),
+                "eventCount": len(events),
+                "lastEventType": str(events[-1]["eventType"]) if events else "",
+                "stableTargetTrackId": str(attention_object.get("trackId", "")),
             },
         }
         for event in events:
@@ -172,6 +209,7 @@ class RealtimeVisionSimulator:
             "events": events,
             "sceneSnapshot": scene_snapshot,
             "sceneGraphSummary": summary,
+            "eventSummary": event_summary,
         }
 
     def replay(self, frames: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -239,6 +277,9 @@ def to_eiprotocol_scene_content(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "environment": {"source": "realtime_vision_simulator"},
         "imageUrl": "",
         "metadata": dict(scene.get("metadata") if isinstance(scene.get("metadata"), Mapping) else {}),
+        "attention": dict(scene.get("attention") if isinstance(scene.get("attention"), Mapping) else {}),
+        "stableTarget": dict(scene.get("stableTarget") if isinstance(scene.get("stableTarget"), Mapping) else {}),
+        "eventSummary": str(snapshot.get("eventSummary") or scene.get("eventSummary") or ""),
     }
 
 
@@ -302,7 +343,17 @@ def _event(
     from_region: str,
     to_region: str,
     distance: float,
+    temporal_state: str,
+    area_delta: float = 0.0,
 ) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "fromRegion": from_region,
+        "toRegion": to_region,
+        "distance": round(float(distance), 3),
+        "temporalState": temporal_state,
+    }
+    if area_delta:
+        details["areaDelta"] = round(float(area_delta), 4)
     return {
         "eventId": f"{scene_id}:{event_type}:{track.track_id}" if scene_id else "",
         "eventType": event_type,
@@ -310,11 +361,7 @@ def _event(
         "sceneId": scene_id,
         "subject": {"trackId": track.track_id, "label": track.label},
         "confidence": round(float(confidence), 3),
-        "details": {
-            "fromRegion": from_region,
-            "toRegion": to_region,
-            "distance": round(float(distance), 3),
-        },
+        "details": details,
         "metadata": {"frameId": frame_id},
     }
 
@@ -329,6 +376,8 @@ def _track_object(track: _Track) -> dict[str, Any]:
         "center": {"x": round(center[0], 3), "y": round(center[1], 3)},
         "region": _region(center),
         "missingFrames": track.missing_frames,
+        "temporalState": track.temporal_state,
+        "stationaryFrames": track.stationary_frames,
     }
 
 
@@ -382,15 +431,50 @@ def _summary(objects: list[dict[str, Any]], events: list[dict[str, Any]]) -> str
     else:
         observed = "empty scene"
     event_types = sorted({str(event.get("eventType")) for event in events if event.get("eventType")})
+    temporal_states = sorted({str(obj.get("temporalState")) for obj in objects if obj.get("temporalState")})
+    state_summary = ", ".join(temporal_states) if temporal_states else "none"
     if event_types:
-        return f"Observed {observed}; realtime events: {', '.join(event_types)}"
-    return f"Observed {observed}; realtime events: none"
+        return f"Observed {observed}; realtime events: {', '.join(event_types)}; temporal states: {state_summary}"
+    return f"Observed {observed}; realtime events: none; temporal states: {state_summary}"
 
 
-def _attention_track(tracks: list[_Track]) -> _Track | None:
+def _event_summary(objects: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:
+    if events:
+        parts = [
+            f"{event['eventType']} {event['subject']['trackId']}"
+            for event in events
+            if isinstance(event.get("subject"), Mapping)
+        ]
+        return "; ".join(parts)
+    states = [
+        f"{item['temporalState']} {item['trackId']}"
+        for item in objects
+        if item.get("temporalState")
+    ]
+    return "; ".join(states) if states else "no temporal changes"
+
+
+def _attention_track(
+    tracks: list[_Track],
+    *,
+    current_track_id: str,
+    switch_margin: float,
+) -> _Track | None:
     if not tracks:
         return None
-    return max(tracks, key=lambda track: (_area(track.bbox) * max(track.confidence, 0.0), track.confidence, track.track_id))
+    best = max(tracks, key=lambda track: (_track_salience(track), track.confidence, track.track_id))
+    current = next((track for track in tracks if track.track_id == current_track_id), None)
+    if current is None:
+        return best
+    current_salience = _track_salience(current)
+    best_salience = _track_salience(best)
+    if best.track_id != current.track_id and best_salience > current_salience * (1.0 + switch_margin):
+        return best
+    return current
+
+
+def _track_salience(track: _Track) -> float:
+    return _area(track.bbox) * max(track.confidence, 0.0)
 
 
 def _attention_object(track: _Track | None) -> dict[str, Any]:
@@ -455,6 +539,22 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 def _area(bbox: Mapping[str, float]) -> float:
     return max(0.0, float(bbox["x_max"]) - float(bbox["x_min"])) * max(0.0, float(bbox["y_max"]) - float(bbox["y_min"]))
+
+
+def _matched_temporal_state(
+    *,
+    distance: float,
+    area_delta: float,
+    previous_region: str,
+    current_region: str,
+    move_threshold: float,
+    approach_area_delta: float,
+) -> str:
+    if area_delta >= approach_area_delta and distance < move_threshold and previous_region == current_region:
+        return "approaching"
+    if distance >= move_threshold or previous_region != current_region:
+        return "moving"
+    return "stationary"
 
 
 def _coerce_float(value: Any, default: float = 0.0) -> float:
