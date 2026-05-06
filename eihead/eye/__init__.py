@@ -19,6 +19,7 @@ from .realtime import (
     RealtimeVisionFrame,
 )
 from .service import RealtimeEyeService
+from .scene import RealtimeVisionSceneBridge
 from .tracking import DEFAULT_TRACKING_LABELS, TrackingTarget, select_tracking_target
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "RealtimeEyeService",
     "RealtimeEyeStatus",
     "RealtimeVisionFrame",
+    "RealtimeVisionSceneBridge",
     "TrackingTarget",
     "normalize_hailo_detection",
     "parse_hailo_detections",

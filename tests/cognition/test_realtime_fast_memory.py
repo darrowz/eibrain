@@ -260,5 +260,35 @@ def test_memory_orchestrator_skips_non_committable_writeback_candidates() -> Non
             "status": "skipped",
             "reason": "requires_commit_false",
             "summary": "这只是本轮短期上下文。",
+            "source": "eibrain.audio_dialogue",
+            "memory_type": "conversation",
         }
     ]
+
+
+def test_memory_orchestrator_counts_writeback_errors() -> None:
+    class MissingWriterMemory:
+        pass
+
+    class RaisingWriterMemory:
+        last_writeback_status = {"status": "idle"}
+
+        def remember_episode(self, **kwargs):
+            raise RuntimeError("writeback down")
+
+    for memory, expected_error in (
+        (MissingWriterMemory(), "remember_episode_missing"),
+        (RaisingWriterMemory(), "RuntimeError: writeback down"),
+    ):
+        turn = _duck_turn()
+        MemoryOrchestrator(memory_service=memory).build_writeback_proposal(
+            turn,
+            query="需要写回但失败",
+            reason="error_branch_test",
+        )
+
+        trace = MemoryOrchestrator(memory_service=memory).commit_candidates(turn, session_id="s1")
+
+        assert trace["writeback"]["count"] == 1
+        assert trace["writeback"]["items"][0]["status"] == "error"
+        assert trace["writeback"]["items"][0]["error"] == expected_error

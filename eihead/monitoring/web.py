@@ -592,6 +592,16 @@ def _render_index(app: Any, timestamp: float) -> str:
         if visual_overlay.get("stream_ready") is not None
         else realtime.get("stream_ready", "unknown")
     )
+    vision_scene_id = _display_value(realtime.get("scene_id") or "unknown")
+    vision_scene_summary = _display_value(realtime.get("scene_summary") or "none")
+    vision_event_count = _display_value(_metric_value(realtime.get("event_count")))
+    vision_event_summary = _display_value(realtime.get("event_summary") or "none")
+    vision_track_count = _display_value(_metric_value(realtime.get("track_count")))
+    vision_track_summary = _display_value(realtime.get("track_summary") or "none")
+    vision_target_center = _display_value(_point_summary(realtime.get("target_center")))
+    vision_target_error = _display_value(_point_summary(realtime.get("target_error")))
+    vision_target_score_label = _display_value(realtime.get("target_score_label") or "none")
+    vision_score_labels = _display_value(_overlay_scores_summary(realtime.get("score_labels")))
     voice_ear = _display_value(_voice_component_summary(voice.get("ear"), kind="ear"))
     voice_mouth = _display_value(_voice_component_summary(voice.get("mouth"), kind="mouth"))
     voice_dialogue = _display_value(_voice_dialogue_summary(voice.get("dialogue")))
@@ -711,6 +721,16 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Devices</div><span class="metric">{vision_devices}</span></div>
       <div class="card"><div class="label">Readiness</div><span class="metric">{vision_readiness}</span></div>
       <div class="card"><div class="label">Parse errors</div><span class="metric">{vision_parse_errors}</span></div>
+      <div class="card"><div class="label">Scene</div><span class="metric">{vision_scene_id}</span></div>
+      <div class="card"><div class="label">Scene summary</div><span class="metric">{vision_scene_summary}</span></div>
+      <div class="card"><div class="label">Event count</div><span class="metric">{vision_event_count}</span></div>
+      <div class="card"><div class="label">Event summary</div><span class="metric">{vision_event_summary}</span></div>
+      <div class="card"><div class="label">Track count</div><span class="metric">{vision_track_count}</span></div>
+      <div class="card"><div class="label">Track summary</div><span class="metric">{vision_track_summary}</span></div>
+      <div class="card"><div class="label">Target center</div><span class="metric">{vision_target_center}</span></div>
+      <div class="card"><div class="label">Target error</div><span class="metric">{vision_target_error}</span></div>
+      <div class="card"><div class="label">Target score</div><span class="metric">{vision_target_score_label}</span></div>
+      <div class="card"><div class="label">Score labels</div><span class="metric">{vision_score_labels}</span></div>
     </section>
     <p>Realtime JSON below includes <code>boxes</code> and <code>scores</code> for direct visual diagnostics.</p>
     <h2>Visual Overlay</h2>
@@ -900,6 +920,14 @@ def _overlay_top_target_summary(value: Any) -> str:
             f"error=({error.get('x')}, {error.get('y')})"
         )
     return str(score_label)
+
+
+def _point_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "none"
+    if value.get("x") in (None, "") or value.get("y") in (None, ""):
+        return "none"
+    return f"({value.get('x')}, {value.get('y')})"
 
 
 def _hooks_used_summary(value: Any) -> str:

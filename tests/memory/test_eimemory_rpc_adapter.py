@@ -676,3 +676,110 @@ def test_eimemory_rpc_adapter_records_skill_trace(monkeypatch) -> None:
             },
         },
     }
+
+
+def test_eimemory_rpc_adapter_records_memory_trace(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "memory_trace_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    result = adapter.record_memory_trace(
+        {
+            "trace_id": "trace-vision-12",
+            "task_type": "brain.respond",
+            "memory_reads": [{"query": "where is user", "selected_count": 2}],
+            "writebacks": [{"memory_type": "world_observation", "record_id": "mem_world"}],
+            "closure": {"status": "closed", "reason": "writeback_confirmed"},
+        },
+        session_id="vision-session",
+        actor_id="user-1",
+    )
+
+    assert result["ok"] is True
+    assert captured["body"] == {
+        "method": "experience.record_memory_trace",
+        "params": {
+            "payload": {
+                "trace_id": "trace-vision-12",
+                "task_type": "brain.respond",
+                "memory_reads": [{"query": "where is user", "selected_count": 2}],
+                "writebacks": [{"memory_type": "world_observation", "record_id": "mem_world"}],
+                "closure": {"status": "closed", "reason": "writeback_confirmed"},
+            },
+            "scope": {
+                "agent_id": "honxin",
+                "workspace_id": "honjia",
+                "session_id": "vision-session",
+                "actor_id": "user-1",
+            },
+        },
+    }
+
+
+def test_eimemory_rpc_adapter_record_memory_trace_degrades_without_endpoint() -> None:
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    adapter = EIMemoryRPCAdapter()
+
+    assert adapter.record_memory_trace({"trace_id": "trace-offline"}) == {}
+
+
+def test_eimemory_rpc_adapter_record_memory_trace_degrades_on_failure(monkeypatch) -> None:
+    from urllib.error import URLError
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    def _failing_urlopen(req, timeout=0):
+        raise URLError("down")
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _failing_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+
+    assert adapter.record_memory_trace({"trace_id": "trace-down"}) == {}
+
+
+def test_eimemory_rpc_adapter_reports_missing_endpoint_writeback_status() -> None:
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    adapter = EIMemoryRPCAdapter()
+    adapter.remember_world_observation(
+        session_id="vision:user-1",
+        actor_id="user-1",
+        summary="person detected near desk",
+    )
+
+    assert adapter.last_writeback_status["status"] == "error"
+    assert adapter.last_writeback_status["source"] == "eibrain.visual_world"
+    assert adapter.last_writeback_status["memory_type"] == "world_observation"
+    assert adapter.last_writeback_status["modality"] == "vision"
+    assert adapter.last_writeback_status["organ"] == "eye"
+    assert adapter.last_writeback_status["error"] == "eimemory RPC endpoint is not configured"

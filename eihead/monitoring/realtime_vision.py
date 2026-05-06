@@ -125,8 +125,20 @@ def build_realtime_vision_payload(
         "visual_diagnostic": diagnostic["overlay"],
         "source_freshness": diagnostic["source_freshness"],
         "latency_ms": diagnostic["latency_ms"],
+        "scene": diagnostic["scene"],
+        "scene_id": diagnostic["scene_id"],
+        "scene_summary": diagnostic["scene_summary"],
         "tracks": diagnostic["tracks"],
+        "track_count": diagnostic["track_count"],
+        "track_summary": diagnostic["track_summary"],
         "events": diagnostic["events"],
+        "event_count": diagnostic["event_count"],
+        "event_summary": diagnostic["event_summary"],
+        "score_labels": diagnostic["score_labels"],
+        "target": diagnostic["target"],
+        "target_center": diagnostic["target_center"],
+        "target_error": diagnostic["target_error"],
+        "target_score_label": diagnostic["target_score_label"],
         "detections_summary": diagnostic["detections_summary"],
         "health_state": diagnostic["health_state"],
     }
@@ -152,6 +164,16 @@ def _derive_realtime_status(observation: Mapping[str, Any] | None) -> tuple[str,
     compatibility_mode = _truthy(observation.get("compatibility_mode", False))
     degraded = _truthy(observation.get("degraded", False)) or status == "degraded"
     stale = _is_stale_observation(observation, status=status)
+
+    if kind == "realtime_vision_scene_bridge":
+        live = _truthy(observation.get("live", True))
+        reason = _coerce_status(observation.get("reason")) or status
+        if not live and reason in {"compat_static", "static"}:
+            return "compat_static", False, "compat/static vision payload is not accepted as realtime eye data"
+        if not live and reason == "stale":
+            return "stale", True, ""
+        if not live:
+            return "not_wired", False, "eye.realtime payload is present but not ready"
 
     if not_wired or placeholder or _status_is_not_wired(status):
         return "not_wired", False, "eye.realtime payload is present but not ready"
@@ -256,6 +278,9 @@ def _build_realtime_diagnostic(
         filtered_detections=filtered_detections,
         stream_ready=stream_ready,
     )
+    scene = _scene_payload(observation)
+    target = _target_payload(observation, overlay.get("top_target"))
+    score_labels = _score_labels(overlay, target)
 
     return {
         "status": status,
@@ -297,8 +322,20 @@ def _build_realtime_diagnostic(
         "detections": filtered_detections,
         "source_freshness": source_freshness,
         "latency_ms": _latency_ms(observation),
+        "scene": scene,
+        "scene_id": scene.get("scene_id"),
+        "scene_summary": scene.get("summary"),
         "tracks": tracks,
+        "track_count": tracks["count"],
+        "track_summary": tracks["summary"],
         "events": events,
+        "event_count": events["count"],
+        "event_summary": events["summary"],
+        "score_labels": score_labels,
+        "target": target,
+        "target_center": target.get("center") if target else None,
+        "target_error": target.get("error") if target else None,
+        "target_score_label": target.get("score_label") if target else None,
         "detections_summary": detections_summary,
         "health_state": health_state,
         "overlay": overlay,
@@ -591,6 +628,10 @@ def _latency_ms(observation: Mapping[str, Any] | None) -> float | None:
 def _tracks_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
     raw_tracks = _first_nested_present(observation, "tracks", "tracked_targets")
     if raw_tracks is None:
+        raw_tracks = _first_present(_scene_source(observation), "tracks", "tracked_targets")
+    if raw_tracks is None:
+        raw_tracks = _first_present(_scene_source(observation), "objects")
+    if raw_tracks is None:
         raw_tracks = _first_nested_present(observation, "tracked_target")
     tracks = _normalized_items(raw_tracks)
     return {
@@ -601,12 +642,125 @@ def _tracks_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def _events_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
-    events = _normalized_items(_first_nested_present(observation, "events", "recent_events"))
+    raw_events = _first_nested_present(observation, "events", "recent_events")
+    if raw_events is None:
+        raw_events = _first_present(_scene_source(observation), "events", "recent_events")
+    events = _normalized_items(raw_events)
     return {
         "count": len(events),
         "items": events,
-        "summary": _items_summary(events, label_keys=("event_type", "type", "name", "label")),
+        "summary": _items_summary(events, label_keys=("event_type", "eventType", "type", "name", "label")),
     }
+
+
+def _scene_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    scene_source = _scene_source(observation)
+    scene_id = _string_or_none(
+        _first_present(
+            observation,
+            "scene_id",
+            "sceneId",
+        )
+    ) or _string_or_none(
+        _first_present(
+            scene_source,
+            "scene_id",
+            "sceneId",
+            "id",
+        )
+    )
+    summary = _string_or_none(
+        _first_present(
+            observation,
+            "scene_summary",
+            "sceneSummary",
+            "sceneGraphSummary",
+        )
+    ) or _string_or_none(
+        _first_present(
+            scene_source,
+            "summary",
+            "scene_summary",
+            "sceneSummary",
+            "sceneGraphSummary",
+        )
+    )
+    snapshot = _json_object_or_none(_first_present(observation, "sceneSnapshot", "scene_snapshot"))
+    graph_summary = _string_or_none(_first_present(observation, "sceneGraphSummary", "scene_graph_summary"))
+    return {
+        "scene_id": scene_id,
+        "summary": summary,
+        "snapshot": snapshot,
+        "graph_summary": graph_summary,
+    }
+
+
+def _scene_source(observation: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
+    raw_scene = _first_present(observation, "scene", "scene_bridge", "sceneBridge", "sceneSnapshot", "scene_snapshot")
+    normalized = _json_ready(raw_scene)
+    if isinstance(normalized, Mapping):
+        return {str(k): v for k, v in normalized.items()}
+    return None
+
+
+def _target_payload(
+    observation: Mapping[str, Any] | None,
+    overlay_target: Any,
+) -> dict[str, Any] | None:
+    if isinstance(overlay_target, Mapping):
+        return {str(k): _json_ready(v) for k, v in overlay_target.items()}
+
+    raw_target = _first_nested_present(observation, "target", "tracked_target", "top_target")
+    normalized = _json_ready(raw_target)
+    if not isinstance(normalized, Mapping):
+        return None
+    target = {str(k): v for k, v in normalized.items()}
+    center = _point_payload(_first_present(target, "center", "target_center"))
+    if center is None:
+        center = _xy_payload(_first_present(target, "center_x", "x"), _first_present(target, "center_y", "y"))
+    error = _point_payload(_first_present(target, "error", "target_error"))
+    if error is None:
+        error = _xy_payload(_first_present(target, "error_x", "dx"), _first_present(target, "error_y", "dy"))
+    if error is None and center is not None:
+        error = {
+            "x": _round_overlay_number(float(center["x"]) - 0.5),
+            "y": _round_overlay_number(float(center["y"]) - 0.5),
+        }
+    label = _string_or_none(_first_present(target, "label", "class", "name")) or "target"
+    score = _number_or_none(_first_present(target, "score", "confidence"))
+    return {
+        "label": label,
+        "score": score,
+        "score_label": _score_label(label, score),
+        "center": center,
+        "error": error,
+    }
+
+
+def _score_labels(overlay: Mapping[str, Any], target: Mapping[str, Any] | None) -> list[str]:
+    raw_labels = overlay.get("score_labels")
+    if isinstance(raw_labels, (list, tuple)):
+        labels = [str(item) for item in raw_labels if item not in (None, "")]
+        if labels:
+            return labels
+    if target and target.get("score_label") not in (None, ""):
+        return [str(target["score_label"])]
+    return []
+
+
+def _point_payload(value: Any) -> dict[str, float] | None:
+    normalized = _json_ready(value)
+    if not isinstance(normalized, Mapping):
+        return None
+    return _xy_payload(normalized.get("x"), normalized.get("y"))
+
+
+def _xy_payload(x_value: Any, y_value: Any) -> dict[str, float] | None:
+    x = _number_or_none(x_value)
+    y = _number_or_none(y_value)
+    if x is None or y is None:
+        return None
+    return {"x": _round_overlay_number(x), "y": _round_overlay_number(y)}
 
 
 def _normalized_items(value: Any) -> list[dict[str, Any]]:
@@ -967,6 +1121,15 @@ def _resolve_realtime_observation_candidate(observation: Any, *, seen: set[int] 
     seen.add(candidate_id)
 
     latest_status = getattr(observation, "latest_status", None)
+    latest_observation = getattr(observation, "latest_observation", None)
+    if callable(latest_observation):
+        try:
+            resolved = _resolve_realtime_observation_candidate(latest_observation(), seen=seen)
+        except TypeError:
+            resolved = None
+        if resolved is not None:
+            return resolved
+
     if latest_status is not None:
         resolved = _resolve_realtime_observation_candidate(latest_status, seen=seen)
         if resolved is not None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+import json
 import threading
 import time
 from typing import Any, Protocol
@@ -22,16 +23,21 @@ class RealtimeEyeService:
         self,
         *,
         adapter: RealtimeEyeAdapter | None = None,
+        scene_bridge: Any | None = None,
+        enable_scene_bridge: bool = True,
         poll_interval_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
         self.adapter = adapter or self._default_adapter()
+        self.scene_bridge = scene_bridge if scene_bridge is not None else self._default_scene_bridge(enable_scene_bridge)
         self.poll_interval_s = float(poll_interval_s)
         self._sleep = sleep
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest_status: dict[str, Any] = self._coerce_status(self.adapter.status())
+        self._latest_scene_key = ""
+        self._latest_scene_result: dict[str, Any] | None = None
 
     @property
     def latest_status(self) -> dict[str, Any]:
@@ -120,12 +126,15 @@ class RealtimeEyeService:
             "captured_at_ts": captured_at_ts,
             "status": status.get("status") or "unknown",
             "stream_ready": bool(status.get("stream_ready", False)),
+            "placeholder": bool(status.get("placeholder", False)),
             "not_wired": bool(status.get("not_wired", False)),
+            "compatibility_mode": bool(status.get("compatibility_mode", False)),
             "degraded": bool(status.get("degraded", False)),
             "stale": bool(status.get("stale", False)),
+            "backend": status.get("backend") or "",
             "status_reason": status.get("status_reason") or "",
         }
-        return observation
+        return self._attach_scene_bridge(observation)
 
     def _run_background_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -148,6 +157,14 @@ class RealtimeEyeService:
         return GStreamerHailoRealtimeAdapter()
 
     @staticmethod
+    def _default_scene_bridge(enabled: bool) -> Any | None:
+        if not enabled:
+            return None
+        from .scene import RealtimeVisionSceneBridge
+
+        return RealtimeVisionSceneBridge()
+
+    @staticmethod
     def _coerce_status(raw_status: object) -> dict[str, Any]:
         if hasattr(raw_status, "to_dict"):
             payload = raw_status.to_dict()
@@ -162,6 +179,42 @@ class RealtimeEyeService:
         status.setdefault("detection_boxes", [])
         status.setdefault("detection_scores", [])
         return status
+
+    def _attach_scene_bridge(self, observation: dict[str, Any]) -> dict[str, Any]:
+        bridge = self.scene_bridge
+        if bridge is None:
+            return observation
+        cache_key = _scene_cache_key(observation)
+        with self._lock:
+            if cache_key == self._latest_scene_key and self._latest_scene_result is not None:
+                scene_result = dict(self._latest_scene_result)
+            else:
+                scene_result = dict(bridge.update(observation))
+                self._latest_scene_key = cache_key
+                self._latest_scene_result = dict(scene_result)
+        scene = _json_mapping(scene_result.get("scene_snapshot")) or {}
+        events = _json_list(scene_result.get("event_contents") or scene_result.get("events"))
+        tracks = _json_list(scene.get("objects"))
+        observation.update(
+            {
+                "scene": scene,
+                "sceneSnapshot": scene,
+                "scene_id": scene_result.get("latest_scene_id") or scene.get("sceneId") or "",
+                "scene_summary": scene_result.get("sceneGraphSummary") or scene.get("summary") or "",
+                "sceneGraphSummary": scene_result.get("sceneGraphSummary") or scene.get("summary") or "",
+                "events": events,
+                "tracks": tracks,
+                "scene_bridge": {
+                    "kind": scene_result.get("kind"),
+                    "live": scene_result.get("live"),
+                    "reason": scene_result.get("reason"),
+                    "object_count": scene_result.get("object_count", len(tracks)),
+                    "track_count": scene_result.get("track_count", len(tracks)),
+                    "event_count": len(events),
+                },
+            }
+        )
+        return observation
 
 
 def _json_list(value: object) -> list[Any]:
@@ -207,3 +260,20 @@ def _first_present(payload: Mapping[str, Any], *keys: str) -> Any:
         if key in payload:
             return payload[key]
     return None
+
+
+def _scene_cache_key(observation: Mapping[str, Any]) -> str:
+    payload = {
+        "frame_id": observation.get("frame_id"),
+        "captured_at_ts": observation.get("captured_at_ts"),
+        "status": observation.get("status"),
+        "mode": observation.get("mode"),
+        "stream_ready": observation.get("stream_ready"),
+        "placeholder": observation.get("placeholder"),
+        "not_wired": observation.get("not_wired"),
+        "compatibility_mode": observation.get("compatibility_mode"),
+        "stale": observation.get("stale"),
+        "backend": observation.get("backend"),
+        "detections": observation.get("detections"),
+    }
+    return json.dumps(_json_value(payload), sort_keys=True, default=str)

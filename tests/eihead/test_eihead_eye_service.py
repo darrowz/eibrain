@@ -70,6 +70,11 @@ def test_realtime_eye_service_polls_adapter_and_exposes_latest_observation() -> 
     }
     assert observation["captured_at_ts"] == 123.25
     assert observation["status"] == "ok"
+    assert observation["scene_id"].startswith("scene_rt_")
+    assert observation["scene"]["sceneId"] == observation["scene_id"]
+    assert "person" in observation["scene_summary"]
+    assert observation["tracks"][0]["label"] == "person"
+    assert observation["events"][0]["eventType"] == "appeared"
 
 
 def test_realtime_eye_service_poll_runs_bounded_loop_without_threads() -> None:
@@ -128,6 +133,84 @@ def test_realtime_eye_service_status_and_observation_honestly_preserve_not_wired
     assert observation["detections"] == []
     assert observation["boxes"] == []
     assert observation["scores"] == []
+    assert observation["scene"]["metadata"]["reason"] == "not_wired"
+    assert observation["events"] == []
+
+
+def test_realtime_eye_service_preserves_placeholder_before_scene_bridge() -> None:
+    service = RealtimeEyeService(
+        adapter=FakeAdapter(
+            initial_status={
+                "status": "waiting_for_frame",
+                "mode": "realtime_stream",
+                "placeholder": True,
+                "stream_ready": False,
+                "last_frame_id": "placeholder-frame",
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.91,
+                        "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.3, "y_max": 0.4},
+                    }
+                ],
+            },
+            polled_statuses=[],
+        )
+    )
+
+    observation = service.latest_observation()
+
+    assert observation["placeholder"] is True
+    assert observation["scene_bridge"]["live"] is False
+    assert observation["scene_bridge"]["reason"] == "placeholder"
+    assert observation["events"] == []
+
+
+def test_realtime_eye_service_scene_cache_respects_live_state_changes() -> None:
+    adapter = FakeAdapter(
+        initial_status={"status": "waiting_for_frame"},
+        polled_statuses=[
+            {
+                "status": "ok",
+                "mode": "realtime_stream",
+                "stream_ready": True,
+                "last_frame_id": "same-frame",
+                "last_frame_captured_at_ts": 123.25,
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.91,
+                        "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.3, "y_max": 0.4},
+                    }
+                ],
+            },
+            {
+                "status": "ok",
+                "mode": "realtime_stream",
+                "stream_ready": False,
+                "stale": True,
+                "last_frame_id": "same-frame",
+                "last_frame_captured_at_ts": 123.25,
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.91,
+                        "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.3, "y_max": 0.4},
+                    }
+                ],
+            },
+        ],
+    )
+    service = RealtimeEyeService(adapter=adapter)
+
+    service.poll_once()
+    live = service.latest_observation()
+    service.poll_once()
+    stale = service.latest_observation()
+
+    assert live["scene_bridge"]["reason"] == "live"
+    assert stale["scene_bridge"]["live"] is False
+    assert stale["scene_bridge"]["reason"] == "stale"
 
 
 def test_realtime_eye_service_preserves_degraded_poll_status() -> None:

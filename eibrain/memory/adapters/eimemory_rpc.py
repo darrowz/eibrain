@@ -64,6 +64,16 @@ class EIMemoryRPCAdapter:
             return
         self._sessions[session_id] = cleaned_summary
         if not self.config.endpoint:
+            self.last_writeback_status = self._writeback_status(
+                status="error",
+                source=source,
+                memory_type=memory_type,
+                modality=modality,
+                organ=organ,
+                title=title or "Embodied episode",
+                meta=meta,
+                error="eimemory RPC endpoint is not configured",
+            )
             return
         payload = {
             "method": "memory.ingest",
@@ -131,6 +141,8 @@ class EIMemoryRPCAdapter:
         content: dict[str, object] | None = None,
         meta: dict[str, object] | None = None,
         tags: list[str] | None = None,
+        evidence: list[dict[str, object]] | None = None,
+        links: list[dict[str, object]] | None = None,
         title: str = "Visual world observation",
     ) -> None:
         observation_tags = self._merge_tags(tags, ["world_observation", "vision"])
@@ -146,6 +158,8 @@ class EIMemoryRPCAdapter:
             content=content,
             meta=meta,
             tags=observation_tags,
+            evidence=evidence,
+            links=links,
         )
 
     def remember_preference(
@@ -254,6 +268,27 @@ class EIMemoryRPCAdapter:
             return {}
         body = {
             "method": "experience.record_skill_trace",
+            "params": {
+                "payload": dict(payload or {}),
+                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+            },
+        }
+        try:
+            return self._post_json(body)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            return {}
+
+    def record_memory_trace(
+        self,
+        payload: dict[str, object],
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        if not self.config.endpoint:
+            return {}
+        body = {
+            "method": "experience.record_memory_trace",
             "params": {
                 "payload": dict(payload or {}),
                 "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),

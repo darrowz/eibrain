@@ -32,6 +32,25 @@ def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").strip().split())
 
 
+def _dict_if_mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _mapping_items(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, Iterable) or isinstance(value, (str, bytes, Mapping)):
+        return []
+    return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _unique_texts(values: Iterable[Any]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        cleaned = _clean_text(value)
+        if cleaned and cleaned not in unique:
+            unique.append(cleaned)
+    return unique
+
+
 def _memory_query(
     *,
     query: str,
@@ -132,6 +151,221 @@ class MemoryOrchestrator:
         )
         return self._record(turn, payload)
 
+    def build_visual_recall_request(
+        self,
+        turn: Any,
+        *,
+        query: str | None = None,
+        visual_context: Mapping[str, Any] | None = None,
+        scene: Mapping[str, Any] | None = None,
+        observation: Mapping[str, Any] | None = None,
+        channels: Iterable[str] | None = ("vision",),
+        priority: str | int | float | None = "realtime",
+        reason: str = "visual_grounding_recall",
+        limit: int = 3,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build an inert visual-grounding recall request from realtime vision context."""
+
+        source = dict(scene or observation or visual_context or {})
+        visual = dict(visual_context or {})
+        if scene:
+            visual.setdefault("scene", dict(scene))
+        if observation:
+            visual.setdefault("observation", dict(observation))
+        summary = _clean_text(query) or _clean_text(source.get("summary")) or self._visual_summary(source)
+        recall_metadata = {
+            "task_type": "brain.orient",
+            "modality": "vision",
+            "organ": "eye",
+            "visual_context": visual,
+            "memory_type": "world_observation",
+            **dict(metadata or {}),
+        }
+        return self.build_recall_request(
+            turn,
+            query=summary,
+            channels=channels,
+            priority=priority,
+            reason=reason,
+            limit=limit,
+            metadata=recall_metadata,
+        )
+
+    def build_visual_world_writeback(
+        self,
+        turn: Any,
+        *,
+        scene: Mapping[str, Any] | None = None,
+        observation: Mapping[str, Any] | None = None,
+        summary: str | None = None,
+        source_event_id: str = "",
+        trace_id: str = "",
+        frame_ref: str = "",
+        channels: Iterable[str] | None = ("vision",),
+        priority: str | int | float | None = "normal",
+        reason: str = "visual_world_observation",
+        evidence: Iterable[Mapping[str, Any]] | None = None,
+        links: Iterable[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        requires_commit: bool = True,
+    ) -> dict[str, Any]:
+        """Build an inert world-observation candidate from visual scene content."""
+
+        source = dict(scene or observation or {})
+        objects = _mapping_items(source.get("objects") or source.get("detections") or [])
+        resolved_summary = _clean_text(summary) or _clean_text(source.get("summary")) or self._visual_summary(source)
+        content: dict[str, Any] = {
+            "event_type": "vision_observation",
+            "summary": resolved_summary,
+            "modality": "vision",
+            "organ": "eye",
+            "scene": dict(scene or source),
+            "objects": objects,
+        }
+        for key in ("relations", "events", "spatial", "confidence", "source"):
+            if key in source:
+                content[key] = _json_ready(source[key])
+        if frame_ref:
+            content["frame_ref"] = frame_ref
+        elif source.get("frame_ref") or source.get("frame_path"):
+            content["frame_ref"] = str(source.get("frame_ref") or source.get("frame_path"))
+
+        meta = {
+            "source_system": "eibrain",
+            "source": "eibrain.visual_world",
+            "trace_id": trace_id,
+            "source_event_id": source_event_id,
+            "event_type": "vision_observation",
+            "memory_kind": "episodic",
+            "retention": "episode",
+            "promotion_status": "not_promoted",
+            "identity_memory": False,
+            "persona_memory": False,
+            "privacy": {
+                "scope": "situational_awareness",
+                "sensitivity": "environmental",
+                "allowed_use": "embodied_response",
+            },
+        }
+        object_labels = [item.get("label") for item in objects]
+        writeback_metadata = {
+            "title": "Visual world observation",
+            "memory_type": "world_observation",
+            "source": "eibrain.visual_world",
+            "modality": "vision",
+            "organ": "eye",
+            "content": content,
+            "meta": meta,
+            "outcome": {"success": None, "status": "observed", "modality": "vision", "organ": "eye"},
+            "tags": _unique_texts(["world_observation", "vision", "eye", *object_labels]),
+            "evidence": _mapping_items(evidence or []),
+            "links": _mapping_items(links or []),
+            **dict(metadata or {}),
+        }
+        return self.build_writeback_proposal(
+            turn,
+            query=resolved_summary,
+            channels=channels,
+            priority=priority,
+            reason=reason,
+            summary=resolved_summary,
+            metadata=writeback_metadata,
+            requires_commit=requires_commit,
+        )
+
+    def build_action_outcome_writeback(
+        self,
+        turn: Any,
+        *,
+        action: str,
+        organ: str,
+        success: bool | None,
+        status: str,
+        outcome: Mapping[str, Any] | None = None,
+        modality: str = "multimodal_action",
+        source_event_id: str = "",
+        trace_id: str = "",
+        suggested_adjustment: str = "",
+        summary: str | None = None,
+        channels: Iterable[str] | None = ("action",),
+        priority: str | int | float | None = "normal",
+        reason: str = "action_outcome_feedback",
+        evidence: Iterable[Mapping[str, Any]] | None = None,
+        links: Iterable[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        requires_commit: bool = True,
+    ) -> dict[str, Any]:
+        """Build an inert action-outcome candidate from embodied execution feedback."""
+
+        cleaned_action = _clean_text(action)
+        cleaned_organ = _clean_text(organ) or "cognition"
+        cleaned_status = _clean_text(status) or "unknown"
+        if not cleaned_action:
+            raise ValueError("action outcome writeback action is required")
+        resolved_summary = _clean_text(summary) or f"{cleaned_action} on {cleaned_organ} {cleaned_status}"
+        outcome_payload = {
+            "success": success,
+            "status": cleaned_status,
+            "modality": modality,
+            "organ": cleaned_organ,
+            **_dict_if_mapping(outcome),
+        }
+        content = {
+            "event_type": "action_outcome",
+            "summary": resolved_summary,
+            "action": cleaned_action,
+            "modality": modality,
+            "organ": cleaned_organ,
+            "success": success,
+            "status": cleaned_status,
+        }
+        adjustment = _clean_text(suggested_adjustment)
+        if adjustment:
+            content["suggested_adjustment"] = adjustment
+
+        writeback_metadata = {
+            "title": "Realtime action outcome",
+            "memory_type": "action_outcome",
+            "source": "eibrain.outcome_feedback",
+            "modality": modality,
+            "organ": cleaned_organ,
+            "content": content,
+            "meta": {
+                "source_system": "eibrain",
+                "source": "eibrain.outcome_feedback",
+                "trace_id": trace_id,
+                "source_event_id": source_event_id,
+                "event_type": "action_outcome",
+                "memory_kind": "episodic",
+                "retention": "episode",
+                "promotion_status": "candidate" if success is False or adjustment else "not_promoted",
+                "training_candidate": success is False or bool(adjustment),
+                "identity_memory": False,
+                "persona_memory": False,
+                "privacy": {
+                    "scope": "operational_feedback",
+                    "sensitivity": "operational",
+                    "allowed_use": "embodied_response",
+                },
+            },
+            "outcome": outcome_payload,
+            "tags": _unique_texts(["action_outcome", modality, cleaned_organ, cleaned_status]),
+            "evidence": _mapping_items(evidence or []),
+            "links": _mapping_items(links or []),
+            **dict(metadata or {}),
+        }
+        return self.build_writeback_proposal(
+            turn,
+            query=resolved_summary,
+            channels=channels,
+            priority=priority,
+            reason=reason,
+            summary=resolved_summary,
+            metadata=writeback_metadata,
+            requires_commit=requires_commit,
+        )
+
     def commit_candidates(
         self,
         turn: Any,
@@ -185,6 +419,7 @@ class MemoryOrchestrator:
                     default_modality=default_modality,
                     default_organ=default_organ,
                 )
+        self._commit_memory_trace(trace, session_id=session_id, actor_id=actor_id)
         return self._record_trace(turn, trace)
 
     def _base_payload(
@@ -237,6 +472,39 @@ class MemoryOrchestrator:
         elif isinstance(turn, dict):
             turn.setdefault("memory_traces", []).append(payload)
         return payload
+
+    def _commit_memory_trace(
+        self,
+        trace: dict[str, Any],
+        *,
+        session_id: str | None,
+        actor_id: str | None,
+    ) -> None:
+        recorder = getattr(self.memory_service, "record_memory_trace", None)
+        if not callable(recorder):
+            return
+        payload = _json_ready(dict(trace))
+        try:
+            result = recorder(payload, session_id=session_id, actor_id=actor_id)
+        except Exception as exc:  # pragma: no cover - defensive boundary for injected services
+            error = f"{type(exc).__name__}: {exc}"
+            trace["trace_record"] = {"status": "error", "error": error}
+            trace["errors"].append({"kind": "memory_trace", "error": error})
+            return
+        if isinstance(result, Mapping) and result:
+            result_payload = dict(result)
+            result_body = result_payload.get("result")
+            result_record = dict(result_body) if isinstance(result_body, Mapping) else {}
+            record_id = result_record.get("record_id") or result_record.get("id")
+            trace["trace_record"] = _json_ready(
+                {
+                    "status": "ok",
+                    "record_id": record_id,
+                    "diagnostics": result_payload,
+                }
+            )
+        else:
+            trace["trace_record"] = {"status": "skipped", "reason": "empty_result"}
 
     def _commit_recall(
         self,
@@ -310,6 +578,9 @@ class MemoryOrchestrator:
         default_organ: str,
     ) -> None:
         summary = str(candidate.get("summary") or candidate.get("query") or "").strip()
+        metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
+        source = str(metadata.get("source") or "eibrain.audio_dialogue")
+        memory_type = str(metadata.get("memory_type") or "conversation")
         if candidate.get("requires_commit") is False:
             trace["writeback"]["items"].append(
                 {
@@ -318,41 +589,83 @@ class MemoryOrchestrator:
                     "status": "skipped",
                     "reason": "requires_commit_false",
                     "summary": summary,
+                    "source": source,
+                    "memory_type": memory_type,
                 }
             )
+            self._refresh_writeback_count(trace)
             return
-        writer = getattr(self.memory_service, "remember_episode", None)
+        world_observation = memory_type == "world_observation" and str(metadata.get("modality") or default_modality) == "vision"
+        writer_name = "remember_world_observation" if world_observation else "remember_episode"
+        writer = getattr(self.memory_service, writer_name, None)
+        if not callable(writer) and world_observation:
+            writer_name = "remember_episode"
+            writer = getattr(self.memory_service, writer_name, None)
         if not callable(writer):
-            trace["errors"].append({"candidate_index": index, "kind": "writeback_proposal", "error": "remember_episode_missing"})
-            return
-        metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
-        try:
-            writer(
-                session_id=session_id or str(candidate.get("round_id") or "unknown-session"),
-                actor_id=actor_id,
-                summary=summary,
-                title=str(metadata.get("title") or "Realtime memory writeback"),
-                memory_type=str(metadata.get("memory_type") or "conversation"),
-                source=str(metadata.get("source") or "eibrain.audio_dialogue"),
-                modality=str(metadata.get("modality") or default_modality),
-                organ=str(metadata.get("organ") or default_organ),
-                outcome=dict(metadata.get("outcome") or {}),
-                content=dict(metadata.get("content") or {}),
-                meta=dict(metadata.get("meta") or {}),
-                tags=[str(tag) for tag in metadata.get("tags", [])],
-                evidence=[dict(item) for item in metadata.get("evidence", []) if isinstance(item, Mapping)],
-                links=[dict(item) for item in metadata.get("links", []) if isinstance(item, Mapping)],
-            )
-        except Exception as exc:  # pragma: no cover - defensive boundary for injected services
-            trace["errors"].append(
+            error = f"{writer_name}_missing"
+            trace["errors"].append({"candidate_index": index, "kind": "writeback_proposal", "error": error})
+            trace["writeback"]["items"].append(
                 {
                     "candidate_index": index,
                     "kind": "writeback_proposal",
-                    "error": f"{type(exc).__name__}: {exc}",
+                    "status": "error",
+                    "error": error,
+                    "summary": summary,
+                    "source": source,
+                    "memory_type": memory_type,
                 }
             )
+            self._refresh_writeback_count(trace)
+            return
+        try:
+            payload = {
+                "session_id": session_id or str(candidate.get("round_id") or "unknown-session"),
+                "actor_id": actor_id,
+                "summary": summary,
+                "title": str(metadata.get("title") or "Realtime memory writeback"),
+                "memory_type": memory_type,
+                "source": source,
+                "modality": str(metadata.get("modality") or default_modality),
+                "organ": str(metadata.get("organ") or default_organ),
+                "outcome": dict(metadata.get("outcome") or {}),
+                "content": dict(metadata.get("content") or {}),
+                "meta": dict(metadata.get("meta") or {}),
+                "tags": [str(tag) for tag in metadata.get("tags", [])],
+                "evidence": [dict(item) for item in metadata.get("evidence", []) if isinstance(item, Mapping)],
+                "links": [dict(item) for item in metadata.get("links", []) if isinstance(item, Mapping)],
+            }
+            if writer_name == "remember_world_observation":
+                result = writer(
+                    session_id=payload["session_id"],
+                    actor_id=payload["actor_id"],
+                    summary=payload["summary"],
+                    title=payload["title"],
+                    content=payload["content"],
+                    meta=payload["meta"],
+                    tags=payload["tags"],
+                    evidence=payload["evidence"],
+                    links=payload["links"],
+                )
+            else:
+                result = writer(**payload)
+        except Exception as exc:  # pragma: no cover - defensive boundary for injected services
+            error = f"{type(exc).__name__}: {exc}"
+            trace["errors"].append({"candidate_index": index, "kind": "writeback_proposal", "error": error})
+            trace["writeback"]["items"].append(
+                {
+                    "candidate_index": index,
+                    "kind": "writeback_proposal",
+                    "status": "error",
+                    "error": error,
+                    "summary": summary,
+                    "source": source,
+                    "memory_type": memory_type,
+                }
+            )
+            self._refresh_writeback_count(trace)
             return
         status = dict(getattr(self.memory_service, "last_writeback_status", {}) or {})
+        record_id = status.get("record_id") or (result.get("record_id") if isinstance(result, Mapping) else None)
         trace["writeback"]["items"].append(
             _json_ready(
                 {
@@ -360,15 +673,28 @@ class MemoryOrchestrator:
                     "kind": "writeback_proposal",
                     "status": str(status.get("status") or "ok"),
                     "summary": summary,
-                    "source": status.get("source") or metadata.get("source") or "eibrain.audio_dialogue",
-                    "memory_type": status.get("memory_type") or metadata.get("memory_type") or "conversation",
+                    "source": status.get("source") or source,
+                    "memory_type": status.get("memory_type") or memory_type,
+                    "record_id": record_id,
                     "diagnostics": status,
                 }
             )
         )
+        self._refresh_writeback_count(trace)
+
+    @staticmethod
+    def _refresh_writeback_count(trace: dict[str, Any]) -> None:
         trace["writeback"]["count"] = len(
             [item for item in trace["writeback"]["items"] if isinstance(item, Mapping) and item.get("status") != "skipped"]
         )
+
+    @staticmethod
+    def _visual_summary(source: Mapping[str, Any]) -> str:
+        objects = _mapping_items(source.get("objects") or source.get("detections") or [])
+        labels = _unique_texts(item.get("label") for item in objects)
+        if labels:
+            return f"Observed {', '.join(labels)}"
+        return "Observed visual scene"
 
     def _priority(self, value: str | int | float | None) -> str | int | float:
         if value is None:

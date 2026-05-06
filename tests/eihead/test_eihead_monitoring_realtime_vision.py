@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from eihead.eye import RealtimeEyeService
 from eihead.monitoring import build_realtime_vision_payload
+from eihead.eye import RealtimeVisionSceneBridge
 
 
 def test_realtime_vision_payload_exposes_visual_overlay_for_box_diagnostics() -> None:
@@ -81,3 +83,192 @@ def test_realtime_vision_payload_exposes_visual_overlay_for_box_diagnostics() ->
         "center": {"x": 0.375, "y": 0.5},
         "error": {"x": -0.125, "y": 0.0},
     }
+
+
+def test_realtime_vision_payload_promotes_scene_event_track_and_target_summaries() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-scene-1",
+            "sceneSnapshot": {
+                "scene_id": "scene-legacy-1",
+                "summary": "person near doorway",
+            },
+            "sceneGraphSummary": "person near doorway with dog",
+            "events": [
+                {"event_type": "person_entered", "score": 0.88},
+                {"type": "dog_seen"},
+            ],
+            "tracks": [
+                {"track_id": "track-person-1", "label": "person", "score": 0.93},
+                {"id": "track-dog-1", "label": "dog", "confidence": 0.64},
+            ],
+            "detections": [
+                {
+                    "label": "person",
+                    "score": 0.93,
+                    "bbox": {"x_min": 0.2, "y_min": 0.25, "x_max": 0.5, "y_max": 0.85},
+                },
+                {
+                    "label": "dog",
+                    "score": 0.64,
+                    "bbox": {"x_min": 0.6, "y_min": 0.3, "x_max": 0.8, "y_max": 0.65},
+                },
+            ],
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["scene_id"] == "scene-legacy-1"
+    assert payload["scene_summary"] == "person near doorway with dog"
+    assert payload["event_count"] == 2
+    assert payload["event_summary"] == "person_entered 0.88, dog_seen"
+    assert payload["track_count"] == 2
+    assert payload["track_summary"] == "person 0.93, dog 0.64"
+    assert payload["score_labels"] == ["person 0.93", "dog 0.64"]
+    assert payload["target_center"] == {"x": 0.35, "y": 0.55}
+    assert payload["target_error"] == {"x": -0.15, "y": 0.05}
+    assert payload["target_score_label"] == "person 0.93"
+    assert payload["diagnostic"]["scene"]["scene_id"] == "scene-legacy-1"
+    assert payload["diagnostic"]["scene"]["summary"] == "person near doorway with dog"
+
+
+def test_realtime_vision_payload_accepts_normalized_scene_bridge_output() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "scene": {
+                "id": "scene-bridge-1",
+                "summary": "bridge summary",
+                "events": [{"name": "gaze_locked"}],
+                "tracks": [{"id": "bridge-track-1", "label": "face"}],
+            },
+            "target": {
+                "label": "face",
+                "score": 0.86,
+                "center": {"x": 0.52, "y": 0.48},
+                "error": {"x": 0.02, "y": -0.02},
+            },
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["scene_id"] == "scene-bridge-1"
+    assert payload["scene_summary"] == "bridge summary"
+    assert payload["events"] == {"count": 1, "items": [{"name": "gaze_locked"}], "summary": "gaze_locked"}
+    assert payload["tracks"] == {"count": 1, "items": [{"id": "bridge-track-1", "label": "face"}], "summary": "face"}
+    assert payload["target_center"] == {"x": 0.52, "y": 0.48}
+    assert payload["target_error"] == {"x": 0.02, "y": -0.02}
+    assert payload["target_score_label"] == "face 0.86"
+
+
+def test_realtime_vision_payload_accepts_direct_scene_bridge_result() -> None:
+    bridge_result = RealtimeVisionSceneBridge().update(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "ok",
+            "stream_ready": True,
+            "frame_id": "frame-bridge-direct",
+            "observed_at": "2026-05-06T01:00:00.000+08:00",
+            "detections": [
+                {
+                    "label": "person",
+                    "score": 0.92,
+                    "bbox": {"x_min": 0.2, "y_min": 0.2, "x_max": 0.4, "y_max": 0.7},
+                }
+            ],
+        }
+    )
+
+    payload = build_realtime_vision_payload(
+        bridge_result,
+        timestamp=1000.0,
+        source="scene_bridge",
+    )
+
+    assert payload["wired"] is True
+    assert payload["scene_id"] == bridge_result["latest_scene_id"]
+    assert payload["scene_summary"] == bridge_result["sceneGraphSummary"]
+    assert payload["event_count"] >= 1
+    assert "appeared" in payload["event_summary"]
+    assert payload["track_count"] == 1
+    assert payload["track_summary"] == "person 0.92"
+    assert payload["target_score_label"] == "person 0.92"
+
+
+def test_realtime_vision_payload_reads_scene_augmented_service_observation() -> None:
+    service = RealtimeEyeService(
+        adapter=_FakeAdapter(
+            initial_status={
+                "kind": "realtime_vision_observation",
+                "mode": "realtime_stream",
+                "status": "ok",
+                "stream_ready": True,
+                "last_frame_id": "service-frame",
+                "last_frame_captured_at_ts": 123.25,
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.93,
+                        "bbox": {"x_min": 0.1, "y_min": 0.2, "x_max": 0.3, "y_max": 0.4},
+                    }
+                ],
+            }
+        )
+    )
+
+    payload = build_realtime_vision_payload(service, timestamp=200.0, source="eye_realtime")
+
+    assert payload["wired"] is True
+    assert payload["scene_id"].startswith("scene_rt_")
+    assert "person" in payload["scene_summary"]
+    assert payload["event_count"] >= 1
+    assert payload["track_count"] == 1
+    assert payload["target_score_label"] == "person 0.93"
+
+
+def test_realtime_vision_payload_keeps_non_live_scene_bridge_outputs_unwired() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    for overrides in (
+        {"mode": "compat_static_frame", "status": "compat_static", "compatibility_mode": True},
+        {"status": "static"},
+    ):
+        bridge_result = bridge.update(
+            {
+                "kind": "realtime_vision_observation",
+                "mode": "realtime_stream",
+                "frame_id": "non-live-bridge",
+                "observed_at": "2026-05-06T01:00:00.000+08:00",
+                "detections": [
+                    {
+                        "label": "person",
+                        "score": 0.92,
+                        "bbox": {"x_min": 0.2, "y_min": 0.2, "x_max": 0.4, "y_max": 0.7},
+                    }
+                ],
+                **overrides,
+            }
+        )
+
+        payload = build_realtime_vision_payload(bridge_result, timestamp=1000.0, source="scene_bridge")
+
+        assert payload["wired"] is False
+        assert payload["status"] == "compat_static"
+        assert payload["event_count"] == 0
+        assert payload["track_count"] == 0
+
+
+class _FakeAdapter:
+    def __init__(self, *, initial_status: object) -> None:
+        self._status = initial_status
+
+    def status(self) -> object:
+        return self._status

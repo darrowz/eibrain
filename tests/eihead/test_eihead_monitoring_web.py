@@ -156,6 +156,28 @@ class PipelineStatusDictApp(FakeMonitorApp):
         }
 
 
+class SceneBridgeRealtimeApp(FakeMonitorApp):
+    def vision_realtime(self) -> dict[str, object]:
+        return {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-scene-web-1",
+            "scene": {
+                "id": "scene-web-1",
+                "summary": "person centered at doorway",
+                "events": [{"event_type": "person_entered", "score": 0.9}],
+                "tracks": [{"track_id": "track-person-1", "label": "person", "score": 0.94}],
+            },
+            "target": {
+                "label": "person",
+                "score": 0.94,
+                "center": {"x": 0.48, "y": 0.52},
+                "error": {"x": -0.02, "y": 0.02},
+            },
+        }
+
+
 ADAPTER_PIPELINE_STATUS = {
     "schema": "eihead.eye.realtime_status.v1",
     "mode": "realtime_stream",
@@ -1051,6 +1073,37 @@ def test_realtime_vision_api_and_html_render_wired_payload() -> None:
     assert "events" in body
     assert "/api/vision/realtime" in body
     assert "eye.realtime" in body
+
+
+def test_realtime_vision_api_and_html_render_scene_event_track_diagnostics() -> None:
+    app = SceneBridgeRealtimeApp()
+
+    with running_server(app, clock=lambda: 654.0) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/vision/realtime")
+        html_code, _, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["scene_id"] == "scene-web-1"
+    assert payload["scene_summary"] == "person centered at doorway"
+    assert payload["event_count"] == 1
+    assert payload["event_summary"] == "person_entered 0.90"
+    assert payload["track_count"] == 1
+    assert payload["track_summary"] == "person 0.94"
+    assert payload["target_center"] == {"x": 0.48, "y": 0.52}
+    assert payload["target_error"] == {"x": -0.02, "y": 0.02}
+    assert payload["target_score_label"] == "person 0.94"
+    assert payload["score_labels"] == ["person 0.94"]
+    assert html_code == 200
+    assert "Scene" in body
+    assert "scene-web-1" in body
+    assert "person centered at doorway" in body
+    assert "Event count" in body
+    assert "person_entered 0.90" in body
+    assert "Track count" in body
+    assert "person 0.94" in body
+    assert "Target center" in body
+    assert "Target error" in body
+    assert "Score labels" in body
 
 
 def test_voice_api_aliases_and_html_render_voice_diagnostics() -> None:
