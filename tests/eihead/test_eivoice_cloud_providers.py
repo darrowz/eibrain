@@ -84,6 +84,44 @@ def test_cloud_provider_config_loads_from_env_and_redacts_secret() -> None:
     assert "super-secret" not in str(diagnostics)
 
 
+def test_cloud_provider_config_falls_back_to_plain_provider_env_names() -> None:
+    from eihead.eivoice_runtime import CloudProviderConfig
+
+    config = CloudProviderConfig.from_env(
+        "minimax",
+        env={
+            "MINIMAX_API_KEY": "legacy-secret",
+            "MINIMAX_BASE_URL": "wss://legacy.example",
+            "MINIMAX_MODEL": "speech-legacy",
+            "MINIMAX_VOICE_ID": "voice-legacy",
+            "MINIMAX_TIMEOUT": "6.25",
+        },
+    )
+
+    assert config.api_key == "legacy-secret"
+    assert config.base_url == "wss://legacy.example"
+    assert config.model == "speech-legacy"
+    assert config.voice_id == "voice-legacy"
+    assert config.timeout_s == 6.25
+
+
+def test_cloud_provider_config_prefers_eivoice_env_over_plain_provider_env_names() -> None:
+    from eihead.eivoice_runtime import CloudProviderConfig
+
+    config = CloudProviderConfig.from_env(
+        "dashscope",
+        env={
+            "DASHSCOPE_API_KEY": "legacy-secret",
+            "DASHSCOPE_MODEL": "legacy-model",
+            "EIVOICE_DASHSCOPE_API_KEY": "new-secret",
+            "EIVOICE_DASHSCOPE_MODEL": "new-model",
+        },
+    )
+
+    assert config.api_key == "new-secret"
+    assert config.model == "new-model"
+
+
 def test_dashscope_asr_provider_encodes_audio_frame_and_maps_partial_final() -> None:
     from eihead.eivoice_runtime import CloudProviderConfig, DashScopeStreamingAsrProvider
 

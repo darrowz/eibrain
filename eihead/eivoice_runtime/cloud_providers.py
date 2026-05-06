@@ -64,15 +64,20 @@ class CloudProviderConfig:
     ) -> "CloudProviderConfig":
         source = os.environ if env is None else env
         key_prefix = f"{prefix}_{provider}".upper().replace("-", "_")
+        fallback_prefix = str(provider).upper().replace("-", "_")
         timeout_value = timeout_s
         if timeout_value is None:
-            timeout_value = _safe_float(source.get(f"{key_prefix}_TIMEOUT"), default=30.0)
+            timeout_value = _safe_float(_first_env(source, f"{key_prefix}_TIMEOUT", f"{fallback_prefix}_TIMEOUT"), default=30.0)
         return cls(
             provider=str(provider),
-            api_key=str(api_key if api_key is not None else source.get(f"{key_prefix}_API_KEY", "")),
-            base_url=str(base_url if base_url is not None else source.get(f"{key_prefix}_BASE_URL", "")),
-            model=str(model if model is not None else source.get(f"{key_prefix}_MODEL", "")),
-            voice_id=str(voice_id if voice_id is not None else source.get(f"{key_prefix}_VOICE_ID", "")),
+            api_key=str(api_key if api_key is not None else _first_env(source, f"{key_prefix}_API_KEY", f"{fallback_prefix}_API_KEY")),
+            base_url=str(
+                base_url if base_url is not None else _first_env(source, f"{key_prefix}_BASE_URL", f"{fallback_prefix}_BASE_URL")
+            ),
+            model=str(model if model is not None else _first_env(source, f"{key_prefix}_MODEL", f"{fallback_prefix}_MODEL")),
+            voice_id=str(
+                voice_id if voice_id is not None else _first_env(source, f"{key_prefix}_VOICE_ID", f"{fallback_prefix}_VOICE_ID")
+            ),
             timeout_s=float(timeout_value),
         )
 
@@ -645,6 +650,14 @@ def _first_present(mapping: Mapping[str, object], *keys: str, default: object | 
         if key in mapping:
             return mapping[key]
     return default
+
+
+def _first_env(mapping: Mapping[str, str], *keys: str) -> str:
+    for key in keys:
+        value = mapping.get(key)
+        if value:
+            return value
+    return ""
 
 
 def _redact_secret(value: str) -> str:
