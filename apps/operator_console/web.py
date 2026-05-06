@@ -857,6 +857,9 @@ class MonitoringWebServer:
       const llm = dialogue.last_llm_status || {{}};
       const cognitive = llm.cognitive_latency_ms || {{}};
       const chain = dialogue.voice_chain_readiness || {{}};
+      const realtimeAudio = dialogue.realtime_audio || {{}};
+      const wakeDetector = realtimeAudio.wake_detector || {{}};
+      const wakeAudioStats = wakeDetector.last_audio_stats || {{}};
       const chainBottleneck = chain.bottleneck || {{}};
       const llmElapsed = typeof llm.elapsed_ms === 'number' ? `${{llm.elapsed_ms.toFixed(0)}} ms` : '—';
       const memoryElapsed = typeof cognitive.memory_retrieve === 'number' ? `${{cognitive.memory_retrieve.toFixed(0)}} ms` : '—';
@@ -874,6 +877,8 @@ class MonitoringWebServer:
         ['Phase age', fmtSeconds(dialogue.current_phase_elapsed_s)],
         ['Status', dialogue.last_status || 'idle'],
         ['Turns', String(dialogue.turn_count ?? 0)],
+        ['Realtime wake', realtimeAudio.running ? 'running' : (realtimeAudio.enabled ? 'enabled' : 'off')],
+        ['Wake buffer', realtimeAudio.buffer_ms !== undefined ? `${{realtimeAudio.buffer_ms}} ms` : '—'],
         ['Voice chain', chain.summary || 'waiting for live benchmark'],
         ['Chain turns', String(chain.turnCount ?? 0)],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
@@ -883,6 +888,7 @@ class MonitoringWebServer:
       const error = dialogue.last_error || '';
       const items = [
         `<div class="subfunction-item"><div class="sub-top"><strong>Latency breakdown</strong><span class="health-tag ${{latency.total ? 'healthy' : 'degraded'}}">${{fmtSeconds(latency.total)}}</span></div><div class="metric-label">listen+ASR ${{fmtSeconds(latency.listen_asr)}} · think ${{fmtSeconds(latency.think)}} · speak ${{fmtSeconds(latency.speak)}} · total ${{fmtSeconds(latency.total)}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>Realtime wake audio</strong><span class="health-tag ${{realtimeAudio.running ? 'healthy' : (realtimeAudio.enabled ? 'waiting' : 'degraded')}}">${{realtimeAudio.running ? 'running' : (realtimeAudio.enabled ? 'enabled' : 'off')}}</span></div><div class="metric-label">buffer=${{realtimeAudio.buffer_ms ?? '—'}}ms · poll=${{wakeDetector.poll_count ?? '—'}} · emitted=${{wakeDetector.emitted_count ?? '—'}} · rms=${{wakeAudioStats.rms_level ?? '—'}} · ${{wakeDetector.last_text || realtimeAudio.last_error || 'waiting for wake audio'}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Voice chain readiness</strong><span class="health-tag ${{chain.honjiaReady ? 'healthy' : 'degraded'}}">${{chain.summary || 'waiting'}}</span></div><div class="metric-label">source=${{chain.source || 'unknown'}} · live=${{chain.live === true}} · bottleneck=${{chainBottleneckText}} · ${{chain.readinessMessage || 'waiting for live benchmark'}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{dialogue.last_transcript ? 'healthy' : 'degraded'}}">${{dialogue.phase || 'idle'}}</span></div><div class="metric-label">${{transcript}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>LLM</strong><span class="health-tag ${{healthClass(llm.status === 'ok' ? 'healthy' : (llm.status === 'error' ? 'unavailable' : 'degraded'))}}">${{llm.status || 'idle'}}</span></div><div class="metric-label">${{llm.provider || 'unknown'}} · llm=${{llmElapsed}} · memory=${{memoryElapsed}} · writeback=${{writebackElapsed}} · ${{llm.error || llm.text_preview || 'waiting for first reply'}}</div></div>`,

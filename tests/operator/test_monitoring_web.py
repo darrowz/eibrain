@@ -54,6 +54,8 @@ def test_monitoring_web_serves_status_and_html() -> None:
     assert "['Session', sessionState]" in html
     assert "['Wake', dialogue.wake_word || '-']" in html
     assert "['Sleep', dialogue.sleep_word || '-']" in html
+    assert "['Realtime wake', realtimeAudio.running ? 'running'" in html
+    assert "Realtime wake audio" in html
     assert "neck_control_diagnostics" in html
     assert "['Desired angle', desiredAngle]" in html
     assert "['Intent count', String(neck.intent_count ?? 0)]" in html

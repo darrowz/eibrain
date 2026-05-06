@@ -86,6 +86,19 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
                 "last_stage_latency_ms": {"listen_asr": 4000.0, "think": 2000.0, "speak": 3000.0, "total": 9000.0},
                 "last_bottleneck_stage": "listen_asr",
                 "last_bottleneck_ms": 4000.0,
+                "realtime_audio": {
+                    "enabled": True,
+                    "running": True,
+                    "buffer_ms": 2200,
+                    "buffer_fill_ratio": 0.37,
+                    "wake_detector": {
+                        "running": True,
+                        "poll_count": 12,
+                        "emitted_count": 1,
+                        "last_text": "你好鸿途",
+                        "last_audio_stats": {"rms_level": 0.018},
+                    },
+                },
             },
         },
         cognitive_snapshot={
@@ -112,6 +125,10 @@ def test_operator_console_exposes_dialogue_loop_diagnostics() -> None:
     assert dialogue["last_bottleneck_stage"] == "listen_asr"
     assert dialogue["last_bottleneck_ms"] == 4000.0
     assert dialogue["last_llm_status"]["status"] == "ok"
+    assert dialogue["realtime_audio"]["running"] is True
+    assert dialogue["realtime_audio"]["buffer_ms"] == 2200
+    assert dialogue["realtime_audio"]["wake_detector"]["poll_count"] == 12
+    assert dialogue["realtime_audio"]["wake_detector"]["last_audio_stats"]["rms_level"] == 0.018
     assert any(metric["id"] == "voice_dialogue.listen_asr" for metric in report["latency_metrics"])
 
 

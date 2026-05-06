@@ -955,6 +955,7 @@ class OperatorConsoleApp:
             "learning_decision": cognitive_snapshot.get("learning_decision", ""),
             "last_review": cognitive_snapshot.get("last_review", {}),
             "last_llm_status": cognitive_snapshot.get("last_llm_status", {}),
+            "realtime_audio": loop.get("realtime_audio", {}) if isinstance(loop.get("realtime_audio"), dict) else {},
             "voice_chain_readiness": voice_chain_readiness,
         }
 
