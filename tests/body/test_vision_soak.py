@@ -1,4 +1,4 @@
-from apps.body_runtime.vision_soak import summarize_vision_soak
+from apps.body_runtime.vision_soak import run_synthetic_vision_soak, summarize_vision_soak
 
 
 def test_vision_soak_marks_healthy_stream_as_passing():
@@ -107,3 +107,79 @@ def test_vision_soak_handles_empty_samples():
     assert summary["pass"] is False
     assert summary["sample_count"] == 0
     assert summary["bottleneck_reason"] == "no_samples"
+
+
+def test_vision_soak_reports_tracking_diagnostics_from_trace_samples():
+    samples = [
+        {
+            "fps": 10.0,
+            "target_fps": 10.0,
+            "frame_age_ms": 80.0,
+            "service_state": "ok",
+            "event_count": 1,
+            "dropout": False,
+            "stable_target_track_id": "person-001",
+            "tracks": [{"synthetic_subject_id": "primary", "track_id": "person-001"}],
+        },
+        {
+            "fps": 10.0,
+            "target_fps": 10.0,
+            "frame_age_ms": 90.0,
+            "service_state": "ok",
+            "event_count": 0,
+            "dropout": True,
+            "stable_target_track_id": "person-001",
+            "tracks": [],
+        },
+        {
+            "fps": 10.0,
+            "target_fps": 10.0,
+            "frame_age_ms": 95.0,
+            "service_state": "ok",
+            "event_count": 0,
+            "dropout": False,
+            "stable_target_track_id": "person-001",
+            "tracks": [{"synthetic_subject_id": "primary", "track_id": "person-001"}],
+        },
+        {
+            "fps": 10.0,
+            "target_fps": 10.0,
+            "frame_age_ms": 100.0,
+            "service_state": "ok",
+            "event_count": 1,
+            "dropout": False,
+            "stable_target_track_id": "person-002",
+            "tracks": [{"synthetic_subject_id": "primary", "track_id": "person-002"}],
+        },
+    ]
+
+    summary = summarize_vision_soak(samples)
+
+    assert summary["track_id_switch_count"] == 1
+    assert summary["target_stability_ratio"] == 2 / 3
+    assert summary["event_rate_hz"] == 5.0
+    assert summary["frame_drop_tolerance"] == 1
+    assert summary["p95_frame_age_ms"] == 100.0
+    assert summary["metadata"]["trace"]["metrics"]["track_id_switch_count"] == 1
+    assert summary["metadata"]["web"]["kind"] == "vision_soak_summary"
+
+
+def test_synthetic_vision_soak_covers_long_tracking_stressors():
+    summary = run_synthetic_vision_soak(frame_count=36, target_fps=10.0)
+
+    assert summary["pass"] is True
+    assert summary["sample_count"] == 36
+    assert summary["track_id_switch_count"] >= 1
+    assert summary["target_stability_ratio"] >= 0.75
+    assert summary["event_rate_hz"] > 0.0
+    assert summary["frame_drop_tolerance"] >= 1
+    assert summary["p95_frame_age_ms"] > 0.0
+    assert summary["scenario_coverage"] == {
+        "jitter": True,
+        "dropout": True,
+        "track_id_switch": True,
+        "target_swap": True,
+        "short_loss_recovery": True,
+    }
+    assert summary["metadata"]["hailo"]["backend"] == "synthetic_hailo"
+    assert summary["metadata"]["trace"]["name"] == "vision_soak.synthetic_long_tracking"

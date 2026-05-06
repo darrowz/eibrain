@@ -134,6 +134,32 @@ def test_scene_bridge_keeps_snapshot_but_suppresses_unchanged_frame_events() -> 
     assert second["diagnostics"]["track_count"] == 1
 
 
+def test_scene_bridge_exposes_hailo_tracking_diagnostics_for_trace_consumers() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    result = bridge.update(
+        _observation(
+            frame_id="frame-hailo-001",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[_det("person", (0.40, 0.20, 0.60, 0.80), 0.91)],
+            fps=15.0,
+            frame_age_ms=88.0,
+            hailo_metadata={"device": "hailo8l", "model": "yolov8n"},
+            soak_summary={"track_id_switch_count": 0, "target_stability_ratio": 1.0},
+        )
+    )
+
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["p95_frame_age_ms"] == 88.0
+    assert diagnostics["track_id_switch_count"] == 0
+    assert diagnostics["target_stability_ratio"] == 1.0
+    assert diagnostics["hailo_metadata"] == {"device": "hailo8l", "model": "yolov8n"}
+    assert diagnostics["trace"]["kind"] == "vision_tracking_diagnostics"
+    assert result["scene_snapshot"]["metadata"]["hailo"]["device"] == "hailo8l"
+    assert result["scene_snapshot"]["metadata"]["soak_summary"]["target_stability_ratio"] == 1.0
+
+
 def test_scene_bridge_accepts_latest_status_dicts_from_realtime_eye_service() -> None:
     bridge = RealtimeVisionSceneBridge()
 

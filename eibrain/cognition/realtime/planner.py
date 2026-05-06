@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from .persona import resolve_voice_style_policy
 from .turn import TurnBlackboard
 
 
@@ -210,15 +211,19 @@ class SpeechActionPlanner:
         emotion: str,
         fallback: dict[str, str] | None,
     ) -> list[dict[str, Any]]:
+        voice_style = self._voice_style(turn, emotion=emotion)
         if fallback:
             return [
-                {
-                    "text": fallback["text"],
-                    "emotion": emotion,
-                    "startOffsetMs": 0,
-                    "stable": True,
-                    "source": fallback["source"],
-                }
+                self._with_voice_style(
+                    {
+                        "text": fallback["text"],
+                        "emotion": emotion,
+                        "startOffsetMs": 0,
+                        "stable": True,
+                        "source": fallback["source"],
+                    },
+                    voice_style,
+                )
             ]
 
         text = (speech_text or "").strip()
@@ -227,11 +232,37 @@ class SpeechActionPlanner:
         if not text:
             return []
         return [
-            {
-                "text": text,
-                "emotion": emotion,
-                "startOffsetMs": 0,
-                "stable": True,
-                "source": "slow_reasoner" if speech_text else "safe_ack",
-            }
+            self._with_voice_style(
+                {
+                    "text": text,
+                    "emotion": emotion,
+                    "startOffsetMs": 0,
+                    "stable": True,
+                    "source": "slow_reasoner" if speech_text else "safe_ack",
+                },
+                voice_style,
+            )
         ]
+
+    def _voice_style(self, turn: TurnBlackboard, *, emotion: str) -> dict[str, Any] | None:
+        if not turn.persona_state and not turn.emotion_state:
+            return None
+        return resolve_voice_style_policy(
+            turn.persona_state,
+            turn.emotion_state,
+            fallback_emotion=emotion,
+        )
+
+    def _with_voice_style(
+        self,
+        segment: dict[str, Any],
+        voice_style: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not voice_style:
+            return segment
+        segment["emotion"] = str(voice_style.get("emotion") or segment.get("emotion") or "warm")
+        segment["voice_style"] = str(voice_style.get("voice_style") or "warm")
+        segment["voice_code"] = str(voice_style.get("voice_code") or "")
+        segment["speed"] = float(voice_style.get("speed") or 1.0)
+        segment["volume"] = float(voice_style.get("volume") or 0.8)
+        return segment

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 from .events import to_json_ready
 
@@ -133,6 +133,123 @@ def _limit_text(text: str, *, max_chars: int) -> str:
     return cleaned[: max_chars - 3].rstrip() + "..."
 
 
+_VOICE_STYLE_PRESETS: dict[str, dict[str, Any]] = {
+    "warm": {
+        "voice_token": "warm",
+        "emotion": "warm",
+        "speed": 1.0,
+        "volume": 0.76,
+    },
+    "tired": {
+        "voice_token": "soft",
+        "emotion": "tired",
+        "speed": 0.88,
+        "volume": 0.64,
+    },
+    "noisy": {
+        "voice_token": "clear",
+        "emotion": "focused",
+        "speed": 0.96,
+        "volume": 0.92,
+    },
+    "night": {
+        "voice_token": "night",
+        "emotion": "soft",
+        "speed": 0.86,
+        "volume": 0.5,
+    },
+}
+
+
+def resolve_voice_style_policy(
+    persona_state: Mapping[str, Any] | None = None,
+    emotion_state: Mapping[str, Any] | None = None,
+    *,
+    fallback_voice_code: str = "gentle_companion_zh_cn",
+    fallback_emotion: str = "warm",
+) -> dict[str, Any]:
+    """Map realtime emotion/environment hints to a concrete TTS voice style."""
+
+    persona_state = persona_state or {}
+    state = _emotion_state_from_context(emotion_state)
+    environment = _mapping(state.get("environment"))
+    voice_code = str(persona_state.get("voice_code") or fallback_voice_code or "gentle_companion_zh_cn")
+    style = _voice_style_name(state, environment)
+    preset = dict(_VOICE_STYLE_PRESETS[style])
+    emotion = str(preset.get("emotion") or fallback_emotion or "warm")
+    if style == "warm" and fallback_emotion and fallback_emotion != "warm":
+        emotion = str(fallback_emotion)
+    return to_json_ready(
+        {
+            "voice_style": style,
+            "voice_code": _voice_code_for_style(voice_code, style),
+            "emotion": emotion,
+            "speed": float(preset["speed"]),
+            "volume": float(preset["volume"]),
+            "base_voice_code": voice_code,
+            "policy": "persona_emotion_voice_policy.v1",
+        }
+    )
+
+
+def _emotion_state_from_context(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    context = _mapping(value)
+    nested = _mapping(context.get("emotion_state"))
+    return nested if nested else context
+
+
+def _voice_style_name(state: Mapping[str, Any], environment: Mapping[str, Any]) -> str:
+    mood = _lower_text(state.get("mood"), state.get("state"))
+    energy = _lower_text(state.get("energy"))
+    noise = _lower_text(
+        environment.get("noise"),
+        environment.get("noise_level"),
+        environment.get("noiseLevel"),
+    )
+    time_of_day = _lower_text(
+        environment.get("time"),
+        environment.get("time_of_day"),
+        environment.get("timeOfDay"),
+    )
+    if time_of_day == "night":
+        return "night"
+    if noise in {"high", "noisy", "loud"}:
+        return "noisy"
+    if mood in {"tired", "fatigued", "sleepy"} or energy == "low":
+        return "tired"
+    return "warm"
+
+
+def _voice_code_for_style(base_voice_code: str, style: str) -> str:
+    token = str(_VOICE_STYLE_PRESETS[style]["voice_token"])
+    if style == "warm":
+        return base_voice_code
+    parts = base_voice_code.split("_")
+    for index, part in enumerate(parts):
+        if part in {"warm", "soft", "clear", "night", "gentle", "calm"}:
+            parts[index] = token
+            return "_".join(parts)
+    if base_voice_code.startswith("joyinside_") and base_voice_code.endswith("_zh_cn"):
+        return f"joyinside_{token}_zh_cn"
+    if base_voice_code.endswith("_zh_cn"):
+        return f"{base_voice_code[:-6]}_{token}_zh_cn"
+    return f"{base_voice_code}_{token}"
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _lower_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip().lower()
+        if text:
+            return text
+    return ""
+
+
 @dataclass
 class PersonaRuntime:
     """Runtime profile used by fast and slow realtime lanes."""
@@ -187,6 +304,21 @@ class PersonaRuntime:
     def snapshot(self) -> dict[str, Any]:
         return self.to_dict()
 
+    def voice_style_for_emotion(
+        self,
+        emotion_state: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return resolve_voice_style_policy(
+            {
+                "voice_code": self.voice_code,
+                "emotion_policy": self.emotion_policy,
+                "speaking_style": self.speaking_style,
+            },
+            emotion_state,
+            fallback_voice_code=self.voice_code,
+            fallback_emotion=str(self.emotion_policy.get("default_emotion") or "warm"),
+        )
+
     def shape_reply(
         self,
         text: str,
@@ -199,11 +331,16 @@ class PersonaRuntime:
         mood = str(emotion_context.get("mood") or emotion_context.get("state") or "").lower()
         if mood in {"sad", "anxious", "stressed", "lonely", "tired"}:
             tone = "gentle"
+        voice_style = self.voice_style_for_emotion(emotion_context)
         return to_json_ready(
             {
                 "text": _limit_text(text, max_chars=max_chars),
                 "tone": tone,
-                "voice_code": self.voice_code,
+                "voice_code": voice_style["voice_code"],
+                "voice_style": voice_style["voice_style"],
+                "emotion": voice_style["emotion"],
+                "speed": voice_style["speed"],
+                "volume": voice_style["volume"],
                 "action_style": deepcopy(self.action_style),
                 "response_policy": deepcopy(self.response_policy),
                 "proactive_policy": deepcopy(self.proactive_policy),
@@ -211,4 +348,4 @@ class PersonaRuntime:
         )
 
 
-__all__ = ["PersonaRuntime"]
+__all__ = ["PersonaRuntime", "resolve_voice_style_policy"]

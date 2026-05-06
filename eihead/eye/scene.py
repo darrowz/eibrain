@@ -57,6 +57,7 @@ class RealtimeVisionSceneBridge:
             detections=_detections(observation),
         )
         scene_snapshot = _scene_content(snapshot)
+        _attach_observation_metadata(scene_snapshot, observation)
         event_contents = _event_contents(snapshot)
         self.latest_scene_id = str(scene_snapshot.get("sceneId", ""))
         object_count = len(scene_snapshot.get("objects", []))
@@ -263,15 +264,57 @@ def _diagnostics(
     frame_age = _number_or_none(
         observation.get("last_frame_age", observation.get("last_frame_age_s", observation.get("frame_age")))
     )
+    frame_age_ms = _number_or_none(observation.get("frame_age_ms"))
+    if frame_age_ms is None and frame_age is not None:
+        frame_age_ms = frame_age * 1000.0
+    soak_summary = observation.get("soak_summary")
+    soak_summary = dict(soak_summary) if isinstance(soak_summary, Mapping) else {}
+    hailo_metadata = observation.get("hailo_metadata")
+    hailo_metadata = dict(hailo_metadata) if isinstance(hailo_metadata, Mapping) else {}
+    track_id_switch_count = int(_number_or_zero(soak_summary.get("track_id_switch_count", 0)))
+    target_stability_ratio = _number_or_none(soak_summary.get("target_stability_ratio"))
+    event_rate_hz = _number_or_none(soak_summary.get("event_rate_hz"))
+    frame_drop_tolerance = int(_number_or_zero(soak_summary.get("frame_drop_tolerance", 0)))
     return {
         "fps": _number_or_zero(observation.get("fps")),
         "frame_age": frame_age,
         "frame_age_s": frame_age,
+        "frame_age_ms": frame_age_ms,
+        "p95_frame_age_ms": _number_or_none(soak_summary.get("p95_frame_age_ms")) or frame_age_ms,
         "track_count": int(track_count),
         "stable_target": dict(stable_target) if isinstance(stable_target, Mapping) else None,
         "event_count": int(event_count),
         "last_event": dict(last_event) if isinstance(last_event, Mapping) else None,
+        "track_id_switch_count": track_id_switch_count,
+        "target_stability_ratio": target_stability_ratio,
+        "event_rate_hz": event_rate_hz,
+        "frame_drop_tolerance": frame_drop_tolerance,
+        "hailo_metadata": hailo_metadata,
+        "soak_summary": soak_summary,
+        "trace": {
+            "kind": "vision_tracking_diagnostics",
+            "metrics": {
+                "track_id_switch_count": track_id_switch_count,
+                "target_stability_ratio": target_stability_ratio,
+                "event_rate_hz": event_rate_hz,
+                "frame_drop_tolerance": frame_drop_tolerance,
+                "p95_frame_age_ms": _number_or_none(soak_summary.get("p95_frame_age_ms")) or frame_age_ms,
+            },
+        },
     }
+
+
+def _attach_observation_metadata(scene_snapshot: dict[str, Any], observation: Mapping[str, Any]) -> None:
+    metadata = scene_snapshot.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+        scene_snapshot["metadata"] = metadata
+    hailo_metadata = observation.get("hailo_metadata")
+    if isinstance(hailo_metadata, Mapping):
+        metadata["hailo"] = dict(hailo_metadata)
+    soak_summary = observation.get("soak_summary")
+    if isinstance(soak_summary, Mapping):
+        metadata["soak_summary"] = dict(soak_summary)
 
 
 def _number_or_zero(value: Any) -> float:

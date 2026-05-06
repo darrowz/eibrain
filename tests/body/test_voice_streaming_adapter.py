@@ -80,6 +80,57 @@ def test_adapter_accepts_event_envelope_and_legacy_dialogue_asr_names() -> None:
     assert session.transcript_final == "legacy final"
 
 
+def test_adapter_exposes_asr_partial_and_final_diagnostics_in_live_trace() -> None:
+    from apps.body_runtime.voice_streaming_adapter import VoiceStreamingAdapter
+
+    session = _session()
+    adapter = VoiceStreamingAdapter(session)
+
+    partial_trace = adapter.apply(
+        _event(
+            "ei.voice.asr.partial",
+            {
+                "text": "hello",
+                "latencyMs": 37,
+                "frameIndex": 2,
+                "framesReceived": 2,
+                "framesProcessed": 1,
+                "framesDropped": 1,
+                "providerState": "streaming",
+            },
+        )
+    )
+    final_trace = adapter.apply(
+        _event(
+            "ei.voice.asr.final",
+            {
+                "text": "hello final",
+                "latency_ms": 54,
+                "frame_index": 3,
+                "frames_received": 3,
+                "frames_processed": 2,
+                "frames_dropped": 1,
+                "provider_state": "finalized",
+            },
+        )
+    )
+
+    assert partial_trace["live_trace"]["asr"]["partial_count"] == 1
+    assert final_trace["live_trace"]["asr"]["final_count"] == 1
+    assert final_trace["live_trace"]["asr"]["last_event"] == {
+        "name": "ei.voice.asr.final",
+        "session_id": "session-1",
+        "round_id": "round-1",
+        "latency_ms": 54,
+        "frame_index": 3,
+        "frames_received": 3,
+        "frames_processed": 2,
+        "frames_dropped": 1,
+        "provider_state": "finalized",
+    }
+    assert adapter.snapshot()["live_trace"]["asr"]["last_event"]["provider_state"] == "finalized"
+
+
 def test_adapter_maps_playback_started_and_interrupt_requested_aliases() -> None:
     from apps.body_runtime.voice_streaming_adapter import VoiceStreamingAdapter
 

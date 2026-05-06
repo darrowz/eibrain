@@ -7,98 +7,10 @@ from typing import Any, Protocol
 
 from eibrain.protocol.joyinside_voice import audio_chunk
 
+from .asr import StreamingAsrEvent, StreamingAsrSession
 from .core import AudioFrame, EiVoiceRuntimeCore, OpusCodec
 from .transport import VoiceStreamTransport
-
-
-@dataclass(frozen=True)
-class AcousticFrontendConfig:
-    """Configurable placeholder for the acoustic front-end contract."""
-
-    aec_enabled: bool = False
-    aec_available: bool = False
-    ns_enabled: bool = False
-    ns_available: bool = False
-    vad_enabled: bool = False
-    vad_available: bool = False
-    loopback_enabled: bool = False
-    loopback_available: bool = False
-    capture_enabled: bool = True
-    capture_available: bool = True
-    mode: str = "noop"
-    warnings: tuple[str, ...] = ()
-
-    def diagnostics(
-        self,
-        *,
-        processed_frames: int = 0,
-        dropped_frames: int = 0,
-        last_frame_duration_ms: int | None = None,
-    ) -> dict[str, Any]:
-        warnings = list(self.warnings)
-        warnings.extend(_frontend_component_warnings(self))
-        return {
-            "mode": self.mode,
-            "capture": _frontend_component(
-                enabled=self.capture_enabled,
-                available=self.capture_available,
-            ),
-            "aec": _frontend_component(
-                enabled=self.aec_enabled,
-                available=self.aec_available,
-            ),
-            "ns": _frontend_component(
-                enabled=self.ns_enabled,
-                available=self.ns_available,
-            ),
-            "vad": _frontend_component(
-                enabled=self.vad_enabled,
-                available=self.vad_available,
-            ),
-            "loopback": _frontend_component(
-                enabled=self.loopback_enabled,
-                available=self.loopback_available,
-            ),
-            "healthy": self._healthy,
-            "processed_frames": processed_frames,
-            "dropped_frames": dropped_frames,
-            "last_frame_duration_ms": last_frame_duration_ms,
-            "warnings": list(dict.fromkeys(warnings)),
-        }
-
-    @property
-    def _healthy(self) -> bool:
-        return all(
-            (
-                self.capture_available if self.capture_enabled else True,
-                self.aec_available if self.aec_enabled else True,
-                self.ns_available if self.ns_enabled else True,
-                self.vad_available if self.vad_enabled else True,
-                self.loopback_available if self.loopback_enabled else True,
-            )
-        )
-
-
-class NoOpAcousticFrontend:
-    """Pass-through acoustic front-end with explicit AEC/NS/VAD diagnostics."""
-
-    def __init__(self, config: AcousticFrontendConfig | None = None) -> None:
-        self.config = config or AcousticFrontendConfig()
-        self.processed_frames = 0
-        self.dropped_frames = 0
-        self.last_frame_duration_ms: int | None = None
-
-    def process_capture(self, frame: AudioFrame) -> AudioFrame | None:
-        self.processed_frames += 1
-        self.last_frame_duration_ms = frame.duration_ms
-        return frame
-
-    def readiness(self) -> dict[str, Any]:
-        return self.config.diagnostics(
-            processed_frames=self.processed_frames,
-            dropped_frames=self.dropped_frames,
-            last_frame_duration_ms=self.last_frame_duration_ms,
-        )
+from .aec import AcousticFrontendConfig, NoOpAcousticFrontend, ProcessedCaptureFrame
 
 
 class AudioCaptureSource(Protocol):
@@ -107,7 +19,12 @@ class AudioCaptureSource(Protocol):
 
 
 class AcousticFrontend(Protocol):
-    def process_capture(self, frame: AudioFrame) -> AudioFrame | None:
+    def process_capture(
+        self,
+        frame: AudioFrame,
+        *,
+        playback_reference: AudioFrame | None = None,
+    ) -> AudioFrame | ProcessedCaptureFrame | None:
         ...
 
     def readiness(self) -> dict[str, Any]:
@@ -201,6 +118,7 @@ class EiVoiceRuntimeRunner:
     codec: OpusCodec | None = None
     uid: str | None = None
     mid: str | None = None
+    asr_session: StreamingAsrSession | None = None
     core: EiVoiceRuntimeCore = field(init=False)
     worker_metrics: RuntimeWorkerMetrics = field(default_factory=RuntimeWorkerMetrics, init=False)
 
@@ -228,14 +146,17 @@ class EiVoiceRuntimeRunner:
             self.worker_metrics.capture_empty_polls += 1
             return False
         processed = self.audio_frontend.process_capture(frame)
-        if processed is None:
+        processed_frame = _capture_result_frame(processed)
+        if processed_frame is None:
             return False
-        pushed = self.core.opus_encode_queue.push(processed, block=False)
+        if self.asr_session is not None:
+            self.asr_session.accept_frame(processed_frame)
+        pushed = self.core.opus_encode_queue.push(processed_frame, block=False)
         if not pushed:
             self.worker_metrics.capture_queue_full += 1
             return False
         self.worker_metrics.capture_frames += 1
-        self.worker_metrics.last_capture_frame_duration_ms = processed.duration_ms
+        self.worker_metrics.last_capture_frame_duration_ms = processed_frame.duration_ms
         return True
 
     def step_encode(self) -> bool:
@@ -328,12 +249,19 @@ class EiVoiceRuntimeRunner:
         self.worker_metrics.transport_inbound_events_cleared += transport_cleared
         return playback_cleared + decode_cleared + transport_cleared
 
+    def drain_asr_events(self) -> list[StreamingAsrEvent]:
+        if self.asr_session is None:
+            return []
+        return self.asr_session.drain_events()
+
     def status(self) -> dict[str, Any]:
         status = dict(self.core.status())
         audio_frontend = self._audio_frontend_readiness()
         transport_status: dict[str, Any] = {}
+        asr_diagnostics = self._asr_diagnostics()
         status["worker_metrics"] = self.worker_metrics.to_dict()
         status["audio_frontend"] = audio_frontend
+        status["asr"] = asr_diagnostics
         if self.transport is not None:
             transport_status = self.transport.status()
             status["transport"] = transport_status
@@ -341,6 +269,7 @@ class EiVoiceRuntimeRunner:
             queues=status["queues"],
             audio_frontend=audio_frontend,
             transport_status=transport_status,
+            asr_diagnostics=asr_diagnostics,
         )
         return status
 
@@ -350,6 +279,7 @@ class EiVoiceRuntimeRunner:
         queues: Mapping[str, Any],
         audio_frontend: Mapping[str, Any],
         transport_status: Mapping[str, Any],
+        asr_diagnostics: Mapping[str, Any],
     ) -> dict[str, Any]:
         ws_send_queue = _mapping(queues.get("ws_send_queue"))
         opus_decode_queue = _mapping(queues.get("opus_decode_queue"))
@@ -369,6 +299,7 @@ class EiVoiceRuntimeRunner:
             },
             "queues": {str(name): dict(_mapping(queue)) for name, queue in queues.items()},
             "audio_frontend": dict(audio_frontend),
+            "asr": dict(asr_diagnostics),
             "upstream": {
                 "state": transport_state,
                 "queue": "ws_send_queue",
@@ -398,6 +329,22 @@ class EiVoiceRuntimeRunner:
             return dict(readiness)
         return {}
 
+    def _asr_diagnostics(self) -> dict[str, Any]:
+        if self.asr_session is None:
+            return {
+                "enabled": False,
+                "provider": None,
+                "provider_state": "not_configured",
+            }
+        diagnostics = self.asr_session.diagnostics()
+        if isinstance(diagnostics, dict):
+            return dict(diagnostics)
+        return {
+            "enabled": True,
+            "provider": None,
+            "provider_state": "unknown",
+        }
+
     def _read_receive_frame(self) -> AudioFrame | None:
         if self.ws_receive_source is not None:
             return self.ws_receive_source.read_frame()
@@ -407,6 +354,15 @@ class EiVoiceRuntimeRunner:
         if not isinstance(event, Mapping):
             return None
         return _audio_frame_from_event(event)
+
+
+def _capture_result_frame(processed: AudioFrame | ProcessedCaptureFrame | Any | None) -> AudioFrame | None:
+    if processed is None:
+        return None
+    if isinstance(processed, AudioFrame):
+        return processed
+    frame = getattr(processed, "frame", None)
+    return frame if isinstance(frame, AudioFrame) else None
 
 
 def _audio_frame_from_event(event: Mapping[str, Any]) -> AudioFrame | None:

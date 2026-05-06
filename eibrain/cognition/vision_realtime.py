@@ -39,15 +39,19 @@ class RealtimeVisionSimulator:
         approach_area_delta: float = 0.04,
         max_missing_frames: int = 1,
         attention_switch_margin: float = 0.20,
+        attention_switch_cooldown_frames: int = 2,
     ) -> None:
         self.match_distance = float(match_distance)
         self.move_threshold = float(move_threshold)
         self.approach_area_delta = max(0.0, float(approach_area_delta))
         self.max_missing_frames = int(max_missing_frames)
         self.attention_switch_margin = max(0.0, float(attention_switch_margin))
+        self.attention_switch_cooldown_frames = max(1, int(attention_switch_cooldown_frames))
         self._tracks: dict[str, _Track] = {}
         self._next_ids: dict[str, int] = {}
         self._attention_track_id = ""
+        self._attention_candidate_track_id = ""
+        self._attention_candidate_frames = 0
 
     def update(
         self,
@@ -152,11 +156,7 @@ class RealtimeVisionSimulator:
             key=lambda item: item.track_id,
         )
         previous_attention_track_id = self._attention_track_id
-        attention = _attention_track(
-            active_tracks,
-            current_track_id=previous_attention_track_id,
-            switch_margin=self.attention_switch_margin,
-        )
+        attention = self._attention_track(active_tracks, current_track_id=previous_attention_track_id)
         self._attention_track_id = attention.track_id if attention is not None else ""
         if attention is not None and previous_attention_track_id and attention.track_id != previous_attention_track_id:
             events.append(
@@ -198,6 +198,8 @@ class RealtimeVisionSimulator:
                 "eventCount": len(events),
                 "lastEventType": str(events[-1]["eventType"]) if events else "",
                 "stableTargetTrackId": str(attention_object.get("trackId", "")),
+                "stableTargetCandidateTrackId": self._attention_candidate_track_id,
+                "attentionSwitchCooldownFrames": self.attention_switch_cooldown_frames,
             },
         }
         for event in events:
@@ -262,6 +264,41 @@ class RealtimeVisionSimulator:
             last_seen_frame=frame_id,
             last_observed_at=observed_at,
         )
+
+    def _attention_track(self, tracks: list[_Track], *, current_track_id: str) -> _Track | None:
+        if not tracks:
+            self._attention_candidate_track_id = ""
+            self._attention_candidate_frames = 0
+            return None
+
+        best = max(tracks, key=lambda track: (_track_salience(track), track.confidence, track.track_id))
+        current = next((track for track in tracks if track.track_id == current_track_id), None)
+        if current is None:
+            self._attention_candidate_track_id = ""
+            self._attention_candidate_frames = 0
+            return best
+
+        current_salience = _track_salience(current)
+        best_salience = _track_salience(best)
+        should_switch = best.track_id != current.track_id and best_salience > current_salience * (
+            1.0 + self.attention_switch_margin
+        )
+        if not should_switch:
+            self._attention_candidate_track_id = ""
+            self._attention_candidate_frames = 0
+            return current
+
+        if self._attention_candidate_track_id == best.track_id:
+            self._attention_candidate_frames += 1
+        else:
+            self._attention_candidate_track_id = best.track_id
+            self._attention_candidate_frames = 1
+
+        if self._attention_candidate_frames >= self.attention_switch_cooldown_frames:
+            self._attention_candidate_track_id = ""
+            self._attention_candidate_frames = 0
+            return best
+        return current
 
 
 def to_eiprotocol_scene_content(snapshot: Mapping[str, Any]) -> dict[str, Any]:
@@ -452,25 +489,6 @@ def _event_summary(objects: list[dict[str, Any]], events: list[dict[str, Any]]) 
         if item.get("temporalState")
     ]
     return "; ".join(states) if states else "no temporal changes"
-
-
-def _attention_track(
-    tracks: list[_Track],
-    *,
-    current_track_id: str,
-    switch_margin: float,
-) -> _Track | None:
-    if not tracks:
-        return None
-    best = max(tracks, key=lambda track: (_track_salience(track), track.confidence, track.track_id))
-    current = next((track for track in tracks if track.track_id == current_track_id), None)
-    if current is None:
-        return best
-    current_salience = _track_salience(current)
-    best_salience = _track_salience(best)
-    if best.track_id != current.track_id and best_salience > current_salience * (1.0 + switch_margin):
-        return best
-    return current
 
 
 def _track_salience(track: _Track) -> float:

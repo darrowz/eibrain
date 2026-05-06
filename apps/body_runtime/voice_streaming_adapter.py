@@ -51,6 +51,11 @@ class VoiceStreamingAdapter:
         self._audio_frames = 0
         self._tts_chunks = 0
         self._last_heartbeat: dict[str, object] = {}
+        self._asr_trace: dict[str, object] = {
+            "partial_count": 0,
+            "final_count": 0,
+            "last_event": {},
+        }
 
     def apply(self, event: Mapping[str, object] | EventEnvelope) -> dict[str, object]:
         payload = self._event_payload(event)
@@ -62,6 +67,12 @@ class VoiceStreamingAdapter:
             content.get("roundId"),
             content.get("round_id"),
         )
+        session_id = self._first_text(
+            payload.get("sessionId"),
+            payload.get("session_id"),
+            content.get("sessionId"),
+            content.get("session_id"),
+        )
         cancellation_token = self._first_text(
             payload.get("cancellationToken"),
             payload.get("cancellation_token"),
@@ -71,6 +82,7 @@ class VoiceStreamingAdapter:
         operation = self._apply_named_event(
             name,
             content,
+            session_id=session_id,
             round_id=round_id,
             cancellation_token=cancellation_token,
         )
@@ -84,6 +96,8 @@ class VoiceStreamingAdapter:
             "terminal": duplicate or self.session.phase in {"barge_in", "completed", "error"},
             "round_id": round_id,
             "roundId": round_id,
+            "session_id": session_id,
+            "sessionId": session_id,
             "cancellation_token": cancellation_token,
             "cancellationToken": cancellation_token,
             "content": dict(content),
@@ -105,6 +119,7 @@ class VoiceStreamingAdapter:
         name: str,
         content: Mapping[str, object],
         *,
+        session_id: str | None,
         round_id: str | None,
         cancellation_token: str | None,
     ) -> str:
@@ -121,12 +136,14 @@ class VoiceStreamingAdapter:
                 self._text_content(content, "text"),
                 **round_scope,
             )
+            self._record_asr_trace(name, content, session_id=session_id, round_id=round_id, final=False)
             return "update_partial_transcript"
         if name in ASR_FINAL_EVENTS:
             self.session.finalize_transcript(
                 self._text_content(content, "text"),
                 **round_scope,
             )
+            self._record_asr_trace(name, content, session_id=session_id, round_id=round_id, final=True)
             return "finalize_transcript"
         if name in AGENT_DELTA_EVENTS:
             self.session.append_reply_delta(
@@ -178,6 +195,30 @@ class VoiceStreamingAdapter:
             "audio_frames": self._audio_frames,
             "tts_chunks": self._tts_chunks,
             "last_heartbeat": dict(self._last_heartbeat),
+            "asr": dict(self._asr_trace),
+        }
+
+    def _record_asr_trace(
+        self,
+        name: str,
+        content: Mapping[str, object],
+        *,
+        session_id: str | None,
+        round_id: str | None,
+        final: bool,
+    ) -> None:
+        count_key = "final_count" if final else "partial_count"
+        self._asr_trace[count_key] = int(self._asr_trace.get(count_key, 0) or 0) + 1
+        self._asr_trace["last_event"] = {
+            "name": name,
+            "session_id": session_id,
+            "round_id": round_id,
+            "latency_ms": self._first_int(content.get("latencyMs"), content.get("latency_ms")),
+            "frame_index": self._first_int(content.get("frameIndex"), content.get("frame_index")),
+            "frames_received": self._first_int(content.get("framesReceived"), content.get("frames_received")),
+            "frames_processed": self._first_int(content.get("framesProcessed"), content.get("frames_processed")),
+            "frames_dropped": self._first_int(content.get("framesDropped"), content.get("frames_dropped")),
+            "provider_state": self._first_text(content.get("providerState"), content.get("provider_state")),
         }
 
     def _is_duplicate_completed_stop(
@@ -218,6 +259,17 @@ class VoiceStreamingAdapter:
             text = str(value)
             if text:
                 return text
+        return None
+
+    @staticmethod
+    def _first_int(*values: object) -> int | None:
+        for value in values:
+            if value in (None, ""):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
         return None
 
     @classmethod

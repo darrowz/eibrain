@@ -196,3 +196,44 @@ def test_realtime_simulator_uses_hysteresis_to_avoid_attention_switch_from_score
     assert jitter["sceneSnapshot"]["attention"]["trackId"] == first["sceneSnapshot"]["attention"]["trackId"]
     assert jitter["sceneSnapshot"]["stableTarget"]["trackId"] == first["sceneSnapshot"]["stableTarget"]["trackId"]
     assert "attention" not in [event["eventType"] for event in jitter["events"]]
+
+
+def test_realtime_simulator_requires_persistent_candidate_before_target_swap() -> None:
+    simulator = RealtimeVisionSimulator(
+        attention_switch_margin=0.10,
+        attention_switch_cooldown_frames=2,
+    )
+
+    first = simulator.update(
+        frame_id="frame-001",
+        observed_at="2026-05-05T10:00:00.000+08:00",
+        detections=[
+            _det("person", (0.10, 0.20, 0.32, 0.82), 0.94),
+            _det("person", (0.66, 0.24, 0.84, 0.76), 0.86),
+        ],
+    )
+    first_target = first["sceneSnapshot"]["stableTarget"]["trackId"]
+
+    candidate_spike = simulator.update(
+        frame_id="frame-002",
+        observed_at="2026-05-05T10:00:00.100+08:00",
+        detections=[
+            _det("person", (0.10, 0.20, 0.32, 0.82), 0.90),
+            _det("person", (0.62, 0.18, 0.88, 0.84), 0.96),
+        ],
+    )
+    persistent_candidate = simulator.update(
+        frame_id="frame-003",
+        observed_at="2026-05-05T10:00:00.200+08:00",
+        detections=[
+            _det("person", (0.10, 0.20, 0.32, 0.82), 0.90),
+            _det("person", (0.62, 0.18, 0.88, 0.84), 0.97),
+        ],
+    )
+
+    assert candidate_spike["sceneSnapshot"]["stableTarget"]["trackId"] == first_target
+    assert persistent_candidate["sceneSnapshot"]["stableTarget"]["trackId"] != first_target
+    assert [event["eventType"] for event in candidate_spike["events"] if event["eventType"] == "attention_changed"] == []
+    assert [event["eventType"] for event in persistent_candidate["events"] if event["eventType"] == "attention_changed"] == [
+        "attention_changed"
+    ]

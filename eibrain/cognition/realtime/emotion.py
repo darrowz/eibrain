@@ -186,16 +186,20 @@ class EmotionContextBuilder:
         else:
             energy = "medium"
 
+        environment = {
+            "noise": _noise_label(noise_policy),
+            "time": _time_label(environment_hints),
+            "proximity": _proximity_label(vision_hints),
+        }
+        proactive = _proactive_policy(mood=mood, environment=environment)
+
         return {
             "mood": mood,
             "energy": energy,
             "arousal": _band(arousal_value, low=0.35, high=0.7),
             "valence": _valence_label(valence_value),
-            "environment": {
-                "noise": _noise_label(noise_policy),
-                "time": _time_label(environment_hints),
-                "proximity": _proximity_label(vision_hints),
-            },
+            "environment": environment,
+            "proactive": proactive,
             "confidence": emotion_hint.get("confidence", 0.5),
             "sources": list(emotion_hint.get("sources") or []),
             "stability": "stable_hint",
@@ -215,6 +219,11 @@ class EmotionContextBuilder:
         proximity = str(environment.get("proximity") or "near")
         vulnerable = mood in {"sad", "anxious", "stressed", "lonely", "tired"}
         constrained_channel = noise == "high" or time_of_day == "night" or proximity == "far"
+        proactive = emotion_state.get("proactive")
+        proactive = proactive if isinstance(proactive, Mapping) else _proactive_policy(
+            mood=mood,
+            environment={"noise": noise, "time": time_of_day, "proximity": proximity},
+        )
 
         if noise == "high" and (time_of_day == "night" or proximity == "far"):
             brevity = "very_concise"
@@ -230,6 +239,10 @@ class EmotionContextBuilder:
             "micro_ack": vulnerable or constrained_channel,
             "nonverbal_preferred": constrained_channel,
             "speech_risk": "cautious" if vulnerable or constrained_channel else "normal",
+            "proactive_priority": proactive["priority"],
+            "proactive_disturbance": proactive["disturbance"],
+            "proactive_suppress_speech": proactive["suppress_speech"],
+            "proactive_suppression_reasons": list(proactive["suppression_reasons"]),
         }
 
     def _response_style(
@@ -289,6 +302,36 @@ def _proximity_label(vision_hints: Mapping[str, Any]) -> str:
     if 0 <= distance <= 1.2:
         return "near"
     return "mid"
+
+
+def _proactive_policy(*, mood: str, environment: Mapping[str, Any]) -> dict[str, Any]:
+    noise = str(environment.get("noise") or "low")
+    time_of_day = str(environment.get("time") or "day")
+    proximity = str(environment.get("proximity") or "near")
+    vulnerable = mood in {"sad", "anxious", "stressed", "lonely", "tired"}
+    suppression_reasons: list[str] = []
+
+    if time_of_day == "night":
+        suppression_reasons.append("night")
+    if noise == "high":
+        suppression_reasons.append("high_noise")
+    if proximity == "far":
+        suppression_reasons.append("far_distance")
+
+    suppress_speech = bool(suppression_reasons)
+    if suppress_speech and (time_of_day == "night" or (noise == "high" and proximity == "far")):
+        priority = "defer"
+    elif vulnerable:
+        priority = "supportive"
+    else:
+        priority = "low"
+
+    return {
+        "priority": priority,
+        "disturbance": "nonverbal" if suppress_speech else "low",
+        "suppress_speech": suppress_speech,
+        "suppression_reasons": suppression_reasons,
+    }
 
 
 __all__ = ["EmotionContextBuilder"]

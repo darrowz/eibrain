@@ -28,17 +28,21 @@ def summarize_vision_soak(
 
     rows = [dict(sample) for sample in samples]
     if not rows:
+        empty_tracking = _tracking_diagnostics([], target_fps=0.0)
         return {
             "pass": False,
             "sample_count": 0,
             "fps": _stats([]),
             "frame_age_ms": _stats([]),
+            "p95_frame_age_ms": 0.0,
             "loop_elapsed_ms": _stats([]),
             "fps_ratio": 0.0,
             "drop_rate": 0.0,
             "stale_ratio": 0.0,
             "service_ok_ratio": 0.0,
             "bottleneck_reason": "no_samples",
+            **empty_tracking,
+            "metadata": _summary_metadata(empty_tracking, hailo_metadata={}),
         }
 
     fps_values = [_to_float(row.get("fps")) for row in rows if row.get("fps") is not None]
@@ -74,12 +78,15 @@ def summarize_vision_soak(
         stale_frames=stale_frames,
         frame_drops=frame_drops,
     )
+    tracking = _tracking_diagnostics(rows, target_fps=effective_target_fps)
+    metadata = _summary_metadata(tracking, hailo_metadata=_hailo_metadata(rows))
 
     return {
         "pass": reason == "healthy",
         "sample_count": len(rows),
         "fps": fps_summary,
         "frame_age_ms": frame_age_summary,
+        "p95_frame_age_ms": frame_age_summary["p95"],
         "loop_elapsed_ms": _stats(loop_values),
         "target_fps": _round(effective_target_fps),
         "fps_ratio": fps_ratio,
@@ -87,7 +94,36 @@ def summarize_vision_soak(
         "stale_ratio": stale_ratio,
         "service_ok_ratio": service_ok_ratio,
         "bottleneck_reason": reason,
+        **tracking,
+        "metadata": metadata,
     }
+
+
+def run_synthetic_vision_soak(
+    *,
+    frame_count: int = 90,
+    target_fps: float = 10.0,
+) -> dict[str, Any]:
+    """Run a deterministic Hailo-like tracking soak without hardware.
+
+    The scenario injects small jitter, a one-frame detection dropout, a forced
+    track-id switch, a persistent target swap, and a short loss/recovery window.
+    """
+
+    samples = list(_synthetic_long_tracking_samples(frame_count=max(1, int(frame_count)), target_fps=target_fps))
+    summary = summarize_vision_soak(samples, target_fps=target_fps)
+    coverage = {
+        "jitter": any("jitter" in row.get("scenario_flags", []) for row in samples),
+        "dropout": any("dropout" in row.get("scenario_flags", []) for row in samples),
+        "track_id_switch": summary["track_id_switch_count"] > 0,
+        "target_swap": summary["target_switch_count"] > 0,
+        "short_loss_recovery": summary["frame_drop_tolerance"] > 0,
+    }
+    summary["pass"] = bool(summary["pass"] and all(coverage.values()) and summary["target_stability_ratio"] >= 0.75)
+    summary["scenario_coverage"] = coverage
+    summary["metadata"]["trace"]["name"] = "vision_soak.synthetic_long_tracking"
+    summary["metadata"]["web"]["scenario_coverage"] = dict(coverage)
+    return summary
 
 
 def _resolve_target_fps(samples: list[dict[str, Any]], explicit: float | None) -> float:
@@ -98,6 +134,256 @@ def _resolve_target_fps(samples: list[dict[str, Any]], explicit: float | None) -
         if value is not None:
             return max(0.0, _to_float(value))
     return 10.0
+
+
+def _tracking_diagnostics(rows: list[dict[str, Any]], *, target_fps: float) -> dict[str, Any]:
+    track_id_switch_count = _track_id_switch_count(rows)
+    target_ids = [_stable_target_track_id(row) for row in rows]
+    target_ids = [track_id for track_id in target_ids if track_id]
+    target_switch_count = sum(
+        1
+        for previous, current in zip(target_ids, target_ids[1:], strict=False)
+        if previous != current
+    )
+    comparable_targets = max(0, len(target_ids) - 1)
+    target_stability_ratio = (
+        (comparable_targets - target_switch_count) / comparable_targets
+        if comparable_targets > 0
+        else (1.0 if target_ids else 0.0)
+    )
+    total_events = sum(_event_count(row) for row in rows)
+    duration_s = _duration_s(rows, target_fps=target_fps)
+    return {
+        "track_id_switch_count": int(track_id_switch_count),
+        "target_switch_count": int(target_switch_count),
+        "target_stability_ratio": target_stability_ratio,
+        "event_rate_hz": _round(total_events / duration_s) if duration_s > 0.0 else 0.0,
+        "frame_drop_tolerance": int(_frame_drop_tolerance(rows)),
+    }
+
+
+def _track_id_switch_count(rows: list[dict[str, Any]]) -> int:
+    last_track_by_subject: dict[str, str] = {}
+    switches = 0
+    for row in rows:
+        for track in _sample_tracks(row):
+            subject_id = str(track.get("synthetic_subject_id") or track.get("subject_id") or "")
+            track_id = str(track.get("track_id") or track.get("trackId") or "")
+            if not subject_id or not track_id:
+                continue
+            previous = last_track_by_subject.get(subject_id)
+            if previous and previous != track_id:
+                switches += 1
+            last_track_by_subject[subject_id] = track_id
+    return switches
+
+
+def _sample_tracks(row: dict[str, Any]) -> list[dict[str, Any]]:
+    tracks = row.get("tracks", [])
+    if isinstance(tracks, list):
+        return [dict(item) for item in tracks if isinstance(item, dict)]
+    objects = row.get("objects", [])
+    if isinstance(objects, list):
+        return [dict(item) for item in objects if isinstance(item, dict)]
+    return []
+
+
+def _stable_target_track_id(row: dict[str, Any]) -> str:
+    for key in ("stable_target_track_id", "stableTargetTrackId"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    for key in ("stable_target", "stableTarget", "attention"):
+        value = row.get(key)
+        if isinstance(value, dict):
+            track_id = value.get("track_id") or value.get("trackId")
+            if track_id:
+                return str(track_id)
+    return ""
+
+
+def _event_count(row: dict[str, Any]) -> int:
+    if row.get("event_count") is not None:
+        return max(0, int(_to_float(row.get("event_count"))))
+    events = row.get("events")
+    return len(events) if isinstance(events, list) else 0
+
+
+def _duration_s(rows: list[dict[str, Any]], *, target_fps: float) -> float:
+    explicit = [_to_float(row.get("elapsed_s")) for row in rows if row.get("elapsed_s") is not None]
+    if explicit:
+        return max(0.001, max(explicit) - min(explicit))
+    fps = _average([_to_float(row.get("fps")) for row in rows if row.get("fps") is not None])
+    effective_fps = fps if fps > 0.0 else target_fps
+    if effective_fps <= 0.0:
+        return 0.0
+    return max(1.0 / effective_fps, len(rows) / effective_fps)
+
+
+def _frame_drop_tolerance(rows: list[dict[str, Any]]) -> int:
+    max_run = 0
+    current_run = 0
+    for row in rows:
+        is_dropout = bool(row.get("dropout")) or _to_float(row.get("dropped_frames", 0.0)) > 0.0
+        if is_dropout:
+            current_run += 1
+            max_run = max(max_run, current_run)
+        else:
+            current_run = 0
+    return max_run
+
+
+def _hailo_metadata(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    for row in rows:
+        value = row.get("hailo_metadata")
+        if isinstance(value, dict):
+            return dict(value)
+    return {}
+
+
+def _summary_metadata(metrics: dict[str, Any], *, hailo_metadata: dict[str, Any]) -> dict[str, Any]:
+    metric_subset = {
+        "track_id_switch_count": metrics.get("track_id_switch_count", 0),
+        "target_stability_ratio": metrics.get("target_stability_ratio", 0.0),
+        "event_rate_hz": metrics.get("event_rate_hz", 0.0),
+        "frame_drop_tolerance": metrics.get("frame_drop_tolerance", 0),
+    }
+    return {
+        "hailo": dict(hailo_metadata),
+        "trace": {
+            "kind": "vision_tracking_soak",
+            "name": "vision_soak.summary",
+            "metrics": metric_subset,
+        },
+        "web": {
+            "kind": "vision_soak_summary",
+            "metrics": metric_subset,
+        },
+    }
+
+
+def _synthetic_long_tracking_samples(*, frame_count: int, target_fps: float) -> Iterable[dict[str, Any]]:
+    from eibrain.cognition.vision_realtime import RealtimeVisionSimulator
+
+    simulator = RealtimeVisionSimulator(
+        match_distance=0.12,
+        move_threshold=0.08,
+        max_missing_frames=2,
+        attention_switch_margin=0.10,
+        attention_switch_cooldown_frames=2,
+    )
+    last_primary_track_id = ""
+    primary_was_missing = False
+    for index in range(frame_count):
+        frame_number = index + 1
+        flags: list[str] = []
+        detections: list[dict[str, Any]] = []
+        subjects: dict[str, dict[str, float]] = {}
+
+        primary_bbox = _primary_bbox(index)
+        if frame_number in {8, 26}:
+            flags.append("dropout")
+        else:
+            if frame_number == 16:
+                primary_bbox = {"x_min": 0.62, "y_min": 0.18, "x_max": 0.82, "y_max": 0.78}
+                flags.append("track_id_switch")
+            if index % 2 == 1:
+                flags.append("jitter")
+            subjects["primary"] = primary_bbox
+            detections.append(_synthetic_detection("person", primary_bbox, 0.92))
+
+        if frame_number >= 21:
+            flags.append("target_swap")
+            secondary_bbox = {"x_min": 0.12, "y_min": 0.12, "x_max": 0.42, "y_max": 0.88}
+            subjects["swap"] = secondary_bbox
+            detections.append(_synthetic_detection("person", secondary_bbox, 0.97))
+
+        snapshot = simulator.update(
+            frame_id=f"synthetic-{frame_number:04d}",
+            observed_at=f"2026-05-05T10:00:{index / target_fps:06.3f}+08:00",
+            detections=detections,
+        )
+        scene = snapshot["sceneSnapshot"]
+        tracks = _assign_synthetic_subjects(scene["objects"], subjects)
+        primary_track = next((track["track_id"] for track in tracks if track["synthetic_subject_id"] == "primary"), "")
+        if primary_was_missing and primary_track and primary_track == last_primary_track_id:
+            flags.append("short_loss_recovery")
+        primary_was_missing = "primary" not in subjects
+        if primary_track:
+            last_primary_track_id = primary_track
+
+        yield {
+            "fps": target_fps,
+            "target_fps": target_fps,
+            "frame_age_ms": 85.0 + float(index % 5) * 4.0,
+            "loop_elapsed_ms": 70.0 + float(index % 4) * 3.0,
+            "dropped_frames": 1 if "dropout" in flags else 0,
+            "dropout": "dropout" in flags,
+            "service_state": "ok",
+            "event_count": len(snapshot["events"]),
+            "events": snapshot["events"],
+            "stable_target_track_id": str(scene.get("stableTarget", {}).get("trackId", "")),
+            "tracks": tracks,
+            "scenario_flags": flags,
+            "hailo_metadata": {
+                "backend": "synthetic_hailo",
+                "model": "synthetic-long-tracking",
+                "device": "software",
+                "frame_id": scene["frameId"],
+            },
+        }
+
+
+def _primary_bbox(index: int) -> dict[str, float]:
+    jitter = 0.006 if index % 2 else -0.004
+    return {
+        "x_min": 0.38 + jitter,
+        "y_min": 0.20,
+        "x_max": 0.58 + jitter,
+        "y_max": 0.80,
+    }
+
+
+def _synthetic_detection(label: str, bbox: dict[str, float], confidence: float) -> dict[str, Any]:
+    return {"label": label, "confidence": confidence, "bbox": dict(bbox)}
+
+
+def _assign_synthetic_subjects(
+    objects: list[dict[str, Any]],
+    subjects: dict[str, dict[str, float]],
+) -> list[dict[str, str]]:
+    assignments: list[dict[str, str]] = []
+    used_track_ids: set[str] = set()
+    for subject_id, bbox in subjects.items():
+        subject_center = _bbox_center(bbox)
+        best: tuple[float, dict[str, Any]] | None = None
+        for obj in objects:
+            track_id = str(obj.get("trackId", ""))
+            if not track_id or track_id in used_track_ids:
+                continue
+            obj_center = obj.get("center")
+            if isinstance(obj_center, dict):
+                center = (_to_float(obj_center.get("x")), _to_float(obj_center.get("y")))
+            else:
+                center = _bbox_center(obj.get("bbox", {}))
+            distance = ((subject_center[0] - center[0]) ** 2 + (subject_center[1] - center[1]) ** 2) ** 0.5
+            if best is None or distance < best[0]:
+                best = (distance, obj)
+        if best is None:
+            continue
+        track_id = str(best[1].get("trackId", ""))
+        used_track_ids.add(track_id)
+        assignments.append({"synthetic_subject_id": subject_id, "track_id": track_id})
+    return assignments
+
+
+def _bbox_center(bbox: Any) -> tuple[float, float]:
+    if not isinstance(bbox, dict):
+        return (0.0, 0.0)
+    return (
+        (_to_float(bbox.get("x_min")) + _to_float(bbox.get("x_max"))) / 2.0,
+        (_to_float(bbox.get("y_min")) + _to_float(bbox.get("y_max"))) / 2.0,
+    )
 
 
 def _service_is_ok(value: Any) -> bool:
