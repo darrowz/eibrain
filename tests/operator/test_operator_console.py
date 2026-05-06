@@ -660,6 +660,52 @@ def test_operator_console_treats_sleeping_vision_as_healthy_standby() -> None:
     assert report["visual_diagnostics"]["vision_service_status"] == "sleeping"
 
 
+def test_operator_console_reads_nested_neck_control_from_body_state() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_orient_head": True},
+            "body_state": {
+                "organs": {
+                    "neck": {
+                        "subfunctions": {
+                            "tracking": {
+                                "details": {
+                                    "neck_control": {
+                                        "state": "recentering",
+                                        "desired_angle": 90,
+                                        "last_angle": 92,
+                                        "active_intent": {
+                                            "source": "safety_home",
+                                            "target_name": "recenter",
+                                            "target_angle": 90,
+                                        },
+                                        "last_command_status": "ok",
+                                        "intent_count": 1,
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    neck = report["neck_control_diagnostics"]
+    assert neck["enabled"] is True
+    assert neck["state"] == "recentering"
+    assert neck["active_source"] == "safety_home"
+    assert neck["desired_angle"] == 90
+    assert neck["last_angle"] == 92
+    assert neck["last_command_status_label"] == "ok"
+
+
 def test_operator_console_exposes_audio_diagnostics() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

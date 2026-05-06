@@ -1154,16 +1154,45 @@ class OperatorConsoleApp:
         neck_control = body_snapshot.get("neck_control", {})
         if not isinstance(neck_control, dict):
             neck_control = {}
+        if not neck_control:
+            for source in (
+                body_snapshot.get("body_state", {}),
+                body_snapshot,
+            ):
+                if not isinstance(source, dict):
+                    continue
+                organs = source.get("organs", {})
+                if not isinstance(organs, dict):
+                    continue
+                neck = organs.get("neck", {})
+                if not isinstance(neck, dict):
+                    continue
+                subfunctions = neck.get("subfunctions", {})
+                if not isinstance(subfunctions, dict):
+                    continue
+                for subfunction in subfunctions.values():
+                    if not isinstance(subfunction, dict):
+                        continue
+                    details = subfunction.get("details", {})
+                    if isinstance(details, dict) and isinstance(details.get("neck_control"), dict):
+                        neck_control = details["neck_control"]
+                        break
+                if neck_control:
+                    break
         active_intent = neck_control.get("active_intent", {})
         if not isinstance(active_intent, dict):
             active_intent = {}
         last_command_status = neck_control.get("last_command_status", {})
-        if not isinstance(last_command_status, dict):
+        if isinstance(last_command_status, str):
+            last_command_status = {"status": last_command_status}
+        elif not isinstance(last_command_status, dict):
             last_command_status = {}
+        capabilities = body_snapshot.get("capabilities", {})
+        can_orient_head = isinstance(capabilities, dict) and bool(capabilities.get("can_orient_head"))
         return {
-            "enabled": bool(neck_control),
+            "enabled": bool(neck_control) or can_orient_head,
             "state": neck_control.get("state", "unavailable"),
-            "active_intent": str(active_intent.get("intent", "")),
+            "active_intent": str(active_intent.get("intent") or active_intent.get("target_name") or ""),
             "active_source": str(active_intent.get("source", "")),
             "desired_angle": neck_control.get("desired_angle", 0.0),
             "last_angle": neck_control.get("last_angle", 0.0),

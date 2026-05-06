@@ -8,7 +8,7 @@ Type=simple
 WorkingDirectory=/home/darrow/dev-project/eibrain
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-/home/darrow/dev-project/eibrain/.env
-ExecStart=/usr/bin/python3 -m apps.body_runtime.vision_hailo_service --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --backend gstreamer --interval-s 0.2
+ExecStart=/usr/bin/python3 -m apps.body_runtime.vision_hailo_service --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --backend gstreamer --interval-s 0.2 --security-vision-always-on
 Restart=always
 RestartSec=3
 StandardOutput=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-vision-hailo.service.log

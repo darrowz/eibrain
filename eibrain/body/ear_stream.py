@@ -32,9 +32,13 @@ class ArecordStreamCapture:
     transcribe_vad_miss: bool = False
     vad_miss_rms_threshold: float = 0.0
     vad_endpoint_policy: bool = False
+    vad_backend: str = "rms"
+    vad_noise_ratio: float = 1.18
+    vad_silero_threshold: float = 0.5
     last_returncode: int | None = None
     last_stderr: str = ""
     last_stdout_bytes: int = 0
+    last_vad_backend: str = ""
     last_command: list[str] = field(default_factory=list)
     last_vad_triggered: bool = False
     last_vad_frame_count: int = 0
@@ -98,6 +102,7 @@ class ArecordStreamCapture:
         self.last_returncode = None
         self.last_stderr = ""
         self.last_stdout_bytes = 0
+        self.last_vad_backend = self.vad_backend
         try:
             with self._capture_lock():
                 process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

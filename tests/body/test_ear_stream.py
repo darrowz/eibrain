@@ -25,6 +25,23 @@ def test_arecord_stream_capture_builds_expected_command() -> None:
     ]
 
 
+def test_arecord_stream_capture_accepts_configured_vad_backend_options() -> None:
+    from eibrain.body.ear_stream import ArecordStreamCapture
+
+    capture = ArecordStreamCapture(
+        device="plughw:CARD=U4K,DEV=0",
+        sample_rate=16000,
+        channels=1,
+        vad_backend="rms",
+        vad_noise_ratio=1.2,
+        vad_silero_threshold=0.55,
+    )
+
+    assert capture.vad_backend == "rms"
+    assert capture.vad_noise_ratio == 1.2
+    assert capture.vad_silero_threshold == 0.55
+
+
 def test_arecord_stream_capture_retries_empty_capture(monkeypatch) -> None:
     from eibrain.body.ear_stream import ArecordStreamCapture
 

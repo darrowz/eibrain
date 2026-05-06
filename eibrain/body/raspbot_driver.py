@@ -3,6 +3,21 @@
 from __future__ import annotations
 
 import os
+from typing import Any
+
+
+def _open_smbus(bus: int) -> Any:
+    try:
+        import smbus2  # type: ignore
+
+        return smbus2.SMBus(bus)
+    except Exception as smbus2_exc:  # pragma: no cover - depends on honjia packages
+        try:
+            import smbus  # type: ignore
+
+            return smbus.SMBus(bus)
+        except Exception as smbus_exc:  # pragma: no cover - depends on honjia packages
+            raise RuntimeError(f"smbus2/smbus unavailable: smbus2={smbus2_exc}; smbus={smbus_exc}") from smbus_exc
 
 
 class RaspbotDriver:
@@ -26,13 +41,11 @@ class RaspbotDriver:
             return payload
         if not os.path.exists(self.device_path):
             raise RuntimeError(f"missing i2c device: {self.device_path}")
-        try:
-            import smbus2  # type: ignore
-        except Exception as exc:  # pragma: no cover - depends on honjia packages
-            raise RuntimeError(f"smbus2 unavailable: {exc}") from exc
-        bus = smbus2.SMBus(self.bus)
+        bus = _open_smbus(self.bus)
         try:
             bus.write_i2c_block_data(self.addr, 0x02, payload)
         finally:
-            bus.close()
+            close = getattr(bus, "close", None)
+            if callable(close):
+                close()
         return payload

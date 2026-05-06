@@ -284,6 +284,38 @@ def test_raspbot_driver_clamps_servo_2_to_110_degrees() -> None:
     assert payload == [2, 110]
 
 
+def test_raspbot_driver_falls_back_to_legacy_smbus(monkeypatch) -> None:
+    import sys
+    import types
+
+    from eibrain.body.raspbot_driver import RaspbotDriver
+
+    writes: list[tuple[int, int, list[int]]] = []
+    closed: list[bool] = []
+
+    class _FakeBus:
+        def __init__(self, bus: int) -> None:
+            assert bus == 1
+
+        def write_i2c_block_data(self, addr: int, reg: int, payload: list[int]) -> None:
+            writes.append((addr, reg, payload))
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr("os.path.exists", lambda path: path == "/dev/i2c-1")
+    monkeypatch.setitem(sys.modules, "smbus2", None)
+    monkeypatch.setitem(sys.modules, "smbus", types.SimpleNamespace(SMBus=_FakeBus))
+
+    driver = RaspbotDriver(mock=False, servo_id=1)
+
+    payload = driver.ctrl_servo(91)
+
+    assert payload == [1, 91]
+    assert writes == [(0x2B, 0x02, [1, 91])]
+    assert closed == [True]
+
+
 def test_run_hailo_detection_reports_uvc_camera_gap() -> None:
     from eibrain.body.runtime_linux import run_hailo_detection
 
