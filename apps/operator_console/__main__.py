@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--realtime-wake-buffer-ms", type=int, default=6000)
     parser.add_argument("--realtime-wake-lookback-ms", type=int, default=2400)
     parser.add_argument("--realtime-wake-min-buffer-ms", type=int, default=480)
+    parser.add_argument("--realtime-wake-min-rms-level", type=float, default=0.006)
     parser.add_argument("--realtime-wake-frame-ms", type=int, default=120)
     parser.add_argument("--realtime-wake-poll-interval", type=float, default=0.25)
     args = parser.parse_args()
@@ -143,6 +144,7 @@ def _build_realtime_wake_source(runtime, config, args, *, wake_word: str):
         transcript_replacements=asr_cfg.driver.extra.get("transcript_replacements", {}),
         lookback_ms=int(args.realtime_wake_lookback_ms),
         min_buffer_ms=int(args.realtime_wake_min_buffer_ms),
+        min_rms_level=float(args.realtime_wake_min_rms_level),
         poll_interval_s=float(args.realtime_wake_poll_interval),
     )
     return RealtimeWakeAudioPipeline(

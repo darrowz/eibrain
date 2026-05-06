@@ -75,3 +75,20 @@ def test_realtime_wake_detector_does_not_redecode_same_buffer_snapshot() -> None
     assert detector.poll_once() is not None
     assert detector.poll_once() is None
     assert len(recognizer.calls) == 1
+
+
+def test_realtime_wake_detector_skips_quiet_ring_buffer_before_asr_decode() -> None:
+    ring = PcmRingBuffer(max_duration_ms=2000, sample_rate=16000, channels=1)
+    ring.append(b"\x00\x00" * 1600, duration_ms=200, captured_at_s=1.0)
+    recognizer = _Recognizer("你好鸿途")
+    detector = RealtimeWakeDetector(
+        ring_buffer=ring,
+        recognizer=recognizer,
+        wake_words=("鸿途",),
+        min_buffer_ms=100,
+        min_rms_level=0.01,
+    )
+
+    assert detector.poll_once() is None
+    assert recognizer.calls == []
+    assert detector.snapshot()["wake_detector"]["last_audio_stats"]["rms_level"] == 0.0

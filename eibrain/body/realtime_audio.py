@@ -10,6 +10,7 @@ import threading
 import time
 from typing import Iterable
 
+from eibrain.body.ear_stream import pcm_signal_stats
 from eibrain.protocol.observations import AudioTranscriptFinal
 
 
@@ -284,6 +285,7 @@ class RealtimeWakeDetector:
         language: str = "zh",
         lookback_ms: int = 2400,
         min_buffer_ms: int = 480,
+        min_rms_level: float = 0.0,
         poll_interval_s: float = 0.25,
     ) -> None:
         self.ring_buffer = ring_buffer
@@ -296,6 +298,7 @@ class RealtimeWakeDetector:
         self.language = language
         self.lookback_ms = max(1, int(lookback_ms))
         self.min_buffer_ms = max(1, int(min_buffer_ms))
+        self.min_rms_level = max(0.0, float(min_rms_level))
         self.poll_interval_s = max(0.01, float(poll_interval_s))
         self._queue: Queue[AudioTranscriptFinal] = Queue()
         self._stop_event = threading.Event()
@@ -306,6 +309,7 @@ class RealtimeWakeDetector:
         self._emitted_count = 0
         self._last_error = ""
         self._last_text = ""
+        self._last_audio_stats: dict[str, float | int | bool] = {}
         self._last_detected_at_ts: float | None = None
 
     def start(self) -> None:
@@ -327,6 +331,9 @@ class RealtimeWakeDetector:
         if snapshot.sequence == self._last_sequence or snapshot.duration_ms < self.min_buffer_ms:
             return None
         self._last_sequence = snapshot.sequence
+        self._last_audio_stats = pcm_signal_stats(snapshot.chunks, channels=snapshot.channels)
+        if self.min_rms_level > 0.0 and float(self._last_audio_stats.get("rms_level", 0.0) or 0.0) < self.min_rms_level:
+            return None
         try:
             text = self._normalize_text(self._decode_snapshot(snapshot))
         except Exception as exc:  # pragma: no cover - recognizer boundary
@@ -373,6 +380,8 @@ class RealtimeWakeDetector:
                 "emitted_count": self._emitted_count,
                 "lookback_ms": self.lookback_ms,
                 "min_buffer_ms": self.min_buffer_ms,
+                "min_rms_level": self.min_rms_level,
+                "last_audio_stats": dict(self._last_audio_stats),
                 "last_text": self._last_text,
                 "last_error": self._last_error,
                 "last_detected_at_ts": self._last_detected_at_ts,
