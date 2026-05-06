@@ -255,6 +255,71 @@ def _first_update(body: _Body, *, last_status: str):
     return next(update for update in body.updates if update.get("last_status") == last_status)
 
 
+def test_voice_dialogue_loop_wires_cognitive_memory_into_realtime_scheduler() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+    from eibrain.memory.contracts import MemoryResult
+
+    class _Memory:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.queries = []
+            self.episodes = []
+            self.traces = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(
+                summary="Prefer short replies.",
+                relevant_memories=["Preference: short replies"],
+                recall_diagnostics={"selected_count": 1},
+            )
+
+        def remember_episode(self, **kwargs):
+            self.episodes.append(dict(kwargs))
+            self.last_writeback_status = {
+                "status": "ok",
+                "source": kwargs.get("source"),
+                "memory_type": kwargs.get("memory_type"),
+                "record_id": "voice_mem_1",
+            }
+
+        def record_memory_trace(self, payload, *, session_id=None, actor_id=None):
+            self.traces.append({"payload": dict(payload), "session_id": session_id, "actor_id": actor_id})
+            return {"ok": True, "result": {"record_id": "trace_voice_1"}}
+
+    body = _Body([])
+    cognition = _Cognition()
+    cognition.memory = _Memory()
+    loop = VoiceDialogueLoop(
+        body_runtime=body,
+        cognitive_runtime=cognition,
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+        session_id="voice-session",
+        actor_id="darrow",
+    )
+    turn = loop._start_round(reason="test")
+    observation = AudioTranscriptFinal(
+        ts=1.0,
+        source="ear.asr",
+        text="记住我喜欢短回答",
+        session_id="voice-session",
+        actor_id="darrow",
+    )
+
+    finalized = loop._finalize_asr(turn, observation.text)
+    result = loop._record_scheduler_decision(observation, finalized)
+
+    assert cognition.memory.queries[0].session_id == "voice-session"
+    assert cognition.memory.queries[0].actor_id == "darrow"
+    assert cognition.memory.episodes[0]["session_id"] == "voice-session"
+    assert cognition.memory.episodes[0]["actor_id"] == "darrow"
+    assert result["memory_trace"]["writeback"]["items"][0]["record_id"] == "voice_mem_1"
+    assert finalized.memory_traces
+    assert cognition.memory.traces[-1]["session_id"] == "voice-session"
+
+
 def test_voice_dialogue_loop_ignores_plain_text_while_dormant() -> None:
     body = _Body(["你好"])
     cognition = _Cognition()

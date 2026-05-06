@@ -58,6 +58,9 @@ class RealtimeCognitiveScheduler:
         emotion_context: Mapping[str, Any] | None = None,
         environment_context: Mapping[str, Any] | None = None,
         memory_candidates: Sequence[Mapping[str, Any]] | None = None,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
         deadline_ms: int = 500,
     ) -> dict[str, Any]:
         observed_text = _first_text(asr_text, text, partial_text)
@@ -99,7 +102,13 @@ class RealtimeCognitiveScheduler:
             },
             source="scheduler_fast_lane",
         )
-        prefetch = self._prefetch_memory(turn=turn, text=observed_text)
+        prefetch = self._prefetch_memory(
+            turn=turn,
+            text=observed_text,
+            session_id=session_id,
+            actor_id=actor_id,
+            task_context=task_context,
+        )
         if memory_candidates:
             prefetch.extend(_normalize_memory_candidates(memory_candidates, source="caller_memory"))
         turn.memory_candidates = _merge_memory_candidates(turn.memory_candidates, prefetch)
@@ -129,6 +138,9 @@ class RealtimeCognitiveScheduler:
         persona_context: Mapping[str, Any] | None = None,
         emotion_context: Mapping[str, Any] | None = None,
         environment_context: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         observed_text = _first_text(final_text, text)
         turn = self._active_turn(reason="final_observation")
@@ -169,6 +181,10 @@ class RealtimeCognitiveScheduler:
         emotion_context: Mapping[str, Any] | None = None,
         execution_result: Mapping[str, Any] | None = None,
         idle_seconds: float = 0.0,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
+        auto_commit_memory: bool = True,
     ) -> dict[str, Any]:
         turn = self._active_turn(reason="decide")
         requested_round_id = round_id or turn.round_id
@@ -231,7 +247,18 @@ class RealtimeCognitiveScheduler:
             round_id=turn.round_id,
             cancellation_token=turn.cancellation_token,
         )
-        return {
+        memory_trace = (
+            self._auto_commit_decision_memory(
+                turn,
+                committed=committed,
+                session_id=session_id,
+                actor_id=actor_id,
+                task_context=task_context,
+            )
+            if auto_commit_memory
+            else {}
+        )
+        result = {
             "round_id": turn.round_id,
             "cancellation_token": turn.cancellation_token,
             "decision": committed,
@@ -240,6 +267,9 @@ class RealtimeCognitiveScheduler:
             "action_plan": list(committed.get("action_plan", [])),
             "proactive_activity": activity,
         }
+        if memory_trace:
+            result["memory_trace"] = memory_trace
+        return result
 
     def interrupt(self, *, reason: str = "user_interrupt") -> dict[str, Any]:
         return self.interruption_controller.interrupt_and_start_new_round(
@@ -431,12 +461,146 @@ class RealtimeCognitiveScheduler:
             "cancellable": cancellable,
         }
 
-    def _prefetch_memory(self, *, turn: TurnBlackboard, text: str) -> list[dict[str, Any]]:
+    def _auto_commit_decision_memory(
+        self,
+        turn: TurnBlackboard,
+        *,
+        committed: Mapping[str, Any],
+        session_id: str | None,
+        actor_id: str | None,
+        task_context: Mapping[str, Any] | None,
+    ) -> dict[str, Any]:
+        if getattr(self.memory_orchestrator, "memory_service", None) is None:
+            return {}
+        if turn.safety_state.get("memory_closed_loop_committed"):
+            return {}
+
+        pending_writeback = [
+            item
+            for item in turn.memory_candidates
+            if isinstance(item, Mapping)
+            and item.get("kind") == "writeback_proposal"
+            and item.get("requires_commit") is not False
+            and item.get("committed") is not True
+        ]
+        final_text = str(turn.asr_final or committed.get("final_text") or "").strip()
+        if not pending_writeback and not _should_writeback_dialogue(final_text):
+            return {}
+        if not pending_writeback:
+            reply = str(committed.get("speech_text") or "").strip() or _speech_segment_text(committed)
+            summary = f"user:{final_text} | reply:{reply}".strip()
+            self.memory_orchestrator.build_writeback_proposal(
+                turn,
+                query=final_text,
+                channels=("voice",),
+                priority="normal",
+                reason="realtime_decision_dialogue_writeback",
+                summary=summary,
+                metadata={
+                    "title": "Realtime dialogue turn",
+                    "memory_type": "conversation",
+                    "source": "eibrain.audio_dialogue",
+                    "modality": "audio_text",
+                    "organ": "ear",
+                    "content": {
+                        "event_type": "dialogue_turn",
+                        "user_text": final_text,
+                        "reply_text": reply,
+                        "decision": committed.get("decision", ""),
+                        "round_id": turn.round_id,
+                    },
+                    "meta": {
+                        "source_system": "eibrain",
+                        "round_id": turn.round_id,
+                        "cancellation_token": turn.cancellation_token,
+                        "trace_id": turn.round_id,
+                        "source_event_id": f"{turn.round_id}:dialogue",
+                        "dedupe_key": f"realtime-dialogue:{session_id or turn.round_id}:{turn.round_id}",
+                        "memory_kind": "episodic",
+                        "retention": "episode",
+                        "promotion_status": "candidate" if _explicit_memory_request(final_text) else "not_promoted",
+                        "identity_memory": False,
+                        "persona_memory": False,
+                        "privacy": {
+                            "scope": "subject_conversation",
+                            "sensitivity": "personal",
+                            "allowed_use": "embodied_response",
+                        },
+                    },
+                    "outcome": {
+                        "success": bool(committed.get("speech_segments")),
+                        "status": "planned",
+                        "action_count": len(list(committed.get("action_plan") or [])),
+                    },
+                    "tags": _unique_values(
+                        [
+                            "dialogue",
+                            "audio_text",
+                            "ear",
+                            str(committed.get("decision") or ""),
+                            "explicit_memory_request" if _explicit_memory_request(final_text) else "",
+                        ]
+                    ),
+                },
+            )
+
+        trace = self.memory_orchestrator.commit_candidates(
+            turn,
+            session_id=session_id,
+            actor_id=actor_id,
+            task_context={
+                "phase": "decision_writeback",
+                "modality": "audio_text",
+                "organ": "ear",
+                **dict(task_context or {}),
+            },
+            default_modality="audio_text",
+            default_organ="ear",
+        )
+        turn.safety_state["memory_closed_loop_committed"] = True
+        turn.safety_state["memory_closed_loop_trace"] = trace
+        return trace
+
+    def _prefetch_memory(
+        self,
+        *,
+        turn: TurnBlackboard,
+        text: str,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         stripped = text.strip()
         if not stripped:
             return []
+        memory_service_configured = getattr(self.memory_orchestrator, "memory_service", None) is not None
+        if memory_service_configured and stripped in {"记住", "记一下", "帮我记", "帮我记一下", "提醒我"}:
+            return []
         if not any(marker in stripped for marker in ("记", "提醒", "上次", "以前", "喜欢", "妈妈", "爸爸")):
             return []
+        if memory_service_configured:
+            return self.memory_orchestrator.prefetch_recall(
+                turn,
+                query=stripped,
+                channels=("voice",),
+                priority="realtime",
+                reason="prefetch_context_for_fast_lane",
+                session_id=session_id,
+                actor_id=actor_id,
+                task_context={
+                    "goal": "prefetch memory for realtime user turn",
+                    "query_source": "asr_partial",
+                    **dict(task_context or {}),
+                },
+                metadata={
+                    "task_type": "brain.respond",
+                    "goal": "prefetch memory for realtime user turn",
+                    "phase": "fast_prefetch",
+                    "modality": "audio_text",
+                    "organ": "ear",
+                    "recall_profile": "subject_dialogue",
+                },
+            )
         return [
             {
                 "id": f"{turn.round_id}:prefetch:{len(turn.memory_candidates)}",
@@ -454,6 +618,36 @@ def _first_text(*values: str | None) -> str:
         if value is not None:
             return value
     return ""
+
+
+def _explicit_memory_request(text: str) -> bool:
+    return any(marker in text for marker in ("记住", "记一下", "记得", "帮我记", "以后", "下次", "偏好", "喜欢", "不喜欢"))
+
+
+def _should_writeback_dialogue(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    return _explicit_memory_request(stripped)
+
+
+def _speech_segment_text(payload: Mapping[str, Any]) -> str:
+    segments = payload.get("speech_segments")
+    if not isinstance(segments, Sequence) or isinstance(segments, (str, bytes)):
+        return ""
+    for segment in segments:
+        if isinstance(segment, Mapping) and str(segment.get("text") or "").strip():
+            return str(segment["text"])
+    return ""
+
+
+def _unique_values(values: Sequence[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if text and text not in unique:
+            unique.append(text)
+    return unique
 
 
 def _to_dict(value: Any) -> dict[str, Any]:

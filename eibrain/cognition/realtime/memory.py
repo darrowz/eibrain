@@ -51,6 +51,10 @@ def _unique_texts(values: Iterable[Any]) -> list[str]:
     return unique
 
 
+def _candidate_key(candidate: Mapping[str, Any]) -> str:
+    return _clean_text(candidate.get("id") or candidate.get("record_id") or candidate.get("query") or candidate.get("text"))
+
+
 def _memory_query(
     *,
     query: str,
@@ -77,7 +81,7 @@ def _memory_query(
 
 
 class MemoryOrchestrator:
-    """Build round-scoped recall/writeback proposals without I/O side effects."""
+    """Build inert proposals and explicitly commit realtime memory loops."""
 
     def __init__(
         self,
@@ -366,6 +370,81 @@ class MemoryOrchestrator:
             requires_commit=requires_commit,
         )
 
+    def prefetch_recall(
+        self,
+        turn: Any,
+        *,
+        query: str,
+        channels: Iterable[str] | None = None,
+        priority: str | int | float | None = "realtime",
+        reason: str = "prefetch_context_for_fast_lane",
+        limit: int = 3,
+        metadata: Mapping[str, Any] | None = None,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+        task_context: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Resolve a recall request immediately and attach results to the turn.
+
+        The regular builders remain inert. This method is the explicit realtime
+        fast-lane bridge used when an eimemory service has been configured.
+        """
+
+        request = self.build_recall_request(
+            turn,
+            query=query,
+            channels=channels,
+            priority=priority,
+            reason=reason,
+            limit=limit,
+            metadata=metadata,
+        )
+        trace = self._new_trace(
+            turn,
+            session_id=session_id,
+            actor_id=actor_id,
+            external_call=self.memory_service is not None,
+        )
+        candidates = _value(turn, "memory_candidates", [])
+        try:
+            index = list(candidates).index(request) if isinstance(candidates, list) else 0
+        except ValueError:
+            index = 0
+        if self.memory_service is None:
+            trace["errors"].append(
+                {
+                    "candidate_index": index,
+                    "kind": "recall_request",
+                    "error": "memory_service_not_configured",
+                    "query": query,
+                }
+            )
+            return self._record_trace(turn, trace).get("resolved_candidates", [])
+
+        resolved = self._commit_recall(
+            request,
+            trace=trace,
+            index=index,
+            session_id=session_id,
+            actor_id=actor_id,
+            task_context={
+                "phase": "fast_prefetch",
+                "modality": "audio_text",
+                "organ": "ear",
+                **dict(task_context or {}),
+            },
+        )
+        if isinstance(request, dict):
+            request["committed"] = True
+            request["commit_status"] = "ok" if not trace["errors"] else "error"
+            request["resolved_count"] = len(resolved)
+        if resolved:
+            self._extend_turn_memory(turn, resolved)
+        trace["resolved_candidates"] = resolved
+        self._commit_memory_trace(trace, session_id=session_id, actor_id=actor_id)
+        self._record_trace(turn, trace)
+        return resolved
+
     def commit_candidates(
         self,
         turn: Any,
@@ -378,17 +457,12 @@ class MemoryOrchestrator:
     ) -> dict[str, Any]:
         """Commit inert recall/writeback proposals through the configured memory service."""
 
-        trace: dict[str, Any] = {
-            "schema": CLOSED_LOOP_TRACE_SCHEMA,
-            "round_id": str(_value(turn, "round_id", "")),
-            "cancellation_token": _value(turn, "cancellation_token"),
-            "session_id": session_id or "",
-            "actor_id": actor_id or "",
-            "external_call": self.memory_service is not None,
-            "recall": {"count": 0, "items": []},
-            "writeback": {"count": 0, "items": []},
-            "errors": [],
-        }
+        trace = self._new_trace(
+            turn,
+            session_id=session_id,
+            actor_id=actor_id,
+            external_call=self.memory_service is not None,
+        )
         candidates = _value(turn, "memory_candidates", [])
         if not isinstance(candidates, list):
             candidates = []
@@ -399,9 +473,12 @@ class MemoryOrchestrator:
         for index, candidate in enumerate(candidates):
             if not isinstance(candidate, Mapping):
                 continue
+            if candidate.get("committed") is True:
+                continue
             kind = str(candidate.get("kind") or "")
             if kind == "recall_request":
-                self._commit_recall(
+                previous_error_count = len(trace["errors"])
+                resolved = self._commit_recall(
                     candidate,
                     trace=trace,
                     index=index,
@@ -409,7 +486,14 @@ class MemoryOrchestrator:
                     actor_id=actor_id,
                     task_context=task_context,
                 )
+                if isinstance(candidate, dict):
+                    candidate["committed"] = True
+                    candidate["commit_status"] = "ok" if len(trace["errors"]) == previous_error_count else "error"
+                    candidate["resolved_count"] = len(resolved)
+                if resolved:
+                    self._extend_turn_memory(turn, resolved)
             elif kind == "writeback_proposal":
+                previous_error_count = len(trace["errors"])
                 self._commit_writeback(
                     candidate,
                     trace=trace,
@@ -419,8 +503,31 @@ class MemoryOrchestrator:
                     default_modality=default_modality,
                     default_organ=default_organ,
                 )
+                if isinstance(candidate, dict) and len(trace["errors"]) == previous_error_count:
+                    candidate["committed"] = True
+                    candidate["commit_status"] = "ok"
         self._commit_memory_trace(trace, session_id=session_id, actor_id=actor_id)
         return self._record_trace(turn, trace)
+
+    def _new_trace(
+        self,
+        turn: Any,
+        *,
+        session_id: str | None,
+        actor_id: str | None,
+        external_call: bool,
+    ) -> dict[str, Any]:
+        return {
+            "schema": CLOSED_LOOP_TRACE_SCHEMA,
+            "round_id": str(_value(turn, "round_id", "")),
+            "cancellation_token": _value(turn, "cancellation_token"),
+            "session_id": session_id or "",
+            "actor_id": actor_id or "",
+            "external_call": external_call,
+            "recall": {"count": 0, "items": []},
+            "writeback": {"count": 0, "items": []},
+            "errors": [],
+        }
 
     def _base_payload(
         self,
@@ -473,6 +580,22 @@ class MemoryOrchestrator:
             turn.setdefault("memory_traces", []).append(payload)
         return payload
 
+    def _extend_turn_memory(self, turn: Any, items: Iterable[Mapping[str, Any]]) -> None:
+        current = _value(turn, "memory_candidates")
+        if not isinstance(current, list):
+            if isinstance(turn, dict):
+                current = turn.setdefault("memory_candidates", [])
+            else:
+                return
+        seen = {_candidate_key(item) for item in current if isinstance(item, Mapping)}
+        for item in items:
+            payload = _json_ready(dict(item))
+            key = _candidate_key(payload)
+            if key in seen:
+                continue
+            seen.add(key)
+            current.append(payload)
+
     def _commit_memory_trace(
         self,
         trace: dict[str, Any],
@@ -515,11 +638,11 @@ class MemoryOrchestrator:
         session_id: str | None,
         actor_id: str | None,
         task_context: Mapping[str, Any] | None,
-    ) -> None:
+    ) -> list[dict[str, Any]]:
         retriever = getattr(self.memory_service, "retrieve_context", None)
         if not callable(retriever):
             trace["errors"].append({"candidate_index": index, "kind": "recall_request", "error": "retrieve_context_missing"})
-            return
+            return []
         metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
         context = {
             "task_type": str(metadata.get("task_type") or "brain.respond"),
@@ -549,9 +672,10 @@ class MemoryOrchestrator:
                     "error": f"{type(exc).__name__}: {exc}",
                 }
             )
-            return
+            return []
 
         diagnostics = dict(getattr(result, "recall_diagnostics", {}) or {})
+        resolved = self._recall_candidates_from_result(result, candidate=candidate, diagnostics=diagnostics)
         item = {
             "candidate_index": index,
             "kind": "recall_request",
@@ -562,9 +686,57 @@ class MemoryOrchestrator:
             "selected_count": diagnostics.get("selected_count", 0),
             "selected_records": diagnostics.get("selected_records", []),
             "source_composition": diagnostics.get("source_composition", {}),
+            "resolved_count": len(resolved),
         }
+        if resolved:
+            item["resolved_candidates"] = resolved
         trace["recall"]["items"].append(_json_ready(item))
         trace["recall"]["count"] = len(trace["recall"]["items"])
+        return resolved
+
+    def _recall_candidates_from_result(
+        self,
+        result: Any,
+        *,
+        candidate: Mapping[str, Any],
+        diagnostics: Mapping[str, Any],
+    ) -> list[dict[str, Any]]:
+        relevant = [str(item) for item in list(getattr(result, "relevant_memories", []) or []) if str(item).strip()]
+        summary = str(getattr(result, "summary", "") or "").strip()
+        if not relevant and summary:
+            relevant = [summary]
+        selected_records = _mapping_items(diagnostics.get("selected_records", []))
+        try:
+            limit = max(1, int(candidate.get("limit") or 3))
+        except (TypeError, ValueError):
+            limit = 3
+
+        resolved: list[dict[str, Any]] = []
+        for item_index, text in enumerate(relevant[:limit]):
+            record = selected_records[item_index] if item_index < len(selected_records) else {}
+            record_id = _clean_text(record.get("record_id") or record.get("id"))
+            source = _clean_text(record.get("source")) or "eimemory_recall"
+            score = record.get("score", record.get("confidence"))
+            if score is None:
+                score = round(max(0.1, 0.92 - item_index * 0.05), 3)
+            payload = {
+                "id": record_id or f"{candidate.get('round_id', 'round')}:eimemory:{item_index}",
+                "record_id": record_id,
+                "kind": "recall",
+                "query": str(candidate.get("query") or ""),
+                "text": text,
+                "summary": summary or text,
+                "score": score,
+                "source": "eimemory_recall",
+                "memory_source": source,
+                "title": record.get("title", ""),
+                "memory_type": record.get("memory_type", record.get("type", "")),
+                "stable": False,
+                "external_call": True,
+                "selected_record": dict(record),
+            }
+            resolved.append(_json_ready(payload))
+        return resolved
 
     def _commit_writeback(
         self,

@@ -33,6 +33,17 @@ OPTIONAL_FILES = (
     "apps/__init__.py",
     "eibrain/__init__.py",
     "eibrain/cognition/__init__.py",
+    # Transitional body runtime still imports these pure vision cognition
+    # helpers until eihead owns the native realtime vision stack end-to-end.
+    "eibrain/cognition/vision_events.py",
+    "eibrain/cognition/vision_realtime.py",
+    "eibrain/cognition/vision_scene_graph.py",
+    "eibrain/cognition/vision_voice_context.py",
+    # Transitional visual memory adapters are used by apps.body_runtime.app
+    # to prepare eimemory/eitraining payloads from eye feedback.
+    "eibrain/memory/__init__.py",
+    "eibrain/memory/visual_feedback.py",
+    "eibrain/memory/visual_memory.py",
 )
 COPY_GLOBS = (
     "config/eibrain.honjia.yaml",
@@ -585,6 +596,7 @@ include = [
     "eibrain.body*",
     "eibrain.cognition*",
     "eibrain.infra*",
+    "eibrain.memory*",
     "eibrain.protocol*",
     "eibrain.verification*",
     "eibrain.voice*",

@@ -91,7 +91,14 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
         "eibrain/cognition/__init__.py",
         "eibrain/cognition/realtime/__init__.py",
         "eibrain/cognition/realtime/turn.py",
+        "eibrain/cognition/vision_events.py",
+        "eibrain/cognition/vision_realtime.py",
+        "eibrain/cognition/vision_scene_graph.py",
+        "eibrain/cognition/vision_voice_context.py",
         "eibrain/infra/config.py",
+        "eibrain/memory/__init__.py",
+        "eibrain/memory/visual_feedback.py",
+        "eibrain/memory/visual_memory.py",
         "eibrain/verification/__init__.py",
         "eibrain/verification/body_checks.py",
         "eiprotocol/__init__.py",
@@ -121,7 +128,14 @@ def test_export_creates_required_standalone_layout(tmp_path: Path) -> None:
     assert "eibrain/cognition/__init__.py" in result.copied
     assert "eibrain/cognition/realtime/__init__.py" in result.copied
     assert "eibrain/cognition/realtime/turn.py" in result.copied
+    assert "eibrain/cognition/vision_events.py" in result.copied
+    assert "eibrain/cognition/vision_realtime.py" in result.copied
+    assert "eibrain/cognition/vision_scene_graph.py" in result.copied
+    assert "eibrain/cognition/vision_voice_context.py" in result.copied
     assert "eibrain/infra/config.py" in result.copied
+    assert "eibrain/memory/__init__.py" in result.copied
+    assert "eibrain/memory/visual_feedback.py" in result.copied
+    assert "eibrain/memory/visual_memory.py" in result.copied
     assert "eibrain/verification/__init__.py" in result.copied
     assert "eibrain/verification/body_checks.py" in result.copied
     assert "eiprotocol/__init__.py" in result.copied
@@ -525,6 +539,7 @@ def test_export_generates_standalone_pyproject_and_readme(tmp_path: Path) -> Non
     assert '"apps.body_runtime*"' in pyproject
     assert '"eibrain.body*"' in pyproject
     assert '"eibrain.cognition*"' in pyproject
+    assert '"eibrain.memory*"' in pyproject
     assert '"eibrain.verification*"' in pyproject
     assert "eibrain-cognitive" not in pyproject
     assert "faster-whisper" not in pyproject

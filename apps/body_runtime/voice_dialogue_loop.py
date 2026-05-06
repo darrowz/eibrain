@@ -14,6 +14,7 @@ from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
 from eibrain.cognition.realtime import (
     FastThinkEngine,
     InterruptionController,
+    MemoryOrchestrator,
     RealtimeCognitiveScheduler,
     RealtimeTurnManager,
     ResponseArbiter,
@@ -281,10 +282,12 @@ class VoiceDialogueLoop:
         self.response_arbiter = response_arbiter or ResponseArbiter()
         self.interruption_controller = interruption_controller or InterruptionController()
         self.speech_action_planner = speech_action_planner or SpeechActionPlanner()
+        memory_service = getattr(self.cognitive_runtime, "memory", None)
         self.realtime_cognitive_scheduler = realtime_cognitive_scheduler or RealtimeCognitiveScheduler(
             turn_manager=self.realtime_turn_manager,
             arbiter=self.response_arbiter,
             interruption_controller=self.interruption_controller,
+            memory_orchestrator=MemoryOrchestrator(memory_service=memory_service) if memory_service is not None else None,
         )
         self._turn_lock = threading.RLock()
         self._interrupted_round_count = 0
@@ -418,12 +421,16 @@ class VoiceDialogueLoop:
                     transcript,
                     round_id=turn.round_id,
                     cancellation_token=turn.cancellation_token,
+                    session_id=self.session_id,
+                    actor_id=self.actor_id,
                 )
                 microfeedback_elapsed_ms = round(max(0.0, time.perf_counter() - microfeedback_started_s) * 1000, 2)
                 self.realtime_cognitive_scheduler.observe_final(
                     transcript,
                     round_id=turn.round_id,
                     cancellation_token=turn.cancellation_token,
+                    session_id=self.session_id,
+                    actor_id=self.actor_id,
                 )
                 finalized = self.realtime_turn_manager.current_turn() or turn
                 fast_payload = partial.get("fast") if isinstance(partial, dict) else {}
@@ -1149,6 +1156,8 @@ class VoiceDialogueLoop:
                 round_id=turn.round_id,
                 cancellation_token=turn.cancellation_token,
                 final_text=observation.text,
+                session_id=observation.session_id or self.session_id,
+                actor_id=observation.actor_id or self.actor_id,
             )
         except (RuntimeError, ValueError):
             return {}

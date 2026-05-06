@@ -253,3 +253,186 @@ def test_scheduler_explicitly_commits_memory_candidates_and_exposes_trace() -> N
     assert memory.episodes[0]["summary"] == "用户偏好简短回复。"
     assert snapshot["current"]["memory_traces"] == [trace]
     assert snapshot["scheduler"]["memory_trace_count"] == 1
+
+
+def test_scheduler_marks_each_memory_candidate_commit_status_independently() -> None:
+    class PartialMemory:
+        def __init__(self) -> None:
+            self.queries = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(
+                summary="用户偏好被成功召回。",
+                relevant_memories=["Preference: 用户偏好短回答"],
+                recall_diagnostics={"selected_count": 1},
+            )
+
+    scheduler = RealtimeCognitiveScheduler(
+        clock=_clock(),
+        memory_orchestrator=MemoryOrchestrator(memory_service=PartialMemory()),
+    )
+    scheduler.observe_partial("准备记忆闭环")
+    turn = scheduler.current_turn()
+    assert turn is not None
+    writeback = scheduler.memory_orchestrator.build_writeback_proposal(
+        turn,
+        query="需要写回但服务缺少 writer",
+        reason="missing_writer_regression",
+        summary="这条写回会失败。",
+    )
+    recall = scheduler.memory_orchestrator.build_recall_request(
+        turn,
+        query="用户偏好短回答",
+        reason="recall_after_writeback_failure",
+    )
+
+    trace = scheduler.commit_memory_candidates(session_id="s1", actor_id="user-1")
+
+    assert trace["errors"][0]["error"] == "remember_episode_missing"
+    assert writeback.get("committed") is None
+    assert recall["committed"] is True
+    assert recall["commit_status"] == "ok"
+    assert recall["resolved_count"] == 1
+
+
+def test_scheduler_prefetch_uses_eimemory_recall_before_slow_decision() -> None:
+    class MemorySpy:
+        def __init__(self) -> None:
+            self.queries = []
+            self.memory_traces = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return MemoryResult(
+                summary="妈妈通常晚上八点后方便接电话。",
+                relevant_memories=["Family: 妈妈通常晚上八点后方便接电话。"],
+                recall_diagnostics={
+                    "selected_count": 1,
+                    "selected_records": [
+                        {
+                            "record_id": "mem_mom_1",
+                            "title": "Family contact window",
+                            "source": "eibrain.preference",
+                            "score": 0.93,
+                        }
+                    ],
+                    "source_composition": {"eibrain.preference": 1},
+                },
+            )
+
+        def record_memory_trace(self, payload, *, session_id=None, actor_id=None):
+            self.memory_traces.append(
+                {
+                    "payload": dict(payload),
+                    "session_id": session_id,
+                    "actor_id": actor_id,
+                }
+            )
+            return {"ok": True, "result": {"record_id": "trace_recall_1"}}
+
+    memory = MemorySpy()
+    scheduler = RealtimeCognitiveScheduler(
+        clock=_clock(),
+        memory_orchestrator=MemoryOrchestrator(memory_service=memory),
+    )
+
+    partial = scheduler.observe_partial(
+        "上次妈妈什么时候方便接电话",
+        session_id="voice-session",
+        actor_id="darrow",
+    )
+    scheduler.observe_final("上次妈妈什么时候方便接电话")
+    result = scheduler.decide(session_id="voice-session", actor_id="darrow")
+    snapshot = scheduler.snapshot()
+
+    assert memory.queries[0].query == "上次妈妈什么时候方便接电话"
+    assert memory.queries[0].session_id == "voice-session"
+    assert memory.queries[0].actor_id == "darrow"
+    assert memory.queries[0].task_context["phase"] == "fast_prefetch"
+    assert partial["memory_prefetch"][0]["source"] == "eimemory_recall"
+    assert partial["memory_prefetch"][0]["record_id"] == "mem_mom_1"
+    assert "八点后" in partial["memory_prefetch"][0]["text"]
+    assert result["decision"]["memory_refs"][0]["id"] == "mem_mom_1"
+    assert snapshot["current"]["memory_traces"][0]["recall"]["count"] == 1
+    assert snapshot["current"]["memory_traces"][0]["trace_record"]["record_id"] == "trace_recall_1"
+    assert memory.memory_traces[0]["session_id"] == "voice-session"
+
+
+def test_scheduler_decide_auto_commits_explicit_memory_writeback() -> None:
+    class MemorySpy:
+        last_writeback_status = {"status": "idle"}
+
+        def __init__(self) -> None:
+            self.episodes = []
+            self.memory_traces = []
+
+        def remember_episode(self, **kwargs):
+            self.episodes.append(dict(kwargs))
+            self.last_writeback_status = {
+                "status": "ok",
+                "source": kwargs.get("source"),
+                "memory_type": kwargs.get("memory_type"),
+                "modality": kwargs.get("modality"),
+                "organ": kwargs.get("organ"),
+                "record_id": "dialogue_mem_1",
+            }
+
+        def record_memory_trace(self, payload, *, session_id=None, actor_id=None):
+            self.memory_traces.append(
+                {
+                    "payload": dict(payload),
+                    "session_id": session_id,
+                    "actor_id": actor_id,
+                }
+            )
+            return {"ok": True, "result": {"record_id": "trace_writeback_1"}}
+
+    memory = MemorySpy()
+    scheduler = RealtimeCognitiveScheduler(
+        clock=_clock(),
+        memory_orchestrator=MemoryOrchestrator(memory_service=memory),
+    )
+
+    scheduler.observe_final("记住我喜欢短回答")
+    result = scheduler.decide(session_id="voice-session", actor_id="darrow")
+    snapshot = scheduler.snapshot()
+
+    assert memory.episodes
+    payload = memory.episodes[0]
+    assert payload["session_id"] == "voice-session"
+    assert payload["actor_id"] == "darrow"
+    assert payload["summary"].startswith("user:记住我喜欢短回答 | reply:")
+    assert payload["memory_type"] == "conversation"
+    assert payload["source"] == "eibrain.audio_dialogue"
+    assert payload["modality"] == "audio_text"
+    assert payload["organ"] == "ear"
+    assert payload["outcome"]["status"] == "planned"
+    assert payload["content"]["event_type"] == "dialogue_turn"
+    assert payload["meta"]["round_id"] == result["round_id"]
+    assert result["memory_trace"]["writeback"]["items"][0]["record_id"] == "dialogue_mem_1"
+    assert snapshot["scheduler"]["memory_trace_count"] == 1
+    assert snapshot["current"]["memory_traces"][0]["trace_record"]["record_id"] == "trace_writeback_1"
+
+
+def test_scheduler_memory_writeback_failure_does_not_block_decision() -> None:
+    class FailingMemory:
+        last_writeback_status = {"status": "idle"}
+
+        def remember_episode(self, **kwargs):
+            raise RuntimeError("eimemory down")
+
+        def record_memory_trace(self, payload, *, session_id=None, actor_id=None):
+            return {"ok": True, "result": {"record_id": "trace_error_1"}}
+
+    scheduler = RealtimeCognitiveScheduler(
+        clock=_clock(),
+        memory_orchestrator=MemoryOrchestrator(memory_service=FailingMemory()),
+    )
+
+    scheduler.observe_final("记住我喜欢短回答")
+    result = scheduler.decide(session_id="voice-session", actor_id="darrow")
+
+    assert result["decision"]["stable"] is True
+    assert result["memory_trace"]["writeback"]["items"][0]["status"] == "error"
+    assert result["memory_trace"]["errors"][0]["error"] == "RuntimeError: eimemory down"
