@@ -68,7 +68,15 @@ def summarize_voice_chain(turns: Iterable[Mapping[str, Any]], *, thresholds: Map
     streaming = _streaming_summary(rounds)
     bottleneck = _bottleneck(metrics)
     failed_metrics = _failed_metrics(metrics)
-    return {
+    readiness_summary = _readiness_summary(
+        turn_count=turn_count,
+        failed_metrics=failed_metrics,
+        round_leak=round_leak,
+        interrupt_stop=interrupt_stop,
+        streaming=streaming,
+        bottleneck=bottleneck,
+    )
+    summary = {
         "turnCount": turn_count,
         "roundLeakCount": round_leak_count,
         "roundLeakRate": round_leak_count / turn_count if turn_count else 0.0,
@@ -80,15 +88,17 @@ def summarize_voice_chain(turns: Iterable[Mapping[str, Any]], *, thresholds: Map
         "interruptStop": interrupt_stop,
         "streaming": streaming,
         "bottleneck": bottleneck,
-        "readinessSummary": _readiness_summary(
-            turn_count=turn_count,
-            failed_metrics=failed_metrics,
-            round_leak=round_leak,
-            interrupt_stop=interrupt_stop,
-            streaming=streaming,
-            bottleneck=bottleneck,
-        ),
+        "readinessSummary": readiness_summary,
     }
+    summary["joyinsideReadiness"] = _joyinside_readiness_from_summary(summary)
+    return summary
+
+
+def summarize_joyinside_voice_readiness(
+    turns: Iterable[Mapping[str, Any]], *, thresholds: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return the JoyInside voice acceptance gate for direct CLI/Web display."""
+    return _joyinside_readiness_from_summary(summarize_voice_chain(turns, thresholds=thresholds))
 
 
 def _coerce_thresholds(thresholds: Mapping[str, Any]) -> dict[str, float]:
@@ -346,6 +356,78 @@ def _readiness_summary(
         "summary": message,
         "readinessMessage": message,
     }
+
+
+def _joyinside_readiness_from_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    turn_count = int(summary.get("turnCount") or 0)
+    thresholds = summary.get("thresholds") if isinstance(summary.get("thresholds"), Mapping) else {}
+    metrics = summary.get("metrics") if isinstance(summary.get("metrics"), Mapping) else {}
+    interrupt_stop = summary.get("interruptStop") if isinstance(summary.get("interruptStop"), Mapping) else {}
+    round_leak = summary.get("roundLeak") if isinstance(summary.get("roundLeak"), Mapping) else {}
+    streaming = summary.get("streaming") if isinstance(summary.get("streaming"), Mapping) else {}
+
+    failed_metrics = _failed_metrics(metrics)
+    blocking_reasons: list[str] = []
+    next_actions: list[str] = []
+
+    if turn_count <= 0:
+        blocking_reasons.append("no_turns")
+        next_actions.append("Run at least one benchmark turn before evaluating JoyInside readiness.")
+
+    for field in failed_metrics:
+        metric = metrics.get(field)
+        threshold = metric.get("threshold") if isinstance(metric, Mapping) else thresholds.get(field)
+        blocking_reasons.append(f"{field}_p95_exceeded")
+        if threshold is not None:
+            next_actions.append(f"Reduce {field} p95 to <= {threshold}ms.")
+        else:
+            next_actions.append(f"Reduce {field} p95 below the configured threshold.")
+
+    interrupt_ready = bool(interrupt_stop.get("ready"))
+    if not interrupt_ready:
+        threshold = interrupt_stop.get("threshold", thresholds.get("interruptStopMs"))
+        blocking_reasons.append("interrupt_not_confirmed")
+        if threshold is not None:
+            next_actions.append(f"Capture at least one interrupted turn with interruptStopMs <= {threshold}ms.")
+        else:
+            next_actions.append("Capture at least one interrupted turn with confirmed interruptStopMs.")
+
+    round_leak_free = bool(round_leak.get("free")) and turn_count > 0
+    if turn_count > 0 and not round_leak_free:
+        blocking_reasons.append("round_leak_detected")
+        next_actions.append("Fix stale round suppression until roundLeak count is 0.")
+
+    streaming_ready = bool(streaming.get("ready"))
+    if not streaming_ready:
+        blocking_reasons.append("streaming_signals_missing")
+        next_actions.append("Emit ASR partial, LLM delta, and TTS chunk streaming signals for every turn.")
+
+    latency_ready = turn_count > 0 and not failed_metrics
+    score = 0
+    score += 25 if latency_ready else 0
+    score += 25 if interrupt_ready else 0
+    score += 25 if round_leak_free else 0
+    score += 25 if streaming_ready else 0
+    ready = score == 100 and not blocking_reasons
+    return {
+        "ready": ready,
+        "score": score,
+        "grade": _joyinside_grade(score),
+        "blocking_reasons": blocking_reasons,
+        "next_actions": next_actions,
+    }
+
+
+def _joyinside_grade(score: int) -> str:
+    if score >= 90:
+        return "A"
+    if score >= 75:
+        return "B"
+    if score >= 50:
+        return "C"
+    if score >= 25:
+        return "D"
+    return "F"
 
 
 def _as_float(value: Any) -> float | None:

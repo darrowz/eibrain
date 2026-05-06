@@ -257,3 +257,82 @@ def test_summarize_voice_chain_treats_non_empty_streaming_payloads_as_present() 
     assert summary["streaming"]["ready"] is True
     assert summary["rounds"][0]["streamingReady"] is True
     assert summary["readinessSummary"]["streamingReady"] is True
+
+
+def test_summarize_joyinside_voice_readiness_is_ready_when_acceptance_signals_pass() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_joyinside_voice_readiness
+
+    readiness = summarize_joyinside_voice_readiness(
+        [
+            {
+                "roundId": "round-1",
+                "asrFinalMs": 520.0,
+                "firstTokenMs": 280.0,
+                "firstAudioMs": 1300.0,
+                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "roundLeak": False,
+            },
+            {
+                "roundId": "round-2",
+                "status": "interrupted",
+                "interrupted": True,
+                "asrFinalMs": 610.0,
+                "firstTokenMs": 310.0,
+                "firstAudioMs": 1500.0,
+                "interruptStopMs": 180.0,
+                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "roundLeak": False,
+            },
+        ],
+        thresholds={"asrFinalMs": 800.0, "firstTokenMs": 700.0, "firstAudioMs": 2000.0, "interruptStopMs": 300.0},
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["score"] == 100
+    assert readiness["grade"] == "A"
+    assert readiness["blocking_reasons"] == []
+    assert readiness["next_actions"] == []
+
+
+def test_summarize_joyinside_voice_readiness_reports_actionable_blocking_reasons() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_joyinside_voice_readiness
+
+    readiness = summarize_joyinside_voice_readiness(
+        [
+            {
+                "roundId": "round-1",
+                "asrFinalMs": 520.0,
+                "firstTokenMs": 280.0,
+                "firstAudioMs": 2500.0,
+                "streaming": {"asrPartial": True, "llmDelta": False, "ttsChunk": True},
+                "roundLeak": True,
+            }
+        ],
+        thresholds={"asrFinalMs": 800.0, "firstTokenMs": 700.0, "firstAudioMs": 2000.0, "interruptStopMs": 300.0},
+    )
+
+    assert readiness["ready"] is False
+    assert readiness["score"] == 0
+    assert readiness["grade"] == "F"
+    assert readiness["blocking_reasons"] == [
+        "firstAudioMs_p95_exceeded",
+        "interrupt_not_confirmed",
+        "round_leak_detected",
+        "streaming_signals_missing",
+    ]
+    assert readiness["next_actions"] == [
+        "Reduce firstAudioMs p95 to <= 2000.0ms.",
+        "Capture at least one interrupted turn with interruptStopMs <= 300.0ms.",
+        "Fix stale round suppression until roundLeak count is 0.",
+        "Emit ASR partial, LLM delta, and TTS chunk streaming signals for every turn.",
+    ]
+
+
+def test_summarize_joyinside_voice_readiness_does_not_report_leak_without_turns() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_joyinside_voice_readiness
+
+    readiness = summarize_joyinside_voice_readiness([])
+
+    assert readiness["ready"] is False
+    assert "no_turns" in readiness["blocking_reasons"]
+    assert "round_leak_detected" not in readiness["blocking_reasons"]

@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from eihead.eivoice_runtime import AudioFrame, AcousticFrontendConfig, NoOpAcousticFrontend
-from eihead.eivoice_runtime.aec import LoopbackReferenceBuffer
+from eihead.eivoice_runtime.aec import (
+    LoopbackReferenceBuffer,
+    LoopbackReferenceMatch,
+    build_loopback_reference_diagnostics,
+)
 
 
 def _frame(
@@ -103,3 +107,122 @@ def test_noop_frontend_does_not_claim_aec_when_webrtc_is_unavailable() -> None:
     assert processed.diagnostics["fallback_reason"] == "aec_unavailable"
     assert processed.diagnostics["reference_age_ms"] == pytest.approx(60.0)
     assert frontend.readiness()["last_capture"]["fallback_reason"] == "aec_unavailable"
+
+
+def test_loopback_reference_diagnostics_reports_ready_reference() -> None:
+    config = AcousticFrontendConfig(
+        aec_enabled=True,
+        aec_available=True,
+        loopback_enabled=True,
+        loopback_available=True,
+        loopback_device="alsa_output.usb-speaker.monitor",
+    )
+    match = LoopbackReferenceMatch(
+        frame=_frame(17, created_at_ts=40.000),
+        age_ms=45.0,
+        matched_by="sequence",
+    )
+
+    diagnostics = build_loopback_reference_diagnostics(config, match, max_age_ms=120)
+
+    assert diagnostics == {
+        "ready": True,
+        "state": "ready",
+        "reason": "loopback_reference_ready",
+        "reference_age_ms": pytest.approx(45.0),
+        "matched_by": "sequence",
+        "max_age_ms": 120,
+        "device": "alsa_output.usb-speaker.monitor",
+        "aec_status": "passthrough",
+    }
+
+
+def test_loopback_reference_diagnostics_reports_missing_reference() -> None:
+    config = AcousticFrontendConfig(
+        aec_enabled=True,
+        aec_available=True,
+        loopback_enabled=True,
+        loopback_available=True,
+        loopback_device="alsa_output.usb-speaker.monitor",
+    )
+
+    diagnostics = build_loopback_reference_diagnostics(config, None, max_age_ms=120)
+
+    assert diagnostics["ready"] is False
+    assert diagnostics["state"] == "missing"
+    assert diagnostics["reason"] == "missing_playback_reference"
+    assert diagnostics["reference_age_ms"] is None
+    assert diagnostics["matched_by"] is None
+    assert diagnostics["max_age_ms"] == 120
+    assert diagnostics["device"] == "alsa_output.usb-speaker.monitor"
+    assert diagnostics["aec_status"] == "passthrough"
+
+
+def test_loopback_reference_diagnostics_reports_stale_reference() -> None:
+    config = AcousticFrontendConfig(
+        aec_enabled=True,
+        aec_available=True,
+        loopback_enabled=True,
+        loopback_available=True,
+        loopback_device="alsa_output.usb-speaker.monitor",
+    )
+    match = LoopbackReferenceMatch(
+        frame=_frame(18, created_at_ts=41.000),
+        age_ms=250.0,
+        matched_by="explicit",
+    )
+
+    diagnostics = build_loopback_reference_diagnostics(config, match, max_age_ms=120)
+
+    assert diagnostics["ready"] is False
+    assert diagnostics["state"] == "stale"
+    assert diagnostics["reason"] == "stale_playback_reference"
+    assert diagnostics["reference_age_ms"] == pytest.approx(250.0)
+    assert diagnostics["matched_by"] == "explicit"
+
+
+def test_loopback_reference_diagnostics_reports_aec_unavailable() -> None:
+    config = AcousticFrontendConfig(
+        aec_enabled=True,
+        aec_available=False,
+        aec_backend="webrtc",
+        loopback_enabled=True,
+        loopback_available=True,
+        loopback_device="alsa_output.usb-speaker.monitor",
+    )
+    match = LoopbackReferenceMatch(
+        frame=_frame(19, created_at_ts=42.000),
+        age_ms=30.0,
+        matched_by="sequence",
+    )
+
+    diagnostics = build_loopback_reference_diagnostics(config, match, max_age_ms=120)
+
+    assert diagnostics["ready"] is False
+    assert diagnostics["state"] == "aec_unavailable"
+    assert diagnostics["reason"] == "aec_unavailable"
+    assert diagnostics["reference_age_ms"] == pytest.approx(30.0)
+    assert diagnostics["matched_by"] == "sequence"
+    assert diagnostics["aec_status"] == "unavailable"
+
+
+def test_noop_frontend_last_capture_reuses_loopback_reference_diagnostics() -> None:
+    frontend = NoOpAcousticFrontend(
+        AcousticFrontendConfig(
+            aec_enabled=True,
+            aec_available=True,
+            loopback_enabled=True,
+            loopback_available=True,
+            loopback_device="alsa_output.usb-speaker.monitor",
+        )
+    )
+
+    processed = frontend.process_capture(
+        _frame(20, pcm=b"mic", created_at_ts=50.200),
+        playback_reference=_frame(20, pcm=b"speaker", created_at_ts=50.000),
+    )
+
+    assert processed.diagnostics["loopback_reference"]["ready"] is True
+    assert processed.diagnostics["loopback_reference_state"] == "ready"
+    assert processed.diagnostics["loopback_reference_reason"] == "loopback_reference_ready"
+    assert frontend.readiness()["last_capture"]["loopback_reference"]["matched_by"] == "explicit"

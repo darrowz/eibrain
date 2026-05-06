@@ -101,6 +101,51 @@ def test_acoustic_frontend_aec_unavailable_degrades_health() -> None:
     assert "AEC unavailable" in panel["warnings"]
 
 
+def test_audio_frontend_panel_preserves_loopback_route_and_last_capture() -> None:
+    panel = build_eivoice_runtime_panel(
+        {
+            "state": "running",
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": False},
+                "loopback": {"enabled": True, "available": True},
+                "devices": {
+                    "capture": "alsa_input.usb-UGREEN_Camera_4K.analog-stereo",
+                    "playback": "alsa_output.usb-Philips_SPA3700.analog-stereo",
+                    "loopback": "alsa_output.usb-Philips_SPA3700.analog-stereo.monitor",
+                },
+                "audio_format": {"sample_rate": 48000, "frame_ms": 60, "channels": 2},
+                "aec_backend": "pipewire-monitor",
+                "aec_status": "unavailable",
+                "last_capture": {
+                    "playback_reference_available": True,
+                    "reference_age_ms": 42.0,
+                    "reference_matched_by": "pipewire-target",
+                    "fallback_reason": "aec_unavailable",
+                    "loopback_reference": {
+                        "ready": False,
+                        "state": "aec_unavailable",
+                        "reason": "aec_unavailable",
+                        "reference_age_ms": 42.0,
+                        "matched_by": "pipewire-target",
+                        "max_age_ms": 240,
+                    },
+                },
+            },
+        }
+    )
+
+    assert panel["audioFrontend"]["devices"]["playback"] == "alsa_output.usb-Philips_SPA3700.analog-stereo"
+    assert panel["audioFrontend"]["audioFormat"] == {"sampleRate": 48000, "frameMs": 60, "channels": 2}
+    assert panel["audioFrontend"]["aecBackend"] == "pipewire-monitor"
+    assert panel["audioFrontend"]["aecStatus"] == "unavailable"
+    assert panel["audioFrontend"]["lastCapture"]["playbackReferenceAvailable"] is True
+    assert panel["audioFrontend"]["lastCapture"]["referenceAgeMs"] == 42.0
+    assert panel["audioFrontend"]["lastCapture"]["referenceMatchedBy"] == "pipewire-target"
+    assert panel["audioFrontend"]["lastCapture"]["loopbackReference"]["ready"] is False
+    assert panel["audioFrontend"]["lastCapture"]["loopbackReference"]["state"] == "aec_unavailable"
+    assert panel["audioFrontend"]["lastCapture"]["loopbackReference"]["reason"] == "aec_unavailable"
+
+
 def test_audio_frontend_readiness_boolean_false_degrades_health() -> None:
     from eihead.devices.audio import evaluate_audio_frontend_readiness
 

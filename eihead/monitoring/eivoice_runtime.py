@@ -155,12 +155,54 @@ def _queue_summary(queues: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
 
 def _normalize_audio_frontend(runtime: Mapping[str, Any]) -> dict[str, Any]:
     frontend = _mapping(runtime.get("audio_frontend") or runtime.get("acousticFrontend"))
+    audio_format = _mapping(frontend.get("audio_format") or frontend.get("audioFormat"))
     return {
         "aec": _normalize_component(frontend.get("aec")),
         "ns": _normalize_component(frontend.get("ns") or frontend.get("noise_suppression")),
         "vad": _normalize_component(frontend.get("vad")),
         "loopback": _normalize_component(frontend.get("loopback")),
+        "devices": dict(_mapping(frontend.get("devices"))),
+        "audioFormat": {
+            "sampleRate": _number(audio_format.get("sample_rate") or audio_format.get("sampleRate"), default=0),
+            "frameMs": _number(audio_format.get("frame_ms") or audio_format.get("frameMs"), default=0),
+            "channels": _number(audio_format.get("channels"), default=0),
+        },
+        "aecBackend": _text(frontend.get("aec_backend") or frontend.get("aecBackend"), default=""),
+        "aecStatus": _text(frontend.get("aec_status") or frontend.get("aecStatus"), default=""),
+        "lastCapture": _normalize_last_capture(frontend.get("last_capture") or frontend.get("lastCapture")),
         "warnings": _list(frontend.get("warnings")),
+    }
+
+
+def _normalize_last_capture(value: Any) -> dict[str, Any]:
+    capture = _mapping(value)
+    if not capture:
+        return {}
+    loopback_reference = _mapping(capture.get("loopback_reference") or capture.get("loopbackReference"))
+    return {
+        "playbackReferenceAvailable": bool(
+            capture.get("playback_reference_available") or capture.get("playbackReferenceAvailable")
+        ),
+        "referenceAgeMs": _float(capture.get("reference_age_ms") or capture.get("referenceAgeMs"), default=0.0),
+        "referenceMatchedBy": _text(capture.get("reference_matched_by") or capture.get("referenceMatchedBy")),
+        "referenceSequence": _number(capture.get("reference_sequence") or capture.get("referenceSequence"), default=0),
+        "fallbackReason": _text(capture.get("fallback_reason") or capture.get("fallbackReason")),
+        "loopbackReference": _normalize_loopback_reference(loopback_reference),
+    }
+
+
+def _normalize_loopback_reference(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not value:
+        return {}
+    return {
+        "ready": bool(value.get("ready")),
+        "state": _text(value.get("state")),
+        "reason": _text(value.get("reason")),
+        "referenceAgeMs": _float(value.get("reference_age_ms") or value.get("referenceAgeMs"), default=0.0),
+        "matchedBy": _text(value.get("matched_by") or value.get("matchedBy")),
+        "maxAgeMs": _number(value.get("max_age_ms") or value.get("maxAgeMs"), default=0),
+        "device": _text(value.get("device")),
+        "aecStatus": _text(value.get("aec_status") or value.get("aecStatus")),
     }
 
 

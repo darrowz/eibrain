@@ -8,6 +8,9 @@ from typing import Any
 from .core import AudioFrame
 
 
+DEFAULT_LOOPBACK_REFERENCE_MAX_AGE_MS = 240
+
+
 @dataclass(frozen=True)
 class LoopbackReferenceMatch:
     frame: AudioFrame
@@ -206,6 +209,71 @@ class ProcessedCaptureFrame:
         return getattr(self.frame, name)
 
 
+@dataclass(frozen=True)
+class LoopbackReferenceHealth:
+    ready: bool
+    state: str
+    reason: str
+    reference_age_ms: float | None
+    matched_by: str | None
+    max_age_ms: int
+    device: str | None
+    aec_status: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "ready": self.ready,
+            "state": self.state,
+            "reason": self.reason,
+            "reference_age_ms": self.reference_age_ms,
+            "matched_by": self.matched_by,
+            "max_age_ms": self.max_age_ms,
+            "device": self.device,
+            "aec_status": self.aec_status,
+        }
+
+
+def build_loopback_reference_diagnostics(
+    config: AcousticFrontendConfig,
+    reference_match: LoopbackReferenceMatch | None,
+    *,
+    max_age_ms: int = DEFAULT_LOOPBACK_REFERENCE_MAX_AGE_MS,
+) -> dict[str, Any]:
+    age_ms = reference_match.age_ms if reference_match is not None else None
+    matched_by = reference_match.matched_by if reference_match is not None else None
+    aec_status = _aec_status(config)
+
+    if config.aec_enabled and not config.aec_available:
+        state = "aec_unavailable"
+        reason = "aec_unavailable"
+    elif not config.aec_enabled or not config.loopback_enabled:
+        state = "passthrough"
+        reason = "passthrough_frontend"
+    elif not config.loopback_available:
+        state = "missing"
+        reason = "loopback_unavailable"
+    elif reference_match is None:
+        state = "missing"
+        reason = "missing_playback_reference"
+    elif age_ms is not None and age_ms > max_age_ms:
+        state = "stale"
+        reason = "stale_playback_reference"
+    else:
+        state = "ready"
+        reason = "loopback_reference_ready"
+
+    return LoopbackReferenceHealth(
+        ready=state == "ready",
+        state=state,
+        reason=reason,
+        reference_age_ms=age_ms,
+        matched_by=matched_by,
+        max_age_ms=max_age_ms,
+        device=config.loopback_device,
+        aec_status=aec_status,
+    ).as_dict()
+
+
 class NoOpAcousticFrontend:
     """Pass-through acoustic front-end that never claims real AEC was applied."""
 
@@ -269,12 +337,27 @@ class NoOpAcousticFrontend:
         reference_match: LoopbackReferenceMatch | None,
     ) -> dict[str, Any]:
         reference = reference_match.frame if reference_match is not None else None
+        max_age_ms = (
+            self.loopback_buffer.max_age_ms
+            if self.loopback_buffer is not None
+            else DEFAULT_LOOPBACK_REFERENCE_MAX_AGE_MS
+        )
+        loopback_reference = build_loopback_reference_diagnostics(
+            self.config,
+            reference_match,
+            max_age_ms=max_age_ms,
+        )
         return {
             "mode": self.config.mode,
             "aec_backend": self.config.aec_backend,
             "aec_status": _aec_status(self.config),
             "aec_applied": False,
-            "fallback_reason": _fallback_reason(self.config, reference),
+            "fallback_reason": _fallback_reason(self.config, reference, loopback_reference),
+            "loopback_reference": loopback_reference,
+            "loopback_reference_ready": loopback_reference["ready"],
+            "loopback_reference_state": loopback_reference["state"],
+            "loopback_reference_reason": loopback_reference["reason"],
+            "loopback_reference_max_age_ms": loopback_reference["max_age_ms"],
             "reference_age_ms": reference_match.age_ms if reference_match is not None else None,
             "reference_sequence": reference.sequence if reference is not None else None,
             "reference_matched_by": reference_match.matched_by if reference_match is not None else None,
@@ -292,13 +375,19 @@ def _aec_status(config: AcousticFrontendConfig) -> str:
     return "passthrough"
 
 
-def _fallback_reason(config: AcousticFrontendConfig, reference: AudioFrame | None) -> str | None:
+def _fallback_reason(
+    config: AcousticFrontendConfig,
+    reference: AudioFrame | None,
+    loopback_reference: dict[str, Any] | None = None,
+) -> str | None:
     if not config.aec_enabled:
         return None
     if not config.aec_available:
         return "aec_unavailable"
     if config.loopback_enabled and reference is None:
         return "missing_playback_reference"
+    if loopback_reference is not None and loopback_reference["state"] == "stale":
+        return "stale_playback_reference"
     return "passthrough_frontend"
 
 
