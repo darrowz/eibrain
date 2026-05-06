@@ -71,6 +71,33 @@ def test_voice_realtime_exports_native_payload_consumed_by_eihead_monitoring() -
     assert consumed["last_turn"] == {"transcript": "hello honjia", "reply": "hello"}
 
 
+def test_voice_realtime_exposes_realtime_audio_ring_buffer_diagnostics() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eihead.monitoring.voice import build_voice_diagnostics_from_app
+
+    runtime = BodyRuntimeApp()
+    runtime.update_voice_dialogue_state(
+        enabled=True,
+        running=True,
+        phase="idle",
+        last_status="no_transcript",
+        realtime_audio={
+            "enabled": True,
+            "running": True,
+            "buffer_ms": 2400,
+            "wake_detector": {"poll_count": 3, "emitted_count": 1},
+        },
+    )
+
+    payload = runtime.voice_realtime()
+    consumed = build_voice_diagnostics_from_app(runtime, timestamp=124.0)
+
+    assert payload["realtime_audio"]["buffer_ms"] == 2400
+    assert payload["realtime_audio"]["wake_detector"]["emitted_count"] == 1
+    assert consumed["realtime_audio"]["running"] is True
+    assert consumed["realtime_audio"]["wake_detector"]["poll_count"] == 3
+
+
 def test_voice_realtime_exposes_voice_chain_benchmark_in_dialogue_payload() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eihead.monitoring.voice import build_voice_diagnostics_from_app

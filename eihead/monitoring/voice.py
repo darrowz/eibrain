@@ -71,6 +71,7 @@ def _build_voice_payload(
     mouth = _normalize_mouth(_mapping_from_keys(data, "mouth"))
     dialogue_source = _dialogue_mapping(data)
     dialogue = _normalize_dialogue(dialogue_source, root=data)
+    realtime_audio = _realtime_audio_payload(data, dialogue_source)
     realtime_session = _realtime_session_payload(data, dialogue_source)
     round_info = _round_payload(data, dialogue_source, realtime_session)
     scheduler = _scheduler_payload(data, dialogue_source)
@@ -123,6 +124,7 @@ def _build_voice_payload(
         "ear": ear,
         "mouth": mouth,
         "dialogue": dialogue,
+        "realtime_audio": realtime_audio,
         "round": round_info,
         "scheduler": scheduler,
         "lanes": cognition["lanes"],
@@ -302,6 +304,21 @@ def _normalize_dialogue(raw: Mapping[str, Any] | None, *, root: Mapping[str, Any
         "last_reply": _first_text(mapping.get("last_reply"), root.get("last_reply") if root else None),
         "readiness_message": readiness,
     }
+
+
+def _realtime_audio_payload(
+    data: Mapping[str, Any] | None,
+    dialogue: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    raw = _first_value(dialogue, "realtime_audio", "realtimeAudio")
+    if raw is None:
+        raw = _first_value(data, "realtime_audio", "realtimeAudio")
+    if isinstance(raw, Mapping):
+        payload = _json_mapping(raw)
+        payload.setdefault("enabled", False)
+        payload.setdefault("running", False)
+        return payload
+    return {"enabled": False, "running": False}
 
 
 def _round_payload(

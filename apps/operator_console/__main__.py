@@ -11,6 +11,11 @@ from apps.body_runtime.engagement_state import EngagementStateWriter
 from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
 from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
 from apps.cognitive_runtime.app import CognitiveRuntimeApp
+from eibrain.body.realtime_audio import ArecordRawChunkSource
+from eibrain.body.realtime_audio import PcmRingBuffer
+from eibrain.body.realtime_audio import RealtimeAudioCaptureWorker
+from eibrain.body.realtime_audio import RealtimeWakeAudioPipeline
+from eibrain.body.realtime_audio import RealtimeWakeDetector
 from eibrain.infra.config import load_config
 
 from .web import MonitoringWebServer
@@ -28,6 +33,12 @@ def main() -> None:
     parser.add_argument("--security-vision-always-on", action="store_true")
     parser.add_argument("--wake-word", default=r"\u9e3f\u9014")
     parser.add_argument("--sleep-word", default=r"\u7ed3\u675f\u5bf9\u8bdd")
+    parser.add_argument("--enable-realtime-wake-audio", action="store_true")
+    parser.add_argument("--realtime-wake-buffer-ms", type=int, default=6000)
+    parser.add_argument("--realtime-wake-lookback-ms", type=int, default=2400)
+    parser.add_argument("--realtime-wake-min-buffer-ms", type=int, default=480)
+    parser.add_argument("--realtime-wake-frame-ms", type=int, default=120)
+    parser.add_argument("--realtime-wake-poll-interval", type=float, default=0.25)
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -40,13 +51,23 @@ def main() -> None:
     )
     voice_loop = None
     if not args.disable_voice_dialogue_loop:
+        realtime_wake_source = None
+        wake_word = _decode_cli_text(args.wake_word)
+        if args.enable_realtime_wake_audio:
+            try:
+                realtime_wake_source = _build_realtime_wake_source(runtime, config, args, wake_word=wake_word)
+            except Exception as exc:
+                runtime.update_voice_dialogue_state(
+                    realtime_audio={"enabled": True, "running": False, "last_error": str(exc)}
+                )
         voice_loop = VoiceDialogueLoop(
             body_runtime=runtime,
             cognitive_runtime=cognitive_runtime,
             chunk_count=args.voice_chunk_count,
-            wake_word=_decode_cli_text(args.wake_word),
+            wake_word=wake_word,
             sleep_word=_decode_cli_text(args.sleep_word),
             engagement_writer=engagement_writer,
+            realtime_wake_source=realtime_wake_source,
         )
         voice_loop.start()
     visual_loop = None
@@ -85,6 +106,50 @@ def _decode_cli_text(value: str) -> str:
         return value.encode("ascii").decode("unicode_escape")
     except UnicodeError:
         return value
+
+
+def _build_realtime_wake_source(runtime, config, args, *, wake_word: str):
+    ear_cfg = config.body.organs.get("ear")
+    if ear_cfg is None:
+        raise RuntimeError("ear organ not configured")
+    capture_cfg = ear_cfg.subfunctions.get("capture")
+    asr_cfg = ear_cfg.subfunctions.get("asr")
+    if capture_cfg is None or asr_cfg is None:
+        raise RuntimeError("ear capture/asr configuration is incomplete")
+    sample_rate = int(capture_cfg.driver.extra.get("sample_rate", 16000))
+    channels = int(capture_cfg.driver.extra.get("channels", 1))
+    frame_ms = max(20, int(args.realtime_wake_frame_ms))
+    ring = PcmRingBuffer(
+        max_duration_ms=max(frame_ms, int(args.realtime_wake_buffer_ms)),
+        sample_rate=sample_rate,
+        channels=channels,
+    )
+    chunk_source = ArecordRawChunkSource(
+        device=str(capture_cfg.driver.extra.get("device", "default")),
+        sample_rate=sample_rate,
+        channels=channels,
+        frame_ms=frame_ms,
+    )
+    capture_worker = RealtimeAudioCaptureWorker(
+        ring_buffer=ring,
+        chunk_source=chunk_source,
+        chunk_duration_ms=frame_ms,
+    )
+    recognizer = runtime._make_recognizer(asr_cfg)
+    detector = RealtimeWakeDetector(
+        ring_buffer=ring,
+        recognizer=recognizer,
+        wake_words=(wake_word,),
+        transcript_replacements=asr_cfg.driver.extra.get("transcript_replacements", {}),
+        lookback_ms=int(args.realtime_wake_lookback_ms),
+        min_buffer_ms=int(args.realtime_wake_min_buffer_ms),
+        poll_interval_s=float(args.realtime_wake_poll_interval),
+    )
+    return RealtimeWakeAudioPipeline(
+        ring_buffer=ring,
+        capture_worker=capture_worker,
+        wake_detector=detector,
+    )
 
 
 if __name__ == "__main__":

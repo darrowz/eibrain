@@ -231,6 +231,41 @@ class _StopAckButStillSpeakingBody(_Body):
         return [type("Outcome", (), {"status": "ok"})()]
 
 
+class _RealtimeWakeSource:
+    def __init__(self, transcripts: list[str]) -> None:
+        self.started = False
+        self.stopped = False
+        self.calls = 0
+        self._transcripts = list(transcripts)
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def next_transcript(self, *, timeout_s: float = 0.0):
+        self.calls += 1
+        if not self._transcripts:
+            return None
+        text = self._transcripts.pop(0)
+        return AudioTranscriptFinal(
+            ts=1.0,
+            source="ear.realtime_wake",
+            text=text,
+            session_id="sid",
+            actor_id="actor",
+        )
+
+    def snapshot(self):
+        return {
+            "enabled": True,
+            "running": self.started and not self.stopped,
+            "buffer_ms": 2400,
+            "wake_detector": {"poll_count": self.calls},
+        }
+
+
 def _start_loop(body: _Body, cognition: _Cognition, **kwargs):
     from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
 
@@ -318,6 +353,23 @@ def test_voice_dialogue_loop_wires_cognitive_memory_into_realtime_scheduler() ->
     assert result["memory_trace"]["writeback"]["items"][0]["record_id"] == "voice_mem_1"
     assert finalized.memory_traces
     assert cognition.memory.traces[-1]["session_id"] == "voice-session"
+
+
+def test_voice_dialogue_loop_uses_realtime_wake_source_while_dormant() -> None:
+    body = _Body([""])
+    cognition = _Cognition()
+    source = _RealtimeWakeSource(["你好鸿途记住我喜欢短回答"])
+    loop = _start_loop(body, cognition, realtime_wake_source=source)
+    try:
+        _wait_until(lambda: len(cognition.observations) == 1)
+    finally:
+        loop.stop()
+
+    assert source.started is True
+    assert source.stopped is True
+    assert body.calls == 0
+    assert cognition.observations[0].text == "记住我喜欢短回答"
+    assert any("realtime_audio" in update for update in body.updates)
 
 
 def test_voice_dialogue_loop_ignores_plain_text_while_dormant() -> None:
