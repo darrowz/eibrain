@@ -627,6 +627,10 @@ class BodyRuntimeApp:
         bottleneck = self._voice_bottleneck_payload(dialogue, latency=latency)
         last_turn = self._voice_last_turn(dialogue)
         voice_chain_readiness = self._voice_chain_readiness_payload(dialogue)
+        realtime_audio = self._first_mapping_from(dialogue, keys=("realtime_audio", "realtimeAudio")) or {
+            "enabled": False,
+            "running": False,
+        }
         status, wired, not_wired = self._voice_overall_status(
             ear=ear,
             mouth=mouth,
@@ -656,6 +660,7 @@ class BodyRuntimeApp:
             "mouth": mouth,
             "dialogue": dialogue,
             "voice_dialogue": dialogue,
+            "realtime_audio": realtime_audio,
             "realtime_session": realtime_session,
             "round": round_info,
             "current_round_id": round_info["current_round_id"],

@@ -251,6 +251,7 @@ class VoiceDialogueLoop:
         interruption_controller: InterruptionController | None = None,
         speech_action_planner: SpeechActionPlanner | None = None,
         realtime_cognitive_scheduler: RealtimeCognitiveScheduler | None = None,
+        realtime_wake_source: object | None = None,
     ) -> None:
         self.body_runtime = body_runtime
         self.cognitive_runtime = cognitive_runtime
@@ -293,6 +294,8 @@ class VoiceDialogueLoop:
         self._interrupted_round_count = 0
         self._last_microfeedback: dict[str, object] | None = None
         self._realtime_session: object | None = None
+        self.realtime_wake_source = realtime_wake_source
+        self._realtime_audio_last_error = ""
         self._voice_chain_benchmark_traces: list[dict[str, object]] = []
 
     def start(self) -> None:
@@ -311,6 +314,8 @@ class VoiceDialogueLoop:
             "last_reply": "",
         }
         payload.update(self._round_state_payload())
+        self._start_realtime_wake_source()
+        payload["realtime_audio"] = self._realtime_audio_payload()
         self.body_runtime.update_voice_dialogue_state(**payload)
         self._publish_engagement_state(phase="running" if self.conversation_active else "sleeping")
         self._thread = threading.Thread(target=self._run, name="voice-dialogue-loop", daemon=True)
@@ -321,6 +326,7 @@ class VoiceDialogueLoop:
         if self._thread is not None:
             self._thread.join(timeout=3)
         self._thread = None
+        self._stop_realtime_wake_source()
         payload = {
             "running": False,
             "phase": "stopped",
@@ -330,11 +336,145 @@ class VoiceDialogueLoop:
             "sleep_word": self.sleep_word,
         }
         payload.update(self._round_state_payload())
+        payload["realtime_audio"] = self._realtime_audio_payload()
         self.body_runtime.update_voice_dialogue_state(**payload)
         self._publish_engagement_state(
             phase="stopped",
             conversation_active=self.conversation_active,
             reason="loop_stopped",
+        )
+
+    def _start_realtime_wake_source(self) -> None:
+        source = self.realtime_wake_source
+        if self.conversation_active:
+            return
+        starter = getattr(source, "start", None)
+        if not callable(starter):
+            return
+        try:
+            starter()
+            self._realtime_audio_last_error = ""
+        except Exception as exc:  # pragma: no cover - hardware/runtime boundary
+            self._realtime_audio_last_error = str(exc)
+
+    def _pause_realtime_wake_source(self) -> None:
+        source = self.realtime_wake_source
+        if source is None:
+            return
+        pauser = getattr(source, "pause", None)
+        if callable(pauser):
+            try:
+                pauser()
+                return
+            except Exception as exc:  # pragma: no cover - hardware/runtime boundary
+                self._realtime_audio_last_error = str(exc)
+                return
+        self._stop_realtime_wake_source()
+
+    def _resume_realtime_wake_source(self) -> None:
+        source = self.realtime_wake_source
+        if source is None:
+            return
+        resumer = getattr(source, "resume", None)
+        if callable(resumer):
+            try:
+                resumer()
+                self._realtime_audio_last_error = ""
+                return
+            except Exception as exc:  # pragma: no cover - hardware/runtime boundary
+                self._realtime_audio_last_error = str(exc)
+                return
+        self._start_realtime_wake_source()
+
+    def _stop_realtime_wake_source(self) -> None:
+        source = self.realtime_wake_source
+        stopper = getattr(source, "stop", None)
+        if not callable(stopper):
+            return
+        try:
+            stopper()
+        except Exception as exc:  # pragma: no cover - hardware/runtime boundary
+            self._realtime_audio_last_error = str(exc)
+
+    def _realtime_audio_payload(self) -> dict[str, object]:
+        source = self.realtime_wake_source
+        if source is None:
+            return {"enabled": False, "running": False, "last_error": self._realtime_audio_last_error}
+        payload: dict[str, object] = {"enabled": True, "last_error": self._realtime_audio_last_error}
+        snapshot = getattr(source, "snapshot", None)
+        if callable(snapshot):
+            try:
+                value = snapshot()
+                if isinstance(value, dict):
+                    payload.update(value)
+            except Exception as exc:  # pragma: no cover - diagnostic boundary
+                payload["last_error"] = str(exc)
+        payload.setdefault("running", False)
+        return payload
+
+    def _poll_realtime_wake_source(self, *, timeout_s: float = 0.0) -> AudioTranscriptFinal | None:
+        source = self.realtime_wake_source
+        if source is None:
+            return None
+        getter = getattr(source, "next_transcript", None)
+        if not callable(getter):
+            return None
+        try:
+            value = getter(timeout_s=max(0.0, float(timeout_s)))
+        except TypeError:
+            value = getter()
+        except Exception as exc:  # pragma: no cover - runtime boundary
+            self._realtime_audio_last_error = str(exc)
+            return None
+        return self._coerce_audio_observation(value)
+
+    def _read_audio_observation(self, *, chunk_count: int) -> AudioTranscriptFinal:
+        if self.realtime_wake_source is not None and not self.conversation_active:
+            observation = self._poll_realtime_wake_source(timeout_s=min(0.05, self.empty_interval_s))
+            if observation is not None:
+                return observation
+            return AudioTranscriptFinal(
+                ts=time.time(),
+                source="ear.realtime_wake",
+                text="",
+                session_id=self.session_id,
+                actor_id=self.actor_id,
+            )
+        return self.body_runtime.transcribe_audio_window(
+            chunk_count=chunk_count,
+            session_id=self.session_id,
+            actor_id=self.actor_id,
+        )
+
+    def _coerce_audio_observation(self, value: object) -> AudioTranscriptFinal | None:
+        if value is None:
+            return None
+        if isinstance(value, AudioTranscriptFinal):
+            return value
+        if isinstance(value, dict):
+            text = str(value.get("text") or value.get("transcript") or "")
+            if not text:
+                return None
+            return AudioTranscriptFinal(
+                ts=float(value.get("ts") or time.time()),
+                source=str(value.get("source") or "ear.realtime_wake"),
+                text=text,
+                language=str(value.get("language") or "und"),
+                session_id=str(value.get("session_id") or self.session_id),
+                actor_id=str(value.get("actor_id") or self.actor_id),
+                target_id=str(value.get("target_id") or "") or None,
+            )
+        text = str(getattr(value, "text", "") or getattr(value, "transcript", "") or "")
+        if not text:
+            return None
+        return AudioTranscriptFinal(
+            ts=float(getattr(value, "ts", 0.0) or time.time()),
+            source=str(getattr(value, "source", "") or "ear.realtime_wake"),
+            text=text,
+            language=str(getattr(value, "language", "") or "und"),
+            session_id=str(getattr(value, "session_id", "") or self.session_id),
+            actor_id=str(getattr(value, "actor_id", "") or self.actor_id),
+            target_id=str(getattr(value, "target_id", "") or "") or None,
         )
 
     def _publish_engagement_state(
@@ -1012,6 +1152,7 @@ class VoiceDialogueLoop:
         payload.update(self._round_state_payload(turn))
         session = realtime_voice_session or self._realtime_session_for_turn(turn)
         payload.update(self._realtime_updates(session))
+        payload["realtime_audio"] = self._realtime_audio_payload()
         if last_status not in {"interrupted", "stale_round_blocked"}:
             payload.setdefault("interrupt_active", False)
         payload.update(updates)
@@ -1274,11 +1415,7 @@ class VoiceDialogueLoop:
                     self.min_chunk_count,
                     min(self.max_chunk_count, self._rolling_chunk_count),
                 )
-                observation = self.body_runtime.transcribe_audio_window(
-                    chunk_count=chunk_count,
-                    session_id=self.session_id,
-                    actor_id=self.actor_id,
-                )
+                observation = self._read_audio_observation(chunk_count=chunk_count)
                 listen_asr_s = time.perf_counter() - listen_started
                 transcript = observation.text.strip()
                 try:
@@ -1341,6 +1478,7 @@ class VoiceDialogueLoop:
                         continue
 
                     self.conversation_active = True
+                    self._pause_realtime_wake_source()
                     transcript = wake_transcript
                     observation = self._replace_transcript(observation, transcript)
                     self._publish_engagement_state(
@@ -1434,6 +1572,7 @@ class VoiceDialogueLoop:
                 if requested_sleep and not transcript:
                     think_started = time.perf_counter()
                     self.conversation_active = False
+                    self._resume_realtime_wake_source()
                     self._publish_engagement_state(
                         phase="stopped",
                         conversation_active=False,

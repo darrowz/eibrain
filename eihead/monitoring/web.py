@@ -618,6 +618,7 @@ def _render_index(app: Any, timestamp: float) -> str:
     voice_interruption = _display_value(_voice_interruption_summary(voice.get("interruption")))
     voice_microfeedback = _display_value(_voice_microfeedback_summary(voice.get("microfeedback")))
     voice_closed_loop = _display_value(_voice_closed_loop_summary(voice.get("closed_loop_state")))
+    voice_realtime_audio = _display_value(_voice_realtime_audio_summary(voice.get("realtime_audio")))
     voice_event_count = _display_value(_metric_value(voice.get("event_count")))
     voice_last_reply_delta = _display_value(voice.get("last_reply_delta") or "unknown")
     voice_first_reply_token = _display_value(
@@ -773,6 +774,7 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Interrupts</div><span class="metric">{voice_interruption}</span></div>
       <div class="card"><div class="label">Microfeedback</div><span class="metric">{voice_microfeedback}</span></div>
       <div class="card"><div class="label">Closed loop</div><span class="metric">{voice_closed_loop}</span></div>
+      <div class="card"><div class="label">Realtime audio</div><span class="metric">{voice_realtime_audio}</span></div>
       <div class="card"><div class="label">Realtime events</div><span class="metric">{voice_event_count}</span></div>
       <div class="card"><div class="label">Last reply delta</div><span class="metric">{voice_last_reply_delta}</span></div>
       <div class="card"><div class="label">First reply token</div><span class="metric">{voice_first_reply_token}</span></div>
@@ -1153,6 +1155,32 @@ def _voice_closed_loop_summary(value: Any) -> str:
         if key in value:
             parts.append(f"{key}={'yes' if value.get(key) is True else 'no'}")
     return " / ".join(parts) if parts else "unknown"
+
+
+def _voice_realtime_audio_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return "not wired"
+    enabled = value.get("enabled") is True
+    running = value.get("running") is True
+    parts = ["running" if running else "enabled" if enabled else "disabled"]
+    buffer_ms = value.get("buffer_ms")
+    if buffer_ms not in (None, ""):
+        parts.append(f"buffer {buffer_ms}ms")
+    detector = value.get("wake_detector")
+    if isinstance(detector, Mapping):
+        emitted = detector.get("emitted_count")
+        polls = detector.get("poll_count")
+        if emitted not in (None, ""):
+            parts.append(f"wake {emitted}")
+        if polls not in (None, ""):
+            parts.append(f"poll {polls}")
+        last_text = detector.get("last_text")
+        if last_text:
+            parts.append(str(last_text))
+    last_error = value.get("last_error")
+    if last_error:
+        parts.append(f"error: {last_error}")
+    return " / ".join(parts)
 
 
 def _voice_cancellation_chain_summary(value: Any) -> str:

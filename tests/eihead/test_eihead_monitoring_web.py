@@ -505,6 +505,23 @@ class VoiceChainReadinessApp(FakeMonitorApp):
         }
 
 
+class RealtimeAudioVoiceApp(FakeMonitorApp):
+    def voice_realtime(self) -> dict[str, object]:
+        return {
+            "schema": "eihead.monitor.voice_realtime.v1",
+            "status": "wired",
+            "ear": {"status": "ok", "provider": "sherpa_onnx"},
+            "mouth": {"status": "ok", "backend": "minimax"},
+            "dialogue": {"phase": "idle", "last_status": "no_transcript"},
+            "realtime_audio": {
+                "enabled": True,
+                "running": True,
+                "buffer_ms": 2400,
+                "wake_detector": {"poll_count": 8, "emitted_count": 2, "last_text": "你好鸿途"},
+            },
+        }
+
+
 class RoundSchedulerInterruptVoiceApp(FakeMonitorApp):
     def voice_realtime(self) -> dict[str, object]:
         return {
@@ -1145,6 +1162,23 @@ def test_voice_api_and_html_render_voice_chain_readiness_card() -> None:
     assert "Voice chain readiness" in body
     assert "ready: 2 live turns" in body
     assert "firstAudioMs" in body
+
+
+def test_voice_api_and_html_render_realtime_audio_card() -> None:
+    app = RealtimeAudioVoiceApp()
+
+    with running_server(app, clock=lambda: 655.1) as (base_url, _server, _thread):
+        status_code, _, payload = read_json(f"{base_url}/api/voice/realtime")
+        html_code, html_headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert payload["realtime_audio"]["running"] is True
+    assert payload["realtime_audio"]["wake_detector"]["emitted_count"] == 2
+    assert html_code == 200
+    assert html_headers["Content-Type"].startswith("text/html")
+    assert "Realtime audio" in body
+    assert "buffer 2400ms" in body
+    assert "wake 2" in body
 
 
 def test_voice_helper_exposes_round_scheduler_interrupt_and_microfeedback_state() -> None:
