@@ -799,6 +799,18 @@ def test_operator_console_exposes_pan_motion_proof_file(tmp_path, monkeypatch) -
     assert proof["right_dx_px"] == 75.8
 
 
+def test_monitoring_web_keeps_visual_tracking_diagnostics_visible() -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    html = MonitoringWebServer._render_html({"generated_at_ts": 0.0})
+
+    assert "Track error" in html
+    assert "Track angle" in html
+    assert "Track decision" in html
+    assert "Suppress" in html
+    assert "Pan proof" in html
+
+
 def test_operator_console_exposes_audio_diagnostics() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

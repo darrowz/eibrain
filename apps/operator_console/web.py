@@ -662,6 +662,9 @@ class MonitoringWebServer:
         : 'none';
       const trackingError = typeof visual.tracking_target_error_x === 'number' ? visual.tracking_target_error_x.toFixed(2) : '—';
       const trackingAngle = typeof trackingDecision.target_angle === 'number' ? `${{trackingDecision.target_angle}} deg` : '—';
+      const trackingDecisionSummary = trackingDecision.action
+        ? `${{trackingDecision.action}} / ${{trackingDecision.reason || '-'}}`
+        : 'pending';
       const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
       document.getElementById('identity-action-status').textContent = registeredIdentity.registered
         ? `Registered: ${{identityName || 'known person'}}`
@@ -677,6 +680,8 @@ class MonitoringWebServer:
         ['Tracking', `${{visual.tracking_status || 'idle'}} / ${{visual.tracking_source || 'inactive'}}`],
         ['Track error', trackingError],
         ['Track angle', trackingAngle],
+        ['Track decision', trackingDecisionSummary],
+        ['Suppress', visual.tracking_suppressed_reason || 'none'],
         ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
         ['Top', topLabel],
