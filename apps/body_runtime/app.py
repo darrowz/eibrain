@@ -21,10 +21,20 @@ from eibrain.body.organs.neck.organ import NeckOrgan
 from eibrain.body.faster_whisper_recognizer import FasterWhisperRecognizer
 from eibrain.body.neck_fusion import NeckFusionConfig, NeckFusionPolicy
 from eibrain.body.sherpa_streaming import SherpaOnnxStreamingRecognizer
+from eibrain.body.vision_model_registry import select_profile as select_vision_model_profile
+from eibrain.body.visual_follow_score import score_visual_follow
+from eibrain.body.visual_follow_tuning import recommend_visual_follow_tuning
+from eibrain.body.visual_target_lock import VisualTargetLockSelector
+from eibrain.cognition.vision_events import VisionEventShaper
+from eibrain.cognition.vision_scene_graph import build_vision_scene_graph
+from eibrain.cognition.vision_voice_context import build_vision_voice_context
 from eibrain.infra.config import EIBrainConfig, load_config
+from eibrain.memory.visual_feedback import build_visual_feedback_record
+from eibrain.memory.visual_memory import VisualMemoryPolicy
 from eibrain.protocol.actions import Action, MoveHeadAction
 from eibrain.protocol.observations import AudioTranscriptFinal
 from eibrain.voice.readiness import build_voice_chain_readiness
+from apps.body_runtime.vision_soak import summarize_vision_soak
 from apps.body_runtime.voice_chain_scenarios import run_voice_chain_scenarios
 
 
@@ -46,6 +56,11 @@ class BodyRuntimeApp:
         self.ear_processor: EarStreamProcessor | None = None
         self._neck_fusion = NeckFusionPolicy(self._build_neck_fusion_config())
         self._neck_fusion_last_action: dict[str, object] | None = None
+        self._visual_target_lock = VisualTargetLockSelector()
+        self._vision_event_shaper = VisionEventShaper(source="body_runtime.visual_tracking")
+        self._visual_memory_policy = VisualMemoryPolicy()
+        self._last_visual_target_error_x: float | None = None
+        self._last_visual_tracking_sample: dict[str, object] | None = None
         self._last_visual_tracking_decision: dict[str, object] = {}
         self._visual_tracking_misses = 0
         self._visual_tracking_recentered_this_episode = False
@@ -81,6 +96,16 @@ class BodyRuntimeApp:
             "last_error": "",
             "miss_count": 0,
             "tracking_decision": {},
+            "target_lock": {},
+            "follow_score": {},
+            "follow_tuning": {},
+            "vision_events": [],
+            "scene_graph": {},
+            "voice_context": {},
+            "memory_candidate": None,
+            "training_feedback": None,
+            "soak_summary": {},
+            "model_profile": {},
             "tracking_target_center_x": None,
             "tracking_target_error_x": None,
             "tracking_suppressed_reason": "",
@@ -788,6 +813,17 @@ class BodyRuntimeApp:
         if target is None:
             self._visual_tracking_misses += 1
             self._note_visual_miss()
+            diagnostics = self._build_visual_loop_diagnostics(
+                eye_details=eye_details,
+                detections=[],
+                selected_target=None,
+                tracking_target=None,
+                outcome=None,
+                session_id=session_id,
+                actor_id=actor_id,
+                status="waiting_for_target",
+                suppressed_reason="target_missing",
+            )
             self._update_visual_tracking_state(
                 status="waiting_for_target",
                 target=None,
@@ -802,6 +838,7 @@ class BodyRuntimeApp:
                 tracking_target_center_x=None,
                 tracking_target_error_x=None,
                 tracking_suppressed_reason="target_missing",
+                **diagnostics,
             )
             if self._visual_tracking_recentered_this_episode:
                 return None
@@ -832,6 +869,17 @@ class BodyRuntimeApp:
                 tracking_target_center_x=None,
                 tracking_target_error_x=None,
                 tracking_suppressed_reason="",
+                **self._build_visual_loop_diagnostics(
+                    eye_details=eye_details,
+                    detections=[],
+                    selected_target=None,
+                    tracking_target=None,
+                    outcome=outcome,
+                    session_id=session_id,
+                    actor_id=actor_id,
+                    status="recentering",
+                    suppressed_reason="",
+                ),
             )
             self._refresh_interaction_mode(force_reason="recenter_after_miss")
             return outcome
@@ -839,6 +887,17 @@ class BodyRuntimeApp:
         self._visual_tracking_recentered_this_episode = False
         tracking_target = self._prepare_tracking_target(target)
         if tracking_target is None:
+            diagnostics = self._build_visual_loop_diagnostics(
+                eye_details=eye_details,
+                detections=self._detections_from_eye_details(eye_details),
+                selected_target=target,
+                tracking_target=None,
+                outcome=None,
+                session_id=session_id,
+                actor_id=actor_id,
+                status="holding_target",
+                suppressed_reason="target_preparation_suppressed",
+            )
             self._update_visual_tracking_state(
                 status="holding_target",
                 target=target,
@@ -851,6 +910,7 @@ class BodyRuntimeApp:
                 tracking_target_center_x=target.get("target_x"),
                 tracking_target_error_x=self._target_error_x(target.get("target_x")),
                 tracking_suppressed_reason="target_preparation_suppressed",
+                **diagnostics,
             )
             return None
         action = self.plan_visual_tracking_action(
@@ -862,6 +922,17 @@ class BodyRuntimeApp:
         )
         if action is None:
             self._note_visual_target_locked(tracking_target, neck_action=False)
+            diagnostics = self._build_visual_loop_diagnostics(
+                eye_details=eye_details,
+                detections=self._detections_from_eye_details(eye_details),
+                selected_target=target,
+                tracking_target=tracking_target,
+                outcome=None,
+                session_id=session_id,
+                actor_id=actor_id,
+                status="holding_target",
+                suppressed_reason=str(self._last_visual_tracking_decision.get("reason", "")),
+            )
             self._update_visual_tracking_state(
                 status="holding_target",
                 target=tracking_target,
@@ -871,11 +942,23 @@ class BodyRuntimeApp:
                 tracking_target_center_x=tracking_target.get("target_x"),
                 tracking_target_error_x=self._target_error_x(tracking_target.get("target_x")),
                 tracking_suppressed_reason=str(self._last_visual_tracking_decision.get("reason", "")),
+                **diagnostics,
             )
             return None
         outcomes = self.dispatch_actions([action])
         outcome = outcomes[0] if outcomes else None
         self._note_visual_target_locked(tracking_target)
+        diagnostics = self._build_visual_loop_diagnostics(
+            eye_details=eye_details,
+            detections=self._detections_from_eye_details(eye_details),
+            selected_target=target,
+            tracking_target=tracking_target,
+            outcome=outcome,
+            session_id=session_id,
+            actor_id=actor_id,
+            status="tracking",
+            suppressed_reason="",
+        )
         self._update_visual_tracking_state(
             status="tracking",
             target=tracking_target,
@@ -885,6 +968,7 @@ class BodyRuntimeApp:
             tracking_target_center_x=tracking_target.get("target_x"),
             tracking_target_error_x=self._target_error_x(tracking_target.get("target_x")),
             tracking_suppressed_reason="",
+            **diagnostics,
         )
         return outcome
 
@@ -902,6 +986,15 @@ class BodyRuntimeApp:
             last_outcome_status=None,
             last_error="",
             tracking_decision={},
+            target_lock={},
+            follow_score={},
+            follow_tuning={},
+            vision_events=[],
+            scene_graph={},
+            voice_context={},
+            memory_candidate=None,
+            training_feedback=None,
+            soak_summary={},
             tracking_target_center_x=None,
             tracking_target_error_x=None,
             tracking_suppressed_reason=reason,
@@ -1204,8 +1297,12 @@ class BodyRuntimeApp:
             detections = []
         eye_details = {
             "frame_captured_at_ts": detection_state.details.get("frame_captured_at_ts"),
+            "frame_path": detection_state.details.get("frame_path"),
+            "fps": detection_state.details.get("fps") or detection_state.details.get("vision_fps"),
+            "target_fps": detection_state.details.get("target_fps") or detection_state.details.get("vision_target_fps"),
             "detection_count": len(detections),
             "top_detection": detection_state.details.get("top_detection"),
+            "detections": detections,
         }
         ranked: list[tuple[int, float, dict[str, object]]] = []
         for detection in detections:
@@ -1257,6 +1354,203 @@ class BodyRuntimeApp:
         self.visual_tracking_state["updated_at_ts"] = time.time()
         if "last_error" not in updates and self.visual_tracking_state.get("status") != "error":
             self.visual_tracking_state["last_error"] = ""
+
+    def _build_visual_loop_diagnostics(
+        self,
+        *,
+        eye_details: dict[str, object],
+        detections: list[dict[str, object]],
+        selected_target: dict[str, object] | None,
+        tracking_target: dict[str, object] | None,
+        outcome: object | None,
+        session_id: str,
+        actor_id: str,
+        status: str,
+        suppressed_reason: str,
+    ) -> dict[str, object]:
+        now_ts = time.time()
+        target = tracking_target or selected_target
+        current_error = self._target_error_x(target.get("target_x")) if isinstance(target, dict) else None
+        previous_error = self._last_visual_target_error_x
+        decision = dict(self._last_visual_tracking_decision)
+        command_delta = self._decision_command_delta(decision)
+        frame_ts = eye_details.get("frame_captured_at_ts")
+        target_age_s = (
+            max(0.0, now_ts - float(frame_ts))
+            if isinstance(frame_ts, (int, float))
+            else None
+        )
+        outcome_status = str(getattr(outcome, "status", "") or "")
+        loop_elapsed_s = self._loop_elapsed_s()
+        follow_score = score_visual_follow(
+            before_error=previous_error if previous_error is not None else current_error,
+            after_error=current_error,
+            command_angle_delta=command_delta,
+            target_age_s=target_age_s,
+            action_elapsed_s=loop_elapsed_s,
+            settle_time_s=loop_elapsed_s,
+            suppressed=bool(suppressed_reason and suppressed_reason not in {"", "tracking", "none"}),
+            suppressed_reason=suppressed_reason or None,
+            held=decision.get("action") == "hold" or tracking_target is None,
+        ).to_dict()
+        self._last_visual_target_error_x = current_error
+
+        lock_result = self._visual_target_lock.select(
+            self._lock_input_detections(detections, target=target),
+            now_ts=now_ts,
+        ).to_dict()
+        scene_graph = build_vision_scene_graph(
+            detections=detections,
+            tracks=[lock_result["target"]] if isinstance(lock_result.get("target"), dict) else None,
+            frame_metadata={
+                "frameId": eye_details.get("frame_id") or eye_details.get("frame_captured_at_ts") or "",
+                "observedAt": frame_ts or now_ts,
+                "imageUrl": eye_details.get("frame_path") or "",
+            },
+        )
+        vision_events = self._vision_event_shaper.shape(
+            scene_delta={"scene": scene_graph},
+            target_delta={"current": lock_result.get("target"), "locked": [lock_result.get("target")] if lock_result.get("is_locked") else []},
+            tracking_delta={
+                "current": {
+                    "state": status,
+                    "target": target or {},
+                    "follow_state": follow_score.get("reason"),
+                },
+                "follow_state": follow_score.get("reason"),
+            },
+            timestamp_ms=now_ts * 1000.0,
+            freshness_ms=(target_age_s or 0.0) * 1000.0,
+            diagnostics={"status": status, "outcome_status": outcome_status},
+        )
+        voice_context = build_vision_voice_context(
+            visual_state={
+                "target": target or {},
+                "tracking_decision": decision,
+                "status": status,
+                "frame_captured_at_ts": frame_ts,
+            },
+            scene=scene_graph,
+            events=vision_events,
+            now_ts=now_ts,
+        )
+        memory_candidate = self._visual_memory_policy.evaluate(
+            event=(vision_events[0] if vision_events else {"event_type": status}),
+            target_lock=lock_result,
+            follow_score=follow_score,
+            context={"session_id": session_id, "actor_id": actor_id},
+        )
+        training_feedback = build_visual_feedback_record(
+            feedback_type="target_lost" if status == "waiting_for_target" else "follow_result",
+            subject=target or lock_result.get("target") or {},
+            outcome={
+                "success": follow_score.get("success"),
+                "status": outcome_status or status,
+                "reason": follow_score.get("reason"),
+            },
+            follow_score=follow_score,
+            round_id=session_id,
+            session_id=session_id,
+            timestamp_ms=int(now_ts * 1000),
+        )
+        tuning = recommend_visual_follow_tuning(
+            {
+                "filtered_error": decision.get("filtered_error", current_error),
+                "stable_error_count": decision.get("stable_error_count", decision.get("bias_count", 0)),
+                "suppress_reason": suppressed_reason or decision.get("reason"),
+                "action_interval_s": loop_elapsed_s,
+                "fps": self._coerce_optional_float(eye_details.get("fps")),
+                "target_freshness_s": target_age_s,
+                "pan_proof_dx": decision.get("target_error_x"),
+                "pan_min": self._neck_fusion.config.pan_min_angle,
+                "pan_max": self._neck_fusion.config.pan_max_angle,
+                "current_angle": decision.get("current_angle", self._neck_home_angle()),
+            }
+        ).to_dict()
+        model_selection = select_vision_model_profile(
+            device_capabilities={"hailo8"},
+            required_capabilities={"detection", "tracking"},
+            target_fps=self._coerce_float(eye_details.get("target_fps"), default=10.0),
+        )
+        model_profile = dict(model_selection.diagnostics)
+        if model_selection.profile is not None:
+            model_profile["profile_id"] = model_selection.profile.id
+            model_profile["model_id"] = model_selection.profile.model_id
+            model_profile["backend"] = model_selection.profile.backend
+            model_profile["device"] = model_selection.profile.device
+        model_profile["ok"] = model_selection.ok
+        model_profile["reason"] = model_selection.reason
+        soak_summary = summarize_vision_soak(
+            [
+                {
+                    "fps": eye_details.get("fps"),
+                    "target_fps": eye_details.get("target_fps"),
+                    "frame_age_ms": None if target_age_s is None else target_age_s * 1000.0,
+                    "loop_elapsed_ms": None if loop_elapsed_s is None else loop_elapsed_s * 1000.0,
+                    "service_state": status,
+                }
+            ],
+            min_service_ok_ratio=0.0,
+        )
+        if memory_candidate is not None:
+            self._recent_events.append(
+                {
+                    "kind": "visual_memory_candidate",
+                    "source": "eibrain.vision",
+                    "status": "candidate",
+                    "session_id": session_id,
+                    "recorded_at_ts": now_ts,
+                    "details": {
+                        "memory_trace": memory_candidate.get("memory_trace", {}),
+                        "event_type": memory_candidate.get("event_type", ""),
+                        "dedupe_key": memory_candidate.get("dedupe_key", ""),
+                    },
+                }
+            )
+        return {
+            "target_lock": lock_result,
+            "follow_score": follow_score,
+            "follow_tuning": tuning,
+            "vision_events": vision_events,
+            "scene_graph": scene_graph,
+            "voice_context": voice_context,
+            "memory_candidate": memory_candidate,
+            "training_feedback": training_feedback,
+            "soak_summary": soak_summary,
+            "model_profile": model_profile,
+        }
+
+    def _detections_from_eye_details(self, eye_details: dict[str, object]) -> list[dict[str, object]]:
+        detections = eye_details.get("detections", [])
+        return [dict(item) for item in detections if isinstance(item, dict)] if isinstance(detections, list) else []
+
+    @staticmethod
+    def _decision_command_delta(decision: dict[str, object]) -> float | None:
+        try:
+            current = decision.get("current_angle")
+            target = decision.get("target_angle")
+            if current is None or target is None:
+                return None
+            return abs(float(target) - float(current))
+        except (TypeError, ValueError):
+            return None
+
+    def _loop_elapsed_s(self) -> float | None:
+        acted_at = self._last_visual_tracking_decision.get("acted_at_ts")
+        if isinstance(acted_at, (int, float)):
+            return max(0.0, time.time() - float(acted_at))
+        return None
+
+    @staticmethod
+    def _lock_input_detections(
+        detections: list[dict[str, object]],
+        *,
+        target: dict[str, object] | None,
+    ) -> list[dict[str, object]]:
+        payload = [dict(item) for item in detections]
+        if isinstance(target, dict):
+            payload.append(dict(target))
+        return payload
 
     def _prepare_tracking_target(self, target: dict[str, object]) -> dict[str, object] | None:
         score = self._coerce_float(target.get("score"), default=0.0)

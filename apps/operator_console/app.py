@@ -582,6 +582,36 @@ class OperatorConsoleApp:
         tracking_decision = visual_tracking.get("tracking_decision", {})
         if not isinstance(tracking_decision, dict):
             tracking_decision = {}
+        target_lock = visual_tracking.get("target_lock", {})
+        if not isinstance(target_lock, dict):
+            target_lock = {}
+        follow_score = visual_tracking.get("follow_score", {})
+        if not isinstance(follow_score, dict):
+            follow_score = {}
+        follow_tuning = visual_tracking.get("follow_tuning", {})
+        if not isinstance(follow_tuning, dict):
+            follow_tuning = {}
+        scene_graph = visual_tracking.get("scene_graph", {})
+        if not isinstance(scene_graph, dict):
+            scene_graph = {}
+        voice_context = visual_tracking.get("voice_context", {})
+        if not isinstance(voice_context, dict):
+            voice_context = {}
+        memory_candidate = visual_tracking.get("memory_candidate")
+        if not isinstance(memory_candidate, dict):
+            memory_candidate = {}
+        training_feedback = visual_tracking.get("training_feedback")
+        if not isinstance(training_feedback, dict):
+            training_feedback = {}
+        soak_summary = visual_tracking.get("soak_summary", {})
+        if not isinstance(soak_summary, dict):
+            soak_summary = {}
+        model_profile = visual_tracking.get("model_profile", {})
+        if not isinstance(model_profile, dict):
+            model_profile = {}
+        vision_events = visual_tracking.get("vision_events", [])
+        if not isinstance(vision_events, list):
+            vision_events = []
         tracking_target_center_x = visual_tracking.get("tracking_target_center_x")
         if tracking_target_center_x is None and isinstance(tracking_target, dict):
             tracking_target_center_x = tracking_target.get("target_x")
@@ -676,6 +706,16 @@ class OperatorConsoleApp:
             "tracking_target_center_x": tracking_target_center_x,
             "tracking_target_error_x": tracking_target_error_x,
             "tracking_decision": tracking_decision,
+            "target_lock": target_lock,
+            "follow_score": follow_score,
+            "follow_tuning": follow_tuning,
+            "vision_events": vision_events,
+            "scene_graph": scene_graph,
+            "voice_context": voice_context,
+            "memory_candidate": memory_candidate,
+            "training_feedback": training_feedback,
+            "soak_summary": soak_summary,
+            "model_profile": model_profile,
             "tracking_suppressed_reason": tracking_suppressed_reason,
             "tracking_miss_count": int(visual_tracking.get("miss_count", 0) or 0),
             "tracking_last_outcome_status": visual_tracking.get("last_outcome_status"),
@@ -1099,6 +1139,14 @@ class OperatorConsoleApp:
             if isinstance(source_count, int):
                 scheduler_count = max(scheduler_count, source_count)
 
+        for source in cls._live_visual_memory_sources(body_snapshot):
+            for trace in cls._extract_memory_traces(source):
+                if trace not in merged_traces:
+                    merged_traces.append(trace)
+            source_count = source.get("memory_trace_count")
+            if isinstance(source_count, int):
+                scheduler_count = max(scheduler_count, source_count)
+
         if merged_traces:
             current["memory_traces"] = merged_traces
             merged["current"] = current
@@ -1123,6 +1171,31 @@ class OperatorConsoleApp:
             value = voice_dialogue.get(key)
             if isinstance(value, dict):
                 sources.append(value)
+        return sources
+
+    @classmethod
+    def _live_visual_memory_sources(cls, body_snapshot: dict[str, object]) -> list[dict[str, object]]:
+        sources: list[dict[str, object]] = []
+        visual_tracking = body_snapshot.get("visual_tracking", {})
+        if isinstance(visual_tracking, dict):
+            candidate = visual_tracking.get("memory_candidate")
+            if isinstance(candidate, dict) and isinstance(candidate.get("memory_trace"), dict):
+                sources.append(
+                    {
+                        "memory_trace_count": 1,
+                        "memory_traces": [candidate["memory_trace"]],
+                    }
+                )
+        body_state = body_snapshot.get("body_state", {})
+        recent_events = []
+        if isinstance(body_state, dict) and isinstance(body_state.get("recent_events"), list):
+            recent_events = body_state.get("recent_events", [])
+        for event in recent_events:
+            if not isinstance(event, dict):
+                continue
+            details = event.get("details", {})
+            if isinstance(details, dict) and isinstance(details.get("memory_trace"), dict):
+                sources.append({"memory_trace_count": 1, "memory_traces": [details["memory_trace"]]})
         return sources
 
     @classmethod

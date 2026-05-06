@@ -660,6 +660,16 @@ class MonitoringWebServer:
       const topDetection = visual.top_detection || {{}};
       const topBbox = visual.top_detection_bbox || topDetection.bbox || {{}};
       const trackingDecision = visual.tracking_decision || {{}};
+      const targetLock = visual.target_lock || {{}};
+      const followScore = visual.follow_score || {{}};
+      const followTuning = visual.follow_tuning || {{}};
+      const sceneGraph = visual.scene_graph || {{}};
+      const voiceContext = visual.voice_context || {{}};
+      const memoryCandidate = visual.memory_candidate || {{}};
+      const trainingFeedback = visual.training_feedback || {{}};
+      const soakSummary = visual.soak_summary || {{}};
+      const modelProfile = visual.model_profile || {{}};
+      const visionEvents = visual.vision_events || [];
       const panProof = (report.neck_control_diagnostics || {{}}).pan_motion_proof || {{}};
       const topLabel = topDetection.label ? `${{topDetection.label}} ${{Number(topDetection.score || 0).toFixed(2)}}` : 'none';
       const bboxSummary = topBbox.x_min !== undefined
@@ -693,6 +703,10 @@ class MonitoringWebServer:
         ['Track error', trackingError],
         ['Track angle', trackingAngle],
         ['Track decision', trackingDecisionSummary],
+        ['Follow score', followScore.score !== undefined ? `${{Number(followScore.score || 0).toFixed(2)}} / ${{followScore.reason || '-'}}` : 'waiting'],
+        ['Target lock', targetLock.lock_state ? `${{targetLock.lock_state}} / ${{targetLock.track_id || '-'}}` : 'waiting'],
+        ['Soak', soakSummary.bottleneck_reason || 'waiting'],
+        ['Model', modelProfile.model_id || 'unknown'],
         ['Suppress/Pan proof', suppressProofSummary],
         ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
@@ -758,6 +772,32 @@ class MonitoringWebServer:
           visual.tracking_age_s !== undefined && visual.tracking_age_s !== null ? `updated ${{fmtSeconds(visual.tracking_age_s)}} ago` : '',
         ].filter(Boolean).join(' · ');
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Tracking</strong><span class="health-tag ${{healthClass(visual.tracking_last_error ? 'unavailable' : (visual.tracking_status === 'tracking' ? 'healthy' : 'degraded'))}}">${{visual.tracking_status || 'idle'}}</span></div><div class="metric-label">${{visual.tracking_last_error || trackingDetails || 'waiting for tracking state'}}</div></div>`);
+      }}
+      if (targetLock.lock_state || followScore.reason || followTuning.reason) {{
+        const followDetails = [
+          targetLock.lock_state ? `lock ${{targetLock.lock_state}} (${{targetLock.switch_reason || '-'}})` : '',
+          followScore.reason ? `score ${{Number(followScore.score || 0).toFixed(2)}} / ${{followScore.reason}}` : '',
+          followTuning.reason ? `tune ${{followTuning.reason}} safe=${{followTuning.safe_to_apply ? 'yes' : 'no'}}` : '',
+          modelProfile.model_id ? `model ${{modelProfile.model_id}}` : '',
+        ].filter(Boolean).join(' · ');
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Follow loop</strong><span class="health-tag ${{healthClass(followScore.success ? 'healthy' : 'degraded')}}">${{followScore.success ? 'scored' : 'diagnostic'}}</span></div><div class="metric-label">${{followDetails || 'waiting for follow loop diagnostics'}}</div></div>`);
+      }}
+      if (sceneGraph.summary || voiceContext.dialogue_context_text || visionEvents.length) {{
+        const eventText = visionEvents.slice(0, 3).map((event) => `${{event.eventType || event.type || 'event'}}:${{event.trackId || (event.subject || {{}}).trackId || '-'}}`).join(' · ');
+        const cognitionDetails = [
+          sceneGraph.summary || '',
+          voiceContext.dialogue_context_text || voiceContext.summary_text || '',
+          eventText ? `events ${{eventText}}` : '',
+        ].filter(Boolean).join(' · ');
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Vision cognition</strong><span class="health-tag healthy">ready</span></div><div class="metric-label">${{cognitionDetails}}</div></div>`);
+      }}
+      if (memoryCandidate.event_type || trainingFeedback.feedback_type) {{
+        const memoryDetails = [
+          memoryCandidate.event_type ? `memory ${{memoryCandidate.event_type}} importance=${{Number(memoryCandidate.importance || 0).toFixed(2)}}` : '',
+          trainingFeedback.feedback_type ? `feedback ${{trainingFeedback.feedback_type}} / ${{trainingFeedback.outcome || '-'}}` : '',
+          memoryCandidate.dedupe_key ? `dedupe ${{memoryCandidate.dedupe_key}}` : '',
+        ].filter(Boolean).join(' · ');
+        listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Vision memory</strong><span class="health-tag degraded">candidate</span></div><div class="metric-label">${{memoryDetails || 'no memory candidate this frame'}}</div></div>`);
       }}
       detections.slice(0, 6).forEach((detection, index) => {{
         const bbox = detection.bbox || {{}};

@@ -377,6 +377,38 @@ def test_operator_console_uses_live_voice_scheduler_memory_traces() -> None:
     assert report["memory_diagnostics"]["last_writeback"]["record_id"] == "mem_live_2"
 
 
+def test_operator_console_uses_live_visual_memory_candidate_trace() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    visual_trace = {
+        "schema": "eibrain.memory.visual_trace.v1",
+        "session_id": "track-session",
+        "actor_id": "vision-runtime",
+        "event_type": "follow_success",
+        "decision": {"decision": "visual_memory_candidate"},
+    }
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "visual_tracking": {
+                "memory_candidate": {
+                    "event_type": "follow_success",
+                    "memory_trace": visual_trace,
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["memory_trace_panel"]["count"] == 1
+    assert report["memory_trace_panel"]["latest"]["schema"] == "eibrain.memory.visual_trace.v1"
+    assert report["memory_diagnostics"]["memory_trace_count"] == 1
+
+
 def test_operator_console_marks_report_degraded_when_capabilities_missing() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 
