@@ -972,7 +972,19 @@ class VoiceDialogueLoop:
             return value, False
         if value == trigger:
             return "", True
-        pattern = re.compile(r"^\s*" + re.escape(trigger) + r"[，,、\\s:.!！?？:：]*")
+        separators = r"[，,、\s:.!！?？:：]*"
+        greeting_prefixes = ("你好", "您好", "嗨", "嘿", "哈喽", "hello")
+        prefix_pattern = (
+            r"(?:(?:"
+            + "|".join(re.escape(prefix) for prefix in greeting_prefixes)
+            + r")"
+            + separators
+            + r")?"
+        )
+        pattern = re.compile(
+            r"^\s*" + prefix_pattern + re.escape(trigger) + separators,
+            re.IGNORECASE,
+        )
         match = pattern.match(value)
         if match is None:
             return value, False

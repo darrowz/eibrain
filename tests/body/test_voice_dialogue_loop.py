@@ -390,6 +390,33 @@ def test_voice_dialogue_loop_strips_wake_word_before_cognition() -> None:
     assert body.voice_dialogue_state["conversation_active"] is True
 
 
+def test_voice_dialogue_loop_strips_greeting_wake_word_before_cognition() -> None:
+    body = _Body(["你好鸿途记住我喜欢短回答"])
+    cognition = _Cognition(reply="记住了。")
+    loop = _start_loop(body, cognition)
+
+    _wait_until(lambda: bool(cognition.observations))
+    loop.stop()
+
+    assert cognition.observations[0].text == "记住我喜欢短回答"
+    assert body.dispatched[0].text == "记住了。"
+    assert body.voice_dialogue_state["conversation_active"] is True
+
+
+def test_voice_dialogue_loop_does_not_wake_on_mid_sentence_wake_word() -> None:
+    body = _Body(["我想了解鸿途这个名字"])
+    cognition = _Cognition()
+    loop = _start_loop(body, cognition)
+
+    _wait_until(lambda: body.calls >= 1)
+    loop.stop()
+
+    assert cognition.observations == []
+    assert body.dispatched == []
+    ignored_update = _first_update(body, last_status="waiting_for_wake_word")
+    assert ignored_update["conversation_active"] is False
+
+
 def test_voice_dialogue_loop_sleeps_on_sleep_word_without_llm() -> None:
     body = _Body(["结束对话"])
     cognition = _Cognition()
