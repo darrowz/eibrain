@@ -76,6 +76,49 @@ def test_ear_organ_caches_audio_probe_results() -> None:
     assert capture.calls == 1
 
 
+def test_ear_organ_passes_streaming_vad_endpoint_settings_to_capture() -> None:
+    from eibrain.body.organs.ear.organ import EarOrgan
+    from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig
+
+    config = OrganConfig(
+        enabled=True,
+        subfunctions={
+            "capture": SubfunctionConfig(
+                driver=DriverConfig(
+                    kind="command",
+                    command=["arecord"],
+                    extra={
+                        "device": "plughw:CARD=U4K,DEV=0",
+                        "sample_rate": 48000,
+                        "channels": 1,
+                        "streaming_vad": True,
+                        "vad_min_capture_ms": 1800,
+                        "transcribe_vad_miss": True,
+                        "vad_miss_rms_threshold": 0.012,
+                        "vad_endpoint_policy": True,
+                        "vad_backend": "adaptive_rms",
+                        "vad_noise_ratio": 1.3,
+                        "vad_silero_threshold": 0.42,
+                    },
+                )
+            ),
+            "vad": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+            "asr": SubfunctionConfig(driver=DriverConfig(kind="noop")),
+        },
+    )
+
+    organ = EarOrgan(config=config)
+
+    assert organ._capture is not None
+    assert organ._capture.vad_min_capture_ms == 1800
+    assert organ._capture.transcribe_vad_miss is True
+    assert organ._capture.vad_miss_rms_threshold == 0.012
+    assert organ._capture.vad_endpoint_policy is True
+    assert organ._capture.vad_backend == "adaptive_rms"
+    assert organ._capture.vad_noise_ratio == 1.3
+    assert organ._capture.vad_silero_threshold == 0.42
+
+
 def test_ear_organ_uses_faster_whisper_provider(monkeypatch) -> None:
     from eibrain.body.organs.ear.organ import EarOrgan
     from eibrain.infra.config import DriverConfig, OrganConfig, SubfunctionConfig

@@ -152,6 +152,35 @@ def test_body_runtime_builds_default_ear_processor_from_config() -> None:
         config_path.unlink(missing_ok=True)
 
 
+def test_body_runtime_passes_streaming_vad_endpoint_settings_to_capture() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.infra.config import DriverConfig, SubfunctionConfig
+
+    runtime = BodyRuntimeApp()
+    capture_cfg = SubfunctionConfig(
+        driver=DriverConfig(
+            kind="command",
+            extra={
+                "device": "plughw:CARD=U4K,DEV=0",
+                "sample_rate": 48000,
+                "channels": 1,
+                "streaming_vad": True,
+                "vad_min_capture_ms": 1800,
+                "transcribe_vad_miss": True,
+                "vad_miss_rms_threshold": 0.012,
+                "vad_endpoint_policy": True,
+            },
+        )
+    )
+
+    capture = runtime._make_capture(capture_cfg)
+
+    assert capture.vad_min_capture_ms == 1800
+    assert capture.transcribe_vad_miss is True
+    assert capture.vad_miss_rms_threshold == 0.012
+    assert capture.vad_endpoint_policy is True
+
+
 def test_pcm_to_float_samples_uses_loudest_channel_for_stereo() -> None:
     from eibrain.body.sherpa_streaming import _pcm_to_float_samples
 

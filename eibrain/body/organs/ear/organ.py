@@ -101,6 +101,13 @@ class EarOrgan(BaseOrgan):
             vad_min_voice_ms=int(capture_cfg.driver.extra.get("vad_min_voice_ms", 160)),
             vad_end_silence_ms=int(capture_cfg.driver.extra.get("vad_end_silence_ms", 360)),
             vad_pre_roll_ms=int(capture_cfg.driver.extra.get("vad_pre_roll_ms", 240)),
+            vad_min_capture_ms=int(capture_cfg.driver.extra.get("vad_min_capture_ms", 0)),
+            transcribe_vad_miss=bool(capture_cfg.driver.extra.get("transcribe_vad_miss", False)),
+            vad_miss_rms_threshold=float(capture_cfg.driver.extra.get("vad_miss_rms_threshold", 0.0)),
+            vad_endpoint_policy=bool(capture_cfg.driver.extra.get("vad_endpoint_policy", False)),
+            vad_backend=str(capture_cfg.driver.extra.get("vad_backend", "rms")),
+            vad_noise_ratio=float(capture_cfg.driver.extra.get("vad_noise_ratio", 1.18)),
+            vad_silero_threshold=float(capture_cfg.driver.extra.get("vad_silero_threshold", 0.5)),
         )
 
     def _build_recognizer(self) -> SherpaOnnxStreamingRecognizer | FasterWhisperRecognizer | None:
