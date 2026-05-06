@@ -140,6 +140,35 @@ def test_runtime_status_without_audio_frontend_is_not_reported_healthy() -> None
     assert "audio frontend readiness is missing" in panel["warnings"]
 
 
+def test_transport_status_is_exposed_and_degrades_on_reconnect_errors() -> None:
+    panel = build_eivoice_runtime_panel(
+        {
+            "state": "conversation",
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": True},
+                "ns": {"enabled": True, "available": True},
+                "vad": {"enabled": True, "available": True},
+                "loopback": {"enabled": True, "available": True},
+            },
+            "transport": {
+                "transport": "fake_websocket",
+                "state": "reconnect_wait",
+                "heartbeat": {"awaiting_pong": True, "timed_out": True, "latency_ms": 1250},
+                "reconnect": {"attempt": 2, "backoff_s": 4.0, "ready": False, "reason": "heartbeat_timeout"},
+                "last_error": {"kind": "TimeoutError", "message": "pong timeout", "context": "heartbeat"},
+            },
+        }
+    )
+
+    assert panel["transport"]["name"] == "fake_websocket"
+    assert panel["transport"]["state"] == "reconnect_wait"
+    assert panel["transport"]["heartbeat"]["timed_out"] is True
+    assert panel["transport"]["reconnect"]["attempt"] == 2
+    assert panel["health"] == "degraded"
+    assert "transport reconnect_wait" in panel["warnings"]
+    assert "transport error: TimeoutError heartbeat" in panel["warnings"]
+
+
 class RuntimePanelApp:
     def status(self) -> dict[str, Any]:
         return {
@@ -155,6 +184,12 @@ class RuntimePanelApp:
                     "ws_send_queue": {"depth": 0, "capacity": 2},
                     "opus_decode_queue": {"depth": 0, "capacity": 2},
                     "audio_playback_queue": {"depth": 0, "capacity": 2},
+                },
+                "transport": {
+                    "transport": "fake_websocket",
+                    "state": "connected",
+                    "heartbeat": {"latency_ms": 24},
+                    "reconnect": {"attempt": 0},
                 },
             },
         }
@@ -198,6 +233,9 @@ def test_web_exposes_eivoice_runtime_panel() -> None:
         payload = read_json(f"{base_url}/api/eivoice/runtime")
 
     assert "EIVoice Runtime" in body
+    assert "Transport state" in body
+    assert "fake_websocket / connected" in body
     assert "eivoiceRuntime" in body
     assert payload["eivoiceRuntime"]["state"] == "running"
     assert payload["eivoiceRuntime"]["conversationState"] == "Conversation"
+    assert payload["eivoiceRuntime"]["transport"]["name"] == "fake_websocket"

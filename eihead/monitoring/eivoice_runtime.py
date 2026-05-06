@@ -32,6 +32,7 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
     has_audio_frontend = any(key in runtime for key in ("audio_frontend", "acousticFrontend"))
     audio_frontend = _normalize_audio_frontend(runtime)
     wakeword = dict(_mapping(runtime.get("wakeword") or runtime.get("wake_word") or runtime.get("wakeword_buffer")))
+    transport = _normalize_transport(runtime.get("transport") or runtime.get("voiceTransport"))
 
     warnings: list[str] = []
     if not state:
@@ -49,6 +50,15 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         warnings.append("VAD unavailable")
     if _component_unavailable(audio_frontend.get("loopback")):
         warnings.append("loopback unavailable")
+    if _transport_degraded(transport):
+        warnings.append(f"transport {transport['state']}")
+    transport_error = _mapping(transport.get("lastError"))
+    if transport_error:
+        warnings.append(
+            "transport error: "
+            f"{_text(transport_error.get('kind'), default='Error')} "
+            f"{_text(transport_error.get('context'), default='unknown')}"
+        )
     warnings = list(dict.fromkeys(warnings))
 
     health = "healthy"
@@ -59,6 +69,8 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         or _component_unavailable(audio_frontend.get("ns"))
         or _component_unavailable(audio_frontend.get("vad"))
         or _component_unavailable(audio_frontend.get("loopback"))
+        or _transport_degraded(transport)
+        or bool(transport_error)
     ):
         health = "degraded"
     elif not state:
@@ -71,6 +83,7 @@ def build_eivoice_runtime_panel(status: dict[str, Any]) -> dict[str, Any]:
         "queues": queues,
         "droppedTotal": dropped_total,
         "audioFrontend": audio_frontend,
+        "transport": transport,
         "wakeword": wakeword,
         "health": health,
         "warnings": warnings,
@@ -149,6 +162,35 @@ def _normalize_audio_frontend(runtime: Mapping[str, Any]) -> dict[str, Any]:
         "loopback": _normalize_component(frontend.get("loopback")),
         "warnings": _list(frontend.get("warnings")),
     }
+
+
+def _normalize_transport(value: Any) -> dict[str, Any]:
+    transport = _mapping(value)
+    heartbeat = _mapping(transport.get("heartbeat"))
+    reconnect = _mapping(transport.get("reconnect"))
+    last_error = _mapping(transport.get("last_error") or transport.get("lastError"))
+    return {
+        "name": _text(transport.get("transport") or transport.get("name"), default="unknown"),
+        "state": _text(transport.get("state") or _mapping(transport.get("connection")).get("state"), default="unknown"),
+        "heartbeat": {
+            "awaiting_pong": bool(heartbeat.get("awaiting_pong") or heartbeat.get("awaitingPong")),
+            "timed_out": bool(heartbeat.get("timed_out") or heartbeat.get("timedOut")),
+            "latency_ms": _number(heartbeat.get("latency_ms") or heartbeat.get("latencyMs"), default=0),
+        },
+        "reconnect": {
+            "attempt": _number(reconnect.get("attempt"), default=0),
+            "backoff_s": _float(reconnect.get("backoff_s") or reconnect.get("backoffS"), default=0.0),
+            "ready": bool(reconnect.get("ready")),
+            "reason": _text(reconnect.get("reason"), default=""),
+        },
+        "lastError": dict(last_error),
+    }
+
+
+def _transport_degraded(transport: Mapping[str, Any]) -> bool:
+    state = _text(transport.get("state")).lower()
+    heartbeat = _mapping(transport.get("heartbeat"))
+    return state in {"reconnect_wait", "closed", "error", "failed"} or heartbeat.get("timed_out") is True
 
 
 def _normalize_component(value: Any) -> dict[str, Any]:

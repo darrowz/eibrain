@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal, Sequence
 
@@ -98,6 +99,120 @@ def build_aplay_command(
     ]
 
 
+_ALSA_DEVICE_LINE_RE = re.compile(
+    r"^card\s+(?P<card_index>\d+):\s+(?P<card_id>[^\[]+?)\s+\[(?P<card_name>[^\]]+)\],\s+"
+    r"device\s+(?P<device_index>\d+):\s+(?P<device_id>[^\[]+?)\s+\[(?P<device_name>[^\]]+)\]$"
+)
+_PACTL_SOURCE_LINE_RE = re.compile(r"^Source\s+#(?P<source_index>\d+)$")
+
+
+def parse_arecord_devices(text: str) -> list[AudioDeviceCandidate]:
+    return _parse_alsa_device_listing(text, kind="input", parser="arecord")
+
+
+def parse_aplay_devices(text: str) -> list[AudioDeviceCandidate]:
+    return _parse_alsa_device_listing(text, kind="output", parser="aplay")
+
+
+def _parse_alsa_device_listing(
+    text: str,
+    *,
+    kind: Literal["input", "output"],
+    parser: Literal["arecord", "aplay"],
+) -> list[AudioDeviceCandidate]:
+    candidates: list[AudioDeviceCandidate] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = _ALSA_DEVICE_LINE_RE.match(line)
+        if not match:
+            continue
+
+        card_index = int(match.group("card_index"))
+        device_index = int(match.group("device_index"))
+        card_name = match.group("card_name").strip()
+        device_name = match.group("device_name").strip()
+        score = 100 - (card_index * 5) - device_index
+        reason = f"parsed from {parser} device listing"
+        if "USB" in f"{card_name} {device_name}".upper():
+            score += 5
+            reason = f"{reason}; usb audio device candidate"
+
+        candidates.append(
+            AudioDeviceCandidate(
+                name=_candidate_name(card_name, device_name),
+                kind=kind,
+                device=f"hw:{card_index},{device_index}",
+                score=score,
+                reason=reason,
+                metadata={
+                    "card_index": card_index,
+                    "card_id": match.group("card_id").strip(),
+                    "card_name": match.group("card_id").strip(),
+                    "card_label": card_name,
+                    "device_index": device_index,
+                    "device_id": match.group("device_id").strip(),
+                    "device_name": device_name,
+                    "parser": parser,
+                },
+            )
+        )
+    return candidates
+
+
+def parse_pactl_sources(text: str) -> list[AudioDeviceCandidate]:
+    candidates: list[AudioDeviceCandidate] = []
+    current: dict[str, str] = {}
+
+    def flush() -> None:
+        if not current.get("name"):
+            return
+        device = current["name"]
+        monitor_of_sink = current.get("monitor_of_sink", "")
+        is_monitor = (
+            (bool(monitor_of_sink) and monitor_of_sink.lower() not in {"n/a", "na", "none"})
+            or device.endswith(".monitor")
+        )
+        kind: AudioDeviceKind = "loopback" if is_monitor else "input"
+        description = current.get("description") or device
+        score = 120 if is_monitor else 90
+        reason = "parsed from pactl source listing"
+        if is_monitor:
+            reason = f"{reason}; pulse monitor source available for loopback"
+        candidates.append(
+            AudioDeviceCandidate(
+                name=description,
+                kind=kind,
+                device=device,
+                score=score,
+                reason=reason,
+                metadata={
+                    "description": description,
+                    "parser": "pactl",
+                    "source_index": _safe_int(current.get("source_index")),
+                    "state": current.get("state", ""),
+                    "monitor_of_sink": current.get("monitor_of_sink", ""),
+                },
+            )
+        )
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+        source_match = _PACTL_SOURCE_LINE_RE.match(stripped)
+        if source_match:
+            flush()
+            current = {"source_index": source_match.group("source_index")}
+            continue
+        if not current or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        normalized_key = key.strip().lower().replace(" ", "_")
+        current[normalized_key] = value.strip()
+
+    flush()
+    return candidates
+
+
 @dataclass(frozen=True)
 class AcousticFrontendReadiness:
     aec: bool
@@ -128,7 +243,7 @@ def evaluate_audio_frontend_readiness(
     loopback_device: str | None = None,
     supports_aec: bool = False,
     supports_ns: bool = False,
-    supports_vad: bool = True,
+    supports_vad: bool = False,
 ) -> AcousticFrontendReadiness:
     capture = bool(capture_device)
     loopback = bool(loopback_device)
@@ -155,6 +270,96 @@ def evaluate_audio_frontend_readiness(
     )
 
 
+def build_loopback_readiness(
+    capture_device: str | None,
+    loopback_device: str | None = None,
+    supports_aec: bool = False,
+    supports_ns: bool = False,
+    supports_vad: bool = False,
+) -> AcousticFrontendReadiness:
+    return evaluate_audio_frontend_readiness(
+        capture_device=capture_device,
+        loopback_device=loopback_device,
+        supports_aec=supports_aec,
+        supports_ns=supports_ns,
+        supports_vad=supports_vad,
+    )
+
+
+@dataclass(frozen=True)
+class AudioRoutePlan:
+    capture: AudioDeviceCandidate | None
+    playback: AudioDeviceCandidate | None = None
+    loopback: AudioDeviceCandidate | None = None
+    readiness: AcousticFrontendReadiness = field(
+        default_factory=lambda: evaluate_audio_frontend_readiness(capture_device=None)
+    )
+    status: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "capture": _candidate_to_dict(self.capture),
+            "playback": _candidate_to_dict(self.playback),
+            "loopback": _candidate_to_dict(self.loopback),
+            "readiness": self.readiness.to_dict(),
+            "status": dict(self.status),
+        }
+
+
+def choose_audio_routes(
+    inputs: Iterable[AudioDeviceCandidate],
+    outputs: Iterable[AudioDeviceCandidate] = (),
+    loopbacks: Iterable[AudioDeviceCandidate] = (),
+    *,
+    supports_aec: bool = False,
+    supports_ns: bool = False,
+    supports_vad: bool = False,
+) -> AudioRoutePlan:
+    input_candidates = [candidate for candidate in inputs if candidate.kind == "input"]
+    output_candidates = [candidate for candidate in outputs if candidate.kind == "output"]
+    loopback_candidates = [candidate for candidate in loopbacks if candidate.kind == "loopback"]
+    warnings: list[str] = []
+
+    capture: AudioDeviceCandidate | None = None
+    if input_candidates:
+        capture = select_preferred_input(input_candidates)
+        if capture.metadata.get("degraded"):
+            warnings.append("using degraded SPA3700 input fallback")
+    else:
+        warnings.append("no capture candidate parsed from provided discovery output")
+
+    playback = max(output_candidates, key=lambda candidate: candidate.score, default=None)
+    if playback is None:
+        warnings.append("playback candidate unavailable; output route will remain optional")
+
+    loopback = max(loopback_candidates, key=lambda candidate: candidate.score, default=None)
+    if loopback is None:
+        warnings.append("loopback candidate unavailable; echo reference will be optional")
+
+    readiness = build_loopback_readiness(
+        capture_device=capture.device if capture else None,
+        loopback_device=loopback.device if loopback else None,
+        supports_aec=supports_aec,
+        supports_ns=supports_ns,
+        supports_vad=supports_vad,
+    )
+    status = {
+        "capture_device": capture.device if capture else None,
+        "playback_device": playback.device if playback else None,
+        "loopback_device": loopback.device if loopback else None,
+        "warnings": warnings + [
+            warning for warning in readiness.warnings if warning not in warnings
+        ],
+    }
+    return AudioRoutePlan(
+        capture=capture,
+        playback=playback,
+        loopback=loopback,
+        readiness=readiness,
+        status=status,
+    )
+
+
 @dataclass(frozen=True)
 class PlaybackInterruptionPlan:
     stop_command: list[str]
@@ -169,12 +374,64 @@ class PlaybackInterruptionPlan:
         }
 
 
+def build_playback_stop_plan(
+    route_plan: AudioRoutePlan,
+    service_name: str = "eivoice-playback",
+) -> PlaybackInterruptionPlan:
+    capture_device = route_plan.capture.device if route_plan.capture else "none"
+    loopback_device = route_plan.loopback.device if route_plan.loopback else "none"
+    warnings = route_plan.status.get("warnings") or []
+    reason = (
+        f"barge-in requires playback stop before capture continues; "
+        f"capture={capture_device}; loopback={loopback_device}"
+    )
+    if warnings:
+        reason = f"{reason}; warnings={', '.join(str(item) for item in warnings)}"
+    return PlaybackInterruptionPlan(
+        stop_command=["systemctl", "stop", service_name],
+        reason=reason,
+    )
+
+
+def _candidate_name(card_name: str, device_name: str) -> str:
+    return " ".join(part for part in (card_name.strip(), device_name.strip()) if part)
+
+
+def _candidate_to_dict(candidate: AudioDeviceCandidate | None) -> dict[str, Any] | None:
+    if candidate is None:
+        return None
+    return {
+        "name": candidate.name,
+        "kind": candidate.kind,
+        "device": candidate.device,
+        "score": candidate.score,
+        "reason": candidate.reason,
+        "metadata": dict(candidate.metadata),
+    }
+
+
+def _safe_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 __all__ = [
     "AcousticFrontendReadiness",
     "AudioDeviceCandidate",
+    "AudioRoutePlan",
     "PlaybackInterruptionPlan",
     "build_aplay_command",
     "build_arecord_command",
+    "build_loopback_readiness",
+    "build_playback_stop_plan",
+    "choose_audio_routes",
     "evaluate_audio_frontend_readiness",
+    "parse_aplay_devices",
+    "parse_arecord_devices",
+    "parse_pactl_sources",
     "select_preferred_input",
 ]

@@ -9,13 +9,31 @@ from .core import (
     VoiceRuntimeStateMachine,
     WakewordRingBuffer,
 )
+from .runtime import (
+    AcousticFrontend,
+    AudioCaptureSource,
+    EiVoiceRuntimeRunner,
+    PlaybackSink,
+    RuntimeWorkerMetrics,
+    WsReceiveSource,
+)
+from .transport import FakeWebSocketTransport, InMemoryVoiceStreamTransport, VoiceStreamTransport
 
 __all__ = [
     "AudioFrame",
+    "AcousticFrontend",
+    "AudioCaptureSource",
     "BoundedAudioQueue",
     "EiVoiceRuntimeCore",
+    "EiVoiceRuntimeRunner",
+    "FakeWebSocketTransport",
+    "InMemoryVoiceStreamTransport",
     "OpusCodec",
     "PassthroughOpusCodec",
+    "PlaybackSink",
+    "RuntimeWorkerMetrics",
+    "VoiceStreamTransport",
     "VoiceRuntimeStateMachine",
     "WakewordRingBuffer",
+    "WsReceiveSource",
 ]

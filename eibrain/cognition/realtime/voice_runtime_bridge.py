@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -22,7 +23,8 @@ class VoiceRuntimeBridge:
         scheduler: RealtimeCognitiveScheduler | None = None,
         clock: Any | None = None,
     ) -> None:
-        self.scheduler = scheduler or RealtimeCognitiveScheduler(clock=clock)
+        self._clock = clock or time.time
+        self.scheduler = scheduler or RealtimeCognitiveScheduler(clock=self._clock)
 
     def handle_event(self, event: Mapping[str, Any]) -> dict[str, Any]:
         normalized = _normalize_event(event)
@@ -136,23 +138,53 @@ class VoiceRuntimeBridge:
                     "source": "voice_runtime_bridge",
                 },
             },
+            trace=self._trace(
+                event,
+                lane="slow_reasoning",
+                round_id=round_id,
+                cancellation_token=token,
+            ),
         )
 
     def _handle_tts(self, event: dict[str, Any], *, phase: str) -> dict[str, Any]:
         payload = event["payload"]
-        round_id = str(event.get("roundId") or self._current_round_id(event))
+        current = self.scheduler.current_turn()
+        event_round_id = str(event.get("roundId") or "")
+        event_token = str(event.get("cancellationToken") or "")
+        stale_reason = self._stale_tts_reason(event, current=current)
+        stale = stale_reason is not None
+        round_id = event_round_id or (current.round_id if current is not None else self._current_round_id(event))
+        cancellation_token = event_token or (
+            current.cancellation_token if current is not None else self._current_cancellation_token(event)
+        )
         metadata = dict(payload)
         text = _event_text(event, "text", "sentence", "transcript")
         plan = {
             "type": "speech_playback",
             "phase": phase,
             "roundId": round_id,
+            "cancellationToken": cancellation_token,
             "sentenceId": _first_value(event, "sentenceId", "sentence_id"),
             "chunkIndex": _first_value(event, "chunkIndex", "chunk_index"),
             "text": text,
             "metadata": metadata,
             "source": "voice_runtime_bridge",
         }
+        if stale:
+            plan["stale"] = True
+            plan["staleReason"] = stale_reason
+            return self._envelope(
+                round_id=round_id,
+                conversation_state="speaking",
+                lane="speaking",
+                blackboard_patch={"ttsPlayback": plan},
+                trace=self._trace(
+                    event,
+                    lane="speaking",
+                    round_id=round_id,
+                    cancellation_token=cancellation_token,
+                ),
+            )
         return self._envelope(
             round_id=round_id,
             conversation_state="speaking",
@@ -160,6 +192,12 @@ class VoiceRuntimeBridge:
             actions=[{"type": "speech_playback", "phase": phase, "roundId": round_id}],
             blackboard_patch={"ttsPlayback": plan},
             speech_plan=plan,
+            trace=self._trace(
+                event,
+                lane="speaking",
+                round_id=round_id,
+                cancellation_token=cancellation_token,
+            ),
         )
 
     def _handle_interrupt(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -182,7 +220,12 @@ class VoiceRuntimeBridge:
                 "roundId": new.get("round_id"),
                 "cancellationToken": new.get("cancellation_token"),
             },
-            "cancellationChain": list(summary.get("cancellation_chain") or []),
+            "cancellationChain": [
+                "tts_playback",
+                "llm_generation",
+                "action_plan",
+                "memory_prefetch",
+            ],
             "controller": summary,
         }
         return self._envelope(
@@ -198,6 +241,12 @@ class VoiceRuntimeBridge:
                 "activeRound": interrupt["newRound"],
             },
             interrupt=interrupt,
+            trace=self._trace(
+                event,
+                lane="interrupt",
+                round_id=str(new.get("round_id") or ""),
+                cancellation_token=str(new.get("cancellation_token") or ""),
+            ),
         )
 
     def _handle_activity(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -276,6 +325,12 @@ class VoiceRuntimeBridge:
             lane="runtime_health",
             actions=actions,
             blackboard_patch={"queueHealth": dict(payload), "warnings": warnings},
+            trace=self._trace(
+                event,
+                lane="runtime_health",
+                round_id=round_id,
+                cancellation_token=self._current_cancellation_token(event),
+            ),
         )
 
     def _current_round_id(self, event: Mapping[str, Any]) -> str:
@@ -286,6 +341,50 @@ class VoiceRuntimeBridge:
         if turn is not None:
             return turn.round_id
         return ""
+
+    def _current_cancellation_token(self, event: Mapping[str, Any]) -> str:
+        event_token = event.get("cancellationToken")
+        if event_token:
+            return str(event_token)
+        turn = self.scheduler.current_turn()
+        if turn is not None:
+            return turn.cancellation_token
+        return ""
+
+    def _stale_tts_reason(
+        self,
+        event: Mapping[str, Any],
+        *,
+        current: Any,
+    ) -> str | None:
+        if current is None:
+            return None
+        event_round = event.get("roundId")
+        event_token = event.get("cancellationToken")
+        if event_round and str(event_round) != current.round_id:
+            return "round_or_token_mismatch"
+        if event_token and str(event_token) != current.cancellation_token:
+            return "round_or_token_mismatch"
+        if not event_round and not event_token and not current.asr_final:
+            return "untagged_tts_without_active_final"
+        return None
+
+    def _trace(
+        self,
+        event: Mapping[str, Any],
+        *,
+        lane: str,
+        round_id: str,
+        cancellation_token: str,
+    ) -> dict[str, Any]:
+        return {
+            "eventName": str(event.get("eventName") or event.get("type") or "UNKNOWN"),
+            "roundId": round_id,
+            "lane": lane,
+            "cancellationToken": cancellation_token,
+            "source": "voice_runtime_bridge",
+            "timestamp": _trace_timestamp(event, clock=self._clock),
+        }
 
     def _envelope(
         self,
@@ -298,6 +397,7 @@ class VoiceRuntimeBridge:
         memory_hints: list[dict[str, Any]] | None = None,
         speech_plan: dict[str, Any] | None = None,
         interrupt: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "roundId": round_id,
@@ -308,6 +408,7 @@ class VoiceRuntimeBridge:
             "memoryHints": memory_hints or [],
             "speechPlan": speech_plan,
             "interrupt": interrupt,
+            "trace": trace,
         }
 
 
@@ -315,9 +416,13 @@ def _normalize_event(event: Mapping[str, Any]) -> dict[str, Any]:
     payload = _payload(event)
     event_type = _event_type(event, payload)
     round_id = _first_of(event, payload, "roundId", "round_id", "conversationRoundId", "conversation_round_id")
+    cancellation_token = _first_of(event, payload, "cancellationToken", "cancellation_token")
+    event_name = _first_of(event, payload, "eiprotocolName", "eventName", default=event_type)
     return {
         "type": event_type,
+        "eventName": str(event_name or event_type),
         "roundId": str(round_id) if round_id is not None else None,
+        "cancellationToken": str(cancellation_token) if cancellation_token is not None else None,
         "payload": payload,
         "raw": dict(event),
     }
@@ -339,6 +444,8 @@ def _payload(event: Mapping[str, Any]) -> dict[str, Any]:
                 "chunkIndex",
                 "sentenceId",
                 "reason",
+                "roundId",
+                "cancellationToken",
                 "idleSeconds",
                 "emotion",
                 "environment",
@@ -430,6 +537,13 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "final"}
+
+
+def _trace_timestamp(event: Mapping[str, Any], *, clock: Any) -> float:
+    value = _first_value(event, "timestamp")
+    if value is not None:
+        return _as_float(value)
+    return _as_float(clock())
 
 
 __all__ = ["VoiceRuntimeBridge"]

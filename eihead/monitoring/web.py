@@ -626,6 +626,19 @@ def _render_index(app: Any, timestamp: float) -> str:
     eivoice_queue_fill = _display_value(_metric_value(eivoice_queue_summary.get("maxFillRatio")))
     eivoice_warnings = eivoice_panel.get("warnings") if isinstance(eivoice_panel.get("warnings"), list) else []
     eivoice_warning_text = _display_value(", ".join(str(item) for item in eivoice_warnings) or "none")
+    eivoice_transport = eivoice_panel.get("transport") if isinstance(eivoice_panel.get("transport"), Mapping) else {}
+    eivoice_transport_state = _display_value(
+        f"{eivoice_transport.get('name', 'unknown')} / {eivoice_transport.get('state', 'unknown')}"
+    )
+    eivoice_transport_heartbeat = _display_value(
+        _metric_value(
+            _first_mapping_value(eivoice_transport, "heartbeat").get("latency_ms"),
+            suffix="ms",
+        )
+    )
+    eivoice_transport_reconnect = _display_value(
+        _metric_value(_first_mapping_value(eivoice_transport, "reconnect").get("attempt"))
+    )
     neck_current_angle = _display_value(_metric_value(neck.get("current_angle"), suffix="deg"))
     neck_target_angle = _display_value(_metric_value(neck.get("target_angle"), suffix="deg"))
     neck_will_move = _display_value(neck.get("will_move") if neck.get("will_move") is not None else "unknown")
@@ -756,6 +769,9 @@ def _render_index(app: Any, timestamp: float) -> str:
       <div class="card"><div class="label">Conversation</div><span class="metric">{eivoice_conversation}</span></div>
       <div class="card"><div class="label">Dropped total</div><span class="metric">{eivoice_dropped_total}</span></div>
       <div class="card"><div class="label">Max queue fill</div><span class="metric">{eivoice_queue_fill}</span></div>
+      <div class="card"><div class="label">Transport state</div><span class="metric">{eivoice_transport_state}</span></div>
+      <div class="card"><div class="label">Transport heartbeat</div><span class="metric">{eivoice_transport_heartbeat}</span></div>
+      <div class="card"><div class="label">Reconnect attempts</div><span class="metric">{eivoice_transport_reconnect}</span></div>
       <div class="card"><div class="label">Warnings</div><span class="metric">{eivoice_warning_text}</span></div>
     </section>
     <h2>Status</h2>
@@ -801,6 +817,13 @@ def _json_for_html(payload: Mapping[str, Any]) -> str:
 
 def _display_value(value: Any) -> str:
     return html.escape(str(value))
+
+
+def _first_mapping_value(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]:
+    value = payload.get(key)
+    if isinstance(value, Mapping):
+        return value
+    return {}
 
 
 def _metric_value(value: Any, *, suffix: str = "") -> str:
