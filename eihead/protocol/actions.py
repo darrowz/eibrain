@@ -30,6 +30,17 @@ class StopSpeechAction(Action):
 
 
 @dataclass(slots=True)
+class StreamSpeechAction(Action):
+    stream_id: str = ""
+    chunk_index: int | None = None
+    audio_base64: str = ""
+    text: str = ""
+    final: bool = False
+    sentence_id: str = ""
+    kind: str = field(init=False, default="stream_speech_action")
+
+
+@dataclass(slots=True)
 class MoveHeadAction(Action):
     target_name: str = ""
     target_x: float | None = None

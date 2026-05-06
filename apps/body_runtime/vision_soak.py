@@ -157,6 +157,8 @@ def normalize_vision_status_sample(
         visual.get("soak_summary"),
         eye.get("soak_summary"),
     )
+    monitor = _monitor_snapshot(root, visual=visual, eye=eye, diagnostics=diagnostics)
+    restart_evidence = _service_restart_evidence(root, diagnostics=diagnostics, visual=visual, eye=eye)
     frame_age_ms = _frame_age_ms(diagnostics)
     if frame_age_ms is None and soak_summary:
         frame_age_ms = _frame_age_ms(soak_summary)
@@ -210,6 +212,10 @@ def normalize_vision_status_sample(
             visual.get("hailo_metadata"),
             eye.get("hailo_metadata"),
         ),
+        "monitor_active": monitor["active"],
+        "monitor_status": monitor["status"],
+        "service_restart_count": restart_evidence["restart_count"],
+        "service_restart_evidence": restart_evidence,
     }
     if soak_summary:
         sample.update(
@@ -243,6 +249,7 @@ def summarize_vision_soak(
     rows = [dict(sample) for sample in samples]
     if not rows:
         empty_tracking = _tracking_diagnostics([], target_fps=0.0)
+        empty_restart = _aggregate_restart_evidence([])
         return {
             "pass": False,
             "sample_count": 0,
@@ -254,10 +261,22 @@ def summarize_vision_soak(
             "drop_rate": 0.0,
             "stale_ratio": 0.0,
             "service_ok_ratio": 0.0,
+            "monitor_active_ratio": 0.0,
             "bottleneck_reason": "no_samples",
             "pass_fail_reason": "no_samples",
             "fail_reason": "no_samples",
             **empty_tracking,
+            "service_restart_evidence": empty_restart,
+            "readiness": _vision_readiness_summary(
+                fps_ratio=0.0,
+                min_fps_ratio=min_fps_ratio,
+                p95_frame_age_ms=0.0,
+                max_p95_frame_age_ms=max_p95_frame_age_ms,
+                drop_rate=0.0,
+                max_drop_rate=max_drop_rate,
+                monitor_active_ratio=0.0,
+                monitor_checked=False,
+            ),
             "metadata": _summary_metadata(empty_tracking, hailo_metadata={}),
         }
 
@@ -281,6 +300,9 @@ def summarize_vision_soak(
     stale_ratio = stale_count / len(rows)
     service_ok_count = sum(1 for row in rows if _service_is_ok(row.get("service_state")))
     service_ok_ratio = service_ok_count / len(rows)
+    monitor_values = [bool(row.get("monitor_active")) for row in rows if row.get("monitor_active") is not None]
+    monitor_active_ratio = sum(1 for value in monitor_values if value) / len(rows)
+    restart_evidence = _aggregate_restart_evidence(rows)
 
     fps_summary = _stats(fps_values)
     frame_age_summary = _stats(frame_age_values)
@@ -302,6 +324,16 @@ def summarize_vision_soak(
         target_unstable=target_unstable,
     )
     metadata = _summary_metadata(tracking, hailo_metadata=_hailo_metadata(rows))
+    readiness = _vision_readiness_summary(
+        fps_ratio=fps_ratio,
+        min_fps_ratio=min_fps_ratio,
+        p95_frame_age_ms=frame_age_summary["p95"],
+        max_p95_frame_age_ms=max_p95_frame_age_ms,
+        drop_rate=drop_rate,
+        max_drop_rate=max_drop_rate,
+        monitor_active_ratio=monitor_active_ratio,
+        monitor_checked=bool(monitor_values),
+    )
 
     return {
         "pass": reason == "healthy",
@@ -315,10 +347,13 @@ def summarize_vision_soak(
         "drop_rate": drop_rate,
         "stale_ratio": stale_ratio,
         "service_ok_ratio": service_ok_ratio,
+        "monitor_active_ratio": monitor_active_ratio,
         "bottleneck_reason": reason,
         "pass_fail_reason": reason,
         "fail_reason": None if reason == "healthy" else reason,
         **tracking,
+        "service_restart_evidence": restart_evidence,
+        "readiness": readiness,
         "metadata": metadata,
     }
 
@@ -692,6 +727,133 @@ def _truthy(value: Any) -> bool:
     return bool(value)
 
 
+def _monitor_snapshot(
+    root: Mapping[str, Any],
+    *,
+    visual: Mapping[str, Any],
+    eye: Mapping[str, Any],
+    diagnostics: Mapping[str, Any],
+) -> dict[str, Any]:
+    monitor = _first_mapping(root.get("monitor"), root.get("web_monitor"), root.get("monitoring"))
+    active_value = monitor.get("active")
+    if active_value is None:
+        active_value = _first_present(diagnostics, "monitor_active", "tracking_running", "frame_available")
+    if active_value is None:
+        status_value = (
+            visual.get("data_status")
+            or visual.get("tracking_status")
+            or visual.get("vision_service_status")
+            or eye.get("status")
+            or root.get("status")
+        )
+        active_value = _service_is_ok(status_value)
+    status = str(
+        monitor.get("status")
+        or visual.get("data_status")
+        or visual.get("tracking_status")
+        or visual.get("vision_service_status")
+        or root.get("status")
+        or ("active" if _truthy(active_value) else "inactive")
+    )
+    return {"active": _truthy(active_value), "status": status}
+
+
+def _service_restart_evidence(
+    root: Mapping[str, Any],
+    *,
+    diagnostics: Mapping[str, Any],
+    visual: Mapping[str, Any],
+    eye: Mapping[str, Any],
+) -> dict[str, Any]:
+    services = _mapping_or_empty(root.get("services"))
+    candidates = [
+        services.get("vision"),
+        services.get("monitor"),
+        services.get("runtime"),
+        root.get("service"),
+        diagnostics.get("service"),
+        visual.get("service"),
+        eye.get("service"),
+    ]
+    count = 0
+    last_restart_ts = None
+    active_since_ts = None
+    active = None
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        count = max(count, _int_from_mapping(candidate, "restart_count", "restartCount", "n_restarts", "NRestarts", "restarts"))
+        if last_restart_ts is None:
+            last_restart_ts = _first_present(candidate, "last_restart_ts", "lastRestartTs", "ExecMainStartTimestamp")
+        if active_since_ts is None:
+            active_since_ts = _first_present(candidate, "active_since_ts", "activeSinceTs", "ActiveEnterTimestamp")
+        if active is None:
+            active = _first_present(candidate, "active", "running")
+    return {
+        "observed": count > 0 or bool(last_restart_ts),
+        "restart_count": count,
+        "last_restart_ts": last_restart_ts,
+        "active_since_ts": active_since_ts,
+        "active": _truthy(active) if active is not None else None,
+    }
+
+
+def _aggregate_restart_evidence(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    count = 0
+    last_restart_ts = None
+    active_since_ts = None
+    for row in rows:
+        count = max(count, int(_to_float(row.get("service_restart_count", 0.0))))
+        evidence = row.get("service_restart_evidence")
+        if isinstance(evidence, Mapping):
+            if last_restart_ts is None:
+                last_restart_ts = evidence.get("last_restart_ts")
+            if active_since_ts is None:
+                active_since_ts = evidence.get("active_since_ts")
+    return {
+        "observed": count > 0 or bool(last_restart_ts),
+        "restart_count": count,
+        "last_restart_ts": last_restart_ts,
+        "active_since_ts": active_since_ts,
+    }
+
+
+def _vision_readiness_summary(
+    *,
+    fps_ratio: float,
+    min_fps_ratio: float,
+    p95_frame_age_ms: float,
+    max_p95_frame_age_ms: float,
+    drop_rate: float,
+    max_drop_rate: float,
+    monitor_active_ratio: float,
+    monitor_checked: bool,
+) -> dict[str, Any]:
+    monitor_ok = monitor_active_ratio > 0.0 if monitor_checked else None
+    return {
+        "hailo_fps": {
+            "ok": fps_ratio >= min_fps_ratio,
+            "observed_ratio": _round(fps_ratio),
+            "threshold_ratio": _round(min_fps_ratio),
+        },
+        "hailo_drop_rate": {
+            "ok": drop_rate <= max_drop_rate,
+            "observed": _round(drop_rate),
+            "threshold": _round(max_drop_rate),
+        },
+        "hailo_frame_age": {
+            "ok": p95_frame_age_ms <= max_p95_frame_age_ms,
+            "observed_p95_ms": _round(p95_frame_age_ms),
+            "threshold_ms": _round(max_p95_frame_age_ms),
+        },
+        "monitor_active": {
+            "ok": monitor_ok,
+            "status": "checked" if monitor_checked else "not_checked",
+            "observed_ratio": _round(monitor_active_ratio),
+        },
+    }
+
+
 def _service_is_ok(value: Any) -> bool:
     if value is None:
         return True
@@ -749,6 +911,14 @@ def _to_float(value: Any) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _int_from_mapping(mapping: Mapping[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None:
+            return int(max(0.0, _to_float(value)))
+    return 0
 
 
 def _round(value: float) -> float:

@@ -55,6 +55,21 @@ class VisionObservation(HeadObservation):
 
 
 @dataclass(slots=True)
+class VoiceAudioFrameObservation(HeadObservation):
+    stream_id: str = ""
+    chunk_index: int | None = None
+    audio_base64: str = ""
+    sample_rate_hz: int | None = None
+    channels: int | None = None
+    latency_ms: float | None = None
+    kind: str = field(init=False, default="voice_audio_frame_observation")
+
+    @property
+    def modality(self) -> str:
+        return "audio"
+
+
+@dataclass(slots=True)
 class RealtimeVisionObservation(HeadObservation):
     stream_id: str = ""
     camera_id: str = ""
@@ -79,6 +94,20 @@ class RealtimeVisionObservation(HeadObservation):
         return VISION_REALTIME_ALIAS
 
 
+@dataclass(slots=True)
+class VisionTrackingObservation(HeadObservation):
+    frame_id: str = ""
+    tracked_target: dict[str, Any] = field(default_factory=dict)
+    detections: list[dict[str, Any]] = field(default_factory=list)
+    latency_ms: float | None = None
+    status: str = "unknown"
+    kind: str = field(init=False, default="vision_tracking_observation")
+
+    @property
+    def modality(self) -> str:
+        return "vision"
+
+
 __all__ = [
     "AudioTranscriptFinal",
     "EYE_REALTIME_CHANNEL",
@@ -87,5 +116,7 @@ __all__ = [
     "VISION_REALTIME_ALIAS",
     "VISION_REALTIME_MODE",
     "VISION_STATIC_COMPAT_MODE",
+    "VisionTrackingObservation",
     "VisionObservation",
+    "VoiceAudioFrameObservation",
 ]

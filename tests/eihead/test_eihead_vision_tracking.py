@@ -47,6 +47,7 @@ def test_select_tracking_target_accepts_realtime_bbox_variants() -> None:
 
     assert target is not None
     assert target.track_id == "normalized-person"
+    assert target.lock_id == "normalized-person"
     assert target.bbox == (160.0, 120.0, 480.0, 360.0)
     assert target.horizontal_error == pytest.approx(0.0)
 
@@ -96,14 +97,19 @@ def test_plan_pan_follow_action_outputs_smoothed_pan_only_command() -> None:
 
     action = plan_pan_follow_action(target, state=state)
 
-    assert action.mode == "track"
-    assert action.pan_delta_deg == pytest.approx(5.0)
-    assert action.pan_deg == pytest.approx(95.0)
+    assert action.mode == "hold"
+    assert action.pan_delta_deg == pytest.approx(0.0)
+    assert action.pan_deg == pytest.approx(90.0)
+    assert action.target_angle == pytest.approx(90.0)
+    assert action.delta == pytest.approx(0.0)
     assert action.tilt_deg is None
-    assert action.reason == "tracking"
+    assert action.reason == "bias_not_confirmed"
+    assert action.suppressed_reason == "bias_not_confirmed"
+    assert action.deadband_applied is False
+    assert action.lock_id == "person-1"
     assert state.smoothed_error == pytest.approx(0.25)
-    assert state.last_commanded_pan_deg == pytest.approx(95.0)
-    assert state.current_pan_deg == pytest.approx(95.0)
+    assert state.last_commanded_pan_deg == pytest.approx(90.0)
+    assert state.current_pan_deg == pytest.approx(90.0)
     assert state.lost_frames == 0
 
 
@@ -127,15 +133,88 @@ def test_plan_pan_follow_action_suppresses_deadband_and_tiny_angle_changes() -> 
     assert deadband.mode == "hold"
     assert deadband.pan_delta_deg == 0.0
     assert deadband.reason == "deadband"
+    assert deadband.deadband_applied is True
+    assert deadband.suppressed_reason == "inside_deadband"
+    assert deadband.target_angle == pytest.approx(90.0)
+    assert deadband.delta == pytest.approx(0.0)
 
     small_step = plan_pan_follow_action(
         tiny_target,
         state=state,
-        config=VisionFollowConfig(deadband=0.02, min_angle_delta_deg=2.0),
+        config=VisionFollowConfig(deadband=0.02, min_angle_delta_deg=2.0, hold_frames=1),
     )
     assert small_step.mode == "hold"
     assert small_step.pan_delta_deg == 0.0
     assert small_step.reason == "min_angle_delta"
+    assert small_step.deadband_applied is False
+    assert small_step.suppressed_reason == "min_angle_delta"
+
+
+def test_plan_pan_follow_action_tracks_after_bias_is_confirmed() -> None:
+    from eihead.eye.tracking import TrackingTarget
+    from eihead.neck.vision_follow import VisionFollowConfig, VisionFollowState, plan_pan_follow_action
+
+    config = VisionFollowConfig(min_action_interval_s=0.1)
+    state = VisionFollowState(current_pan_deg=90.0, last_commanded_pan_deg=90.0)
+    target = TrackingTarget(
+        bbox=(400.0, 100.0, 560.0, 340.0),
+        center_x=480.0,
+        center_y=220.0,
+        horizontal_error=0.5,
+        score=0.92,
+        label="person",
+        track_id="person-1",
+        lock_id="lock-person-1",
+        frame_id="frame-8",
+    )
+
+    first = plan_pan_follow_action(target, state=state, config=config, now_ts=1.0)
+    second = plan_pan_follow_action(target, state=state, config=config, now_ts=1.2)
+
+    assert first.mode == "hold"
+    assert second.mode == "track"
+    assert second.pan_delta_deg == pytest.approx(7.5)
+    assert second.pan_deg == pytest.approx(97.5)
+    assert second.target_angle == pytest.approx(97.5)
+    assert second.delta == pytest.approx(7.5)
+    assert second.reason == "tracking"
+    assert second.suppressed_reason is None
+    assert second.deadband_applied is False
+    assert second.lock_id == "lock-person-1"
+
+
+def test_plan_pan_follow_action_enforces_minimum_action_interval() -> None:
+    from eihead.eye.tracking import TrackingTarget
+    from eihead.neck.vision_follow import VisionFollowConfig, VisionFollowState, plan_pan_follow_action
+
+    config = VisionFollowConfig(min_action_interval_s=0.3, hold_frames=1)
+    state = VisionFollowState(current_pan_deg=90.0, last_commanded_pan_deg=90.0)
+    target = TrackingTarget(
+        bbox=(400.0, 100.0, 560.0, 340.0),
+        center_x=480.0,
+        center_y=220.0,
+        horizontal_error=0.4,
+        score=0.92,
+        label="person",
+        track_id="person-1",
+        lock_id="lock-person-1",
+        frame_id="frame-9",
+    )
+
+    first = plan_pan_follow_action(target, state=state, config=config, now_ts=1.0)
+    second = plan_pan_follow_action(target, state=state, config=config, now_ts=1.1)
+
+    assert first.mode == "track"
+    assert first.pan_deg == pytest.approx(94.0)
+    assert second.mode == "hold"
+    assert second.reason == "min_interval"
+    assert second.pan_deg == pytest.approx(94.0)
+    assert second.pan_delta_deg == pytest.approx(0.0)
+    assert second.target_angle == pytest.approx(94.0)
+    assert second.delta == pytest.approx(0.0)
+    assert second.deadband_applied is False
+    assert second.suppressed_reason == "min_interval"
+    assert second.lock_id == "lock-person-1"
 
 
 def test_plan_pan_follow_action_holds_then_decays_when_target_is_lost() -> None:

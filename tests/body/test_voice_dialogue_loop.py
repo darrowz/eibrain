@@ -615,12 +615,81 @@ def test_voice_dialogue_loop_voice_chain_benchmark_exposes_live_stage_and_stream
     assert trace["stageLatencyMs"]["listen_asr"] >= 0
     assert trace["stageLatencyMs"]["think"] >= 0
     assert trace["stageLatencyMs"]["speak"] >= 0
-    assert trace["streaming"] == {"asrPartial": True, "llmDelta": True, "ttsChunk": True}
+    assert trace["streaming"] == {
+        "asrPartial": True,
+        "asrFinal": True,
+        "llmDelta": True,
+        "ttsChunk": True,
+        "playback": True,
+    }
+    assert trace["firstAsrPartialMs"] >= 0
+    assert trace["asrFinalMs"] >= trace["firstAsrPartialMs"]
+    assert trace["firstLlmDeltaMs"] >= trace["asrFinalMs"]
+    assert trace["firstTtsChunkMs"] >= trace["firstLlmDeltaMs"]
+    assert trace["firstAudioMs"] >= trace["firstTtsChunkMs"]
     assert round_payload["stageLatencyMs"]["think"] == trace["stageLatencyMs"]["think"]
     assert benchmark["stageLatencyMetrics"]["think"]["count"] >= 1
     assert benchmark["streaming"]["ready"] is True
     assert benchmark["roundLeak"]["free"] is True
     assert benchmark["interruptStop"]["requiredCount"] == 0
+
+
+def test_voice_dialogue_loop_derives_voice_chain_trace_from_realtime_event_samples() -> None:
+    from apps.body_runtime.voice_dialogue_loop import VoiceDialogueLoop
+
+    loop = VoiceDialogueLoop(
+        body_runtime=_Body([]),
+        cognitive_runtime=_Cognition(),
+        idle_interval_s=0.01,
+        empty_interval_s=0.01,
+    )
+
+    trace = loop._voice_chain_trace_from_payload(
+        {
+            "round_id": "round-provider-sample",
+            "cancellation_token": "token-provider-sample",
+            "last_status": "reply_ready",
+            "realtime_events": [
+                {"event_type": "listening_started", "at_s": 1.0},
+                {"event_type": "asr_partial", "at_s": 1.12},
+                {"event_type": "asr_final", "at_s": 1.46},
+                {"event_type": "agent_think", "at_s": 1.64},
+                {"event_type": "tts_chunk", "at_s": 1.91},
+                {"event_type": "tts_started", "at_s": 2.04},
+                {"event_type": "complete", "at_s": 2.3},
+            ],
+        }
+    )
+
+    assert trace == {
+        "roundId": "round-provider-sample",
+        "cancellationToken": "token-provider-sample",
+        "status": "reply_ready",
+        "interrupted": False,
+        "roundLeak": False,
+            "stageLatencyMs": {
+                "listen_asr_partial": 120.0,
+                "listen_asr": 460.0,
+                "llm_first_delta": 640.0,
+                "llm_first_token": 640.0,
+                "tts_first_chunk": 910.0,
+                "first_audio": 1040.0,
+                "total": 1300.0,
+            },
+        "streaming": {
+            "asrPartial": True,
+            "asrFinal": True,
+            "llmDelta": True,
+            "ttsChunk": True,
+            "playback": True,
+        },
+        "firstAsrPartialMs": 120.0,
+        "asrFinalMs": 460.0,
+        "firstLlmDeltaMs": 640.0,
+        "firstTokenMs": 640.0,
+        "firstTtsChunkMs": 910.0,
+        "firstAudioMs": 1040.0,
+    }
 
 
 def test_voice_dialogue_loop_preserves_round_token_for_json_stream_facade() -> None:

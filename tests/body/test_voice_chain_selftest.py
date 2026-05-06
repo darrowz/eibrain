@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 
 def test_voice_chain_selftest_replays_full_event_path_without_hardware() -> None:
@@ -59,3 +61,30 @@ def test_voice_chain_selftest_main_prints_json(capsys) -> None:
     assert exit_code == 0
     assert payload["schema"] == "eibrain.voice_chain_selftest.v1"
     assert payload["codeReady"] is True
+
+
+def test_voice_chain_selftest_exposes_check_summary() -> None:
+    from apps.body_runtime.voice_chain_selftest import run_voice_chain_selftest
+
+    report = run_voice_chain_selftest()
+
+    assert report["checks"]["code_ready"]["ok"] is True
+    assert report["checks"]["streaming_ready"]["ok"] is True
+    assert report["checks"]["interrupt_stop_ready"]["ok"] is True
+    assert report["checks"]["round_leak_free"]["ok"] is True
+
+
+def test_honjia_readiness_report_runs_offline_without_live_dependencies() -> None:
+    script_path = Path(__file__).resolve().parents[2] / "scripts" / "honjia_readiness_report.py"
+    spec = importlib.util.spec_from_file_location("honjia_readiness_report", script_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    report = module.build_report(live=False)
+
+    assert report["schema"] == "eibrain.honjia_readiness_report.v1"
+    assert report["offline_capable"] is True
+    assert report["voice_chain_selftest"]["codeReady"] is True
+    assert report["vision_soak"]["collection"]["source"] == "synthetic"
+    assert report["checks"]["monitor_active"]["ok"] is None

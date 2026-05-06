@@ -426,3 +426,33 @@ def test_vision_service_caps_effective_target_fps_at_15_hz(tmp_path) -> None:
     assert state["telemetry"]["configured_interval_s"] == pytest.approx(0.01)
     assert state["telemetry"]["interval_s"] == pytest.approx(1.0 / 15.0, abs=0.001)
     assert state["telemetry"]["target_fps"] == pytest.approx(15.0)
+
+
+def test_vision_service_exposes_frame_age_drop_and_service_state_telemetry(tmp_path) -> None:
+    from apps.body_runtime.vision_hailo_service import VisionHailoService
+    from eibrain.body.vision_state import VisionStateWriter
+
+    class _Detector:
+        def detect_once(self):
+            return {
+                "status": "ok",
+                "backend": "fake_hailo",
+                "frame_id": "frame-telemetry-live",
+                "frame_captured_at_ts": 100.0,
+                "detections": [],
+                "dropped_frames": 3,
+            }
+
+    service = VisionHailoService(
+        detector=_Detector(),
+        writer=VisionStateWriter(tmp_path / "state.json"),
+        interval_s=0.1,
+        clock=lambda: 100.15,
+    )
+
+    state = service.process_once()
+
+    assert state["freshness"]["age_s"] == pytest.approx(0.15)
+    assert state["telemetry"]["frame_age_ms"] == pytest.approx(150.0)
+    assert state["telemetry"]["dropped_frames"] == 3
+    assert state["telemetry"]["service_state"] == "ok"

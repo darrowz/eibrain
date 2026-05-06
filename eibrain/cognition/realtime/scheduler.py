@@ -129,6 +129,8 @@ class RealtimeCognitiveScheduler:
                 "stored_hypothesis": stored_hypothesis,
             },
             "memory_prefetch": prefetch,
+            "summary": self._observe_summary(turn, lane="fast"),
+            "trace": self._operator_trace(turn, source="realtime_cognitive_scheduler", lane="fast"),
             "turn": turn.to_dict(),
         }
 
@@ -171,6 +173,8 @@ class RealtimeCognitiveScheduler:
             "cancellation_token": turn.cancellation_token,
             "final_text": turn.asr_final,
             "memory_candidates": [dict(item) for item in turn.memory_candidates],
+            "summary": self._observe_summary(turn, lane="slow"),
+            "trace": self._operator_trace(turn, source="realtime_cognitive_scheduler", lane="slow"),
             "turn": turn.to_dict(),
         }
 
@@ -272,16 +276,48 @@ class RealtimeCognitiveScheduler:
             "speech_segments": list(committed.get("speech_segments", [])),
             "action_plan": list(committed.get("action_plan", [])),
             "proactive_activity": activity,
+            "summary": {
+                "round_id": turn.round_id,
+                "cancellation_token": turn.cancellation_token,
+                "lane": "speaking",
+                "decision": committed.get("decision"),
+                "can_speak": can_speak,
+                "speech_count": len(list(committed.get("speech_segments", []))),
+                "action_count": len(list(committed.get("action_plan", []))),
+            },
+            "trace": {
+                "round_id": turn.round_id,
+                "cancellation_token": turn.cancellation_token,
+                "fast_hypothesis_count": self._logical_fast_hypothesis_count(turn),
+                "stable_decision_count": len(turn.stable_decisions),
+                "speaking_state": "approved" if can_speak else "blocked",
+                "source": "realtime_cognitive_scheduler",
+            },
         }
         if memory_trace:
             result["memory_trace"] = memory_trace
         return result
 
     def interrupt(self, *, reason: str = "user_interrupt") -> dict[str, Any]:
-        return self.interruption_controller.interrupt_and_start_new_round(
+        summary = self.interruption_controller.interrupt_and_start_new_round(
             self.turn_manager,
             reason=reason,
         )
+        old = dict(summary.get("mark_interrupted") or {})
+        new = dict(summary.get("start_new_round") or {})
+        summary["summary"] = {
+            "old_round_id": old.get("round_id"),
+            "new_round_id": new.get("round_id"),
+            "reason": reason,
+            "cancelled": bool(old.get("cancelled")),
+        }
+        summary["trace"] = {
+            "round_id": new.get("round_id"),
+            "cancellation_token": new.get("cancellation_token"),
+            "interrupted_round_id": old.get("round_id"),
+            "source": "realtime_cognitive_scheduler",
+        }
+        return summary
 
     def commit_memory_candidates(
         self,
@@ -324,6 +360,37 @@ class RealtimeCognitiveScheduler:
 
     def current_turn(self) -> TurnBlackboard | None:
         return self.turn_manager.current_turn()
+
+    def _operator_trace(
+        self,
+        turn: TurnBlackboard,
+        *,
+        source: str,
+        lane: str,
+    ) -> dict[str, Any]:
+        return {
+            "round_id": turn.round_id,
+            "cancellation_token": turn.cancellation_token,
+            "source": source,
+            "lane": lane,
+        }
+
+    def _observe_summary(self, turn: TurnBlackboard, *, lane: str) -> dict[str, Any]:
+        return {
+            "round_id": turn.round_id,
+            "cancellation_token": turn.cancellation_token,
+            "lane": lane,
+            "state": turn.state,
+            "fast_hypothesis_count": self._logical_fast_hypothesis_count(turn),
+            "stable_decision_count": len(turn.stable_decisions),
+        }
+
+    def _logical_fast_hypothesis_count(self, turn: TurnBlackboard) -> int:
+        return sum(
+            1
+            for item in turn.fast_hypotheses
+            if isinstance(item, Mapping) and item.get("source") == "scheduler_fast_lane"
+        )
 
     def _active_turn(self, *, reason: str) -> TurnBlackboard:
         turn = self.turn_manager.current_turn()

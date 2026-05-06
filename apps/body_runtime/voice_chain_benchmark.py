@@ -17,8 +17,11 @@ READINESS_SUMMARY_SCHEMA = "eibrain.voice_chain_readiness_summary.v1"
 
 _METRIC_LABELS = {
     "wakeToListenMs": "wake_to_listen",
+    "firstAsrPartialMs": "listen_asr_partial",
     "asrFinalMs": "asr_final",
+    "firstLlmDeltaMs": "llm_first_delta",
     "firstTokenMs": "first_token",
+    "firstTtsChunkMs": "tts_first_chunk",
     "firstAudioMs": "first_audio",
     "interruptStopMs": "interrupt_stop",
 }
@@ -31,9 +34,35 @@ _STAGE_LATENCY_KEYS = (
 )
 
 _STREAMING_SIGNALS = {
-    "asrPartial": ("asrPartial", "asr_partial", "asrPartialSeen", "partialAsr", "partial_asr"),
-    "llmDelta": ("llmDelta", "llm_delta", "replyDelta", "reply_delta", "agentDelta", "agent_delta"),
-    "ttsChunk": ("ttsChunk", "tts_chunk", "audioChunk", "audio_chunk", "ttsAudioChunk", "tts_audio_chunk"),
+    "asrPartial": (
+        "asrPartial",
+        "asr_partial",
+        "asrPartialSeen",
+        "partialAsr",
+        "partial_asr",
+        "firstAsrPartialMs",
+    ),
+    "asrFinal": ("asrFinal", "asr_final", "finalAsr", "final_asr", "asrFinalMs"),
+    "llmDelta": (
+        "llmDelta",
+        "llm_delta",
+        "replyDelta",
+        "reply_delta",
+        "agentDelta",
+        "agent_delta",
+        "firstLlmDeltaMs",
+        "firstTokenMs",
+    ),
+    "ttsChunk": (
+        "ttsChunk",
+        "tts_chunk",
+        "audioChunk",
+        "audio_chunk",
+        "ttsAudioChunk",
+        "tts_audio_chunk",
+        "firstTtsChunkMs",
+    ),
+    "playback": ("playback", "playbackStarted", "playback_started", "playback_started_seen"),
 }
 
 
@@ -267,11 +296,15 @@ def _turn_streaming_readiness(turn: Mapping[str, Any]) -> dict[str, Any]:
         return {"ready": explicit, "missingSignals": [] if explicit else list(_STREAMING_SIGNALS)}
 
     streaming = turn.get("streaming")
-    source = streaming if isinstance(streaming, Mapping) else turn
+    source = streaming if isinstance(streaming, Mapping) else {}
     missing = [
         signal
         for signal, aliases in _STREAMING_SIGNALS.items()
-        if not any(_truthy_signal(source.get(alias)) for alias in aliases)
+        if not any(
+            _truthy_signal(source.get(alias))
+            or _truthy_signal(turn.get(alias))
+            for alias in aliases
+        )
     ]
     return {"ready": not missing, "missingSignals": missing}
 
@@ -400,7 +433,7 @@ def _joyinside_readiness_from_summary(summary: Mapping[str, Any]) -> dict[str, A
     streaming_ready = bool(streaming.get("ready"))
     if not streaming_ready:
         blocking_reasons.append("streaming_signals_missing")
-        next_actions.append("Emit ASR partial, LLM delta, and TTS chunk streaming signals for every turn.")
+        next_actions.append("Emit ASR partial/final, LLM delta, TTS chunk, and playback streaming signals for every turn.")
 
     latency_ready = turn_count > 0 and not failed_metrics
     score = 0

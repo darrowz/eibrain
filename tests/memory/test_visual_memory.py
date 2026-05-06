@@ -70,6 +70,7 @@ def test_stable_target_presence_builds_memory_trace_and_upsert_candidate() -> No
         "source": "eibrain.vision",
     }
     assert trace["decision"]["decision"] == "visual_memory_candidate"
+    assert trace["decision"]["durable"] is True
 
     upsert = candidate["upsert_payload"]
     assert upsert["method"] == "memory.upsert"
@@ -79,6 +80,7 @@ def test_stable_target_presence_builds_memory_trace_and_upsert_candidate() -> No
     assert upsert["params"]["meta"]["dedupe_key"] == candidate["dedupe_key"]
     assert upsert["params"]["meta"]["retention"] == "episode"
     assert upsert["params"]["meta"]["ttl_ms"] == 7 * 24 * 60 * 60 * 1000
+    assert upsert["params"]["meta"]["writeback"]["eligible"] is True
     assert upsert["params"]["content"]["target_lock"]["stable_frames"] == 18
 
 
@@ -191,6 +193,7 @@ def test_follow_success_and_failure_are_scored_and_retained_differently() -> Non
     assert success["upsert_payload"]["params"]["meta"]["retention"] == "episode"
     assert failure["upsert_payload"]["params"]["meta"]["retention"] == "adjustment_candidate"
     assert failure["upsert_payload"]["params"]["meta"]["training_candidate"] is True
+    assert failure["upsert_payload"]["params"]["meta"]["writeback"]["reason"] == "important_visual_event"
 
 
 def test_user_feedback_payload_is_json_serializable_training_candidate() -> None:
@@ -215,6 +218,7 @@ def test_user_feedback_payload_is_json_serializable_training_candidate() -> None
     assert candidate["upsert_payload"]["params"]["memory_type"] == "visual_feedback"
     assert candidate["upsert_payload"]["params"]["meta"]["retention"] == "training_candidate"
     assert candidate["upsert_payload"]["params"]["meta"]["ttl_ms"] == 90 * 24 * 60 * 60 * 1000
+    assert candidate["upsert_payload"]["params"]["meta"]["writeback"]["durable"] is True
     assert candidate["upsert_payload"]["params"]["content"]["user_feedback"] == "tracking felt jumpy when I moved left"
 
     json.dumps(candidate)

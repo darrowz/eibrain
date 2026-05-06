@@ -13,7 +13,7 @@ from pathlib import Path
 import shutil
 import signal
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from eibrain.body.runtime_linux import capture_frame, run_hailo_frame_inference
 from apps.body_runtime.engagement_state import DEFAULT_ENGAGEMENT_STATE_PATH
@@ -475,7 +475,7 @@ class VisionHailoService:
         loop_elapsed_ms: float | None = None,
     ) -> dict[str, Any]:
         enriched = dict(state)
-        telemetry = self._timing_telemetry(loop_elapsed_ms=loop_elapsed_ms)
+        telemetry = self._timing_telemetry(enriched, loop_elapsed_ms=loop_elapsed_ms)
         pipeline = enriched.get("pipeline")
         pipeline_map = dict(pipeline) if isinstance(pipeline, dict) else {}
         pipeline_map.update(
@@ -492,7 +492,12 @@ class VisionHailoService:
         enriched["telemetry"] = telemetry_map
         return enriched
 
-    def _timing_telemetry(self, *, loop_elapsed_ms: float | None = None) -> dict[str, Any]:
+    def _timing_telemetry(
+        self,
+        state: Mapping[str, Any] | None = None,
+        *,
+        loop_elapsed_ms: float | None = None,
+    ) -> dict[str, Any]:
         raw_interval_s = max(0.0, float(self.interval_s))
         interval_s = _round_float(raw_interval_s)
         telemetry: dict[str, Any] = {
@@ -500,6 +505,14 @@ class VisionHailoService:
             "interval_s": interval_s,
             "target_fps": _round_float(1.0 / raw_interval_s) if raw_interval_s > 0 else 0.0,
         }
+        if state is not None:
+            frame_ts = _float_or_none(state.get("frame_captured_at_ts"))
+            if frame_ts is not None:
+                telemetry["frame_age_ms"] = _round_float(max(0.0, float(self.clock()) - frame_ts) * 1000.0)
+            telemetry["dropped_frames"] = max(0, int(_float_or_none(state.get("dropped_frames")) or 0.0))
+            service_state = state.get("service_state") or state.get("status")
+            if service_state is not None:
+                telemetry["service_state"] = str(service_state)
         if loop_elapsed_ms is not None:
             telemetry["loop_elapsed_ms"] = _round_float(loop_elapsed_ms)
         return telemetry

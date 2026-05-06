@@ -218,6 +218,9 @@ class LoopbackReferenceHealth:
     matched_by: str | None
     max_age_ms: int
     device: str | None
+    device_ready: bool
+    device_state: str
+    dry_run: bool
     aec_status: str
 
     def as_dict(self) -> dict[str, Any]:
@@ -229,6 +232,9 @@ class LoopbackReferenceHealth:
             "matched_by": self.matched_by,
             "max_age_ms": self.max_age_ms,
             "device": self.device,
+            "device_ready": self.device_ready,
+            "device_state": self.device_state,
+            "dry_run": self.dry_run,
             "aec_status": self.aec_status,
         }
 
@@ -242,6 +248,8 @@ def build_loopback_reference_diagnostics(
     age_ms = reference_match.age_ms if reference_match is not None else None
     matched_by = reference_match.matched_by if reference_match is not None else None
     aec_status = _aec_status(config)
+    dry_run = _is_dry_run_config(config, aec_status=aec_status)
+    device_ready = _loopback_device_ready(config)
 
     if config.aec_enabled and not config.aec_available:
         state = "aec_unavailable"
@@ -270,6 +278,9 @@ def build_loopback_reference_diagnostics(
         matched_by=matched_by,
         max_age_ms=max_age_ms,
         device=config.loopback_device,
+        device_ready=device_ready,
+        device_state=_loopback_device_state(config, device_ready=device_ready),
+        dry_run=dry_run,
         aec_status=aec_status,
     ).as_dict()
 
@@ -373,6 +384,33 @@ def _aec_status(config: AcousticFrontendConfig) -> str:
     if not config.aec_available:
         return "unavailable"
     return "passthrough"
+
+
+def _is_dry_run_config(
+    config: AcousticFrontendConfig,
+    *,
+    aec_status: str | None = None,
+) -> bool:
+    status = aec_status or _aec_status(config)
+    return str(config.mode or "").lower() in {"noop", "passthrough"} or status == "passthrough"
+
+
+def _loopback_device_ready(config: AcousticFrontendConfig) -> bool:
+    if not config.loopback_enabled:
+        return True
+    return bool(config.loopback_device)
+
+
+def _loopback_device_state(
+    config: AcousticFrontendConfig,
+    *,
+    device_ready: bool | None = None,
+) -> str:
+    if not config.loopback_enabled:
+        return "not_required"
+    if device_ready if device_ready is not None else _loopback_device_ready(config):
+        return "ready"
+    return "missing"
 
 
 def _fallback_reason(

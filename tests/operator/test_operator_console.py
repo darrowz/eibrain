@@ -264,6 +264,65 @@ def test_operator_console_exposes_voice_provider_and_audio_frontend_readiness(mo
     assert fake_key not in json.dumps(provider_smoke)
 
 
+def test_operator_console_exposes_audio_live_trace_and_readiness_summary(monkeypatch) -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    fake_key = "minimax-secret-for-test"
+    monkeypatch.setenv("MINIMAX_API_KEY", fake_key)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": False},
+                "loopback": {"enabled": True, "available": True},
+                "lastCapture": {
+                    "loopbackReference": {
+                        "ready": False,
+                        "state": "aec_unavailable",
+                        "reason": "aec_unavailable",
+                    }
+                },
+            },
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "voice_chain_benchmark": {
+                    "turnCount": 3,
+                    "roundLeakCount": 1,
+                    "metrics": {
+                        "asrFinalMs": {"p95": 620.0, "threshold": 800.0, "pass": True},
+                        "interruptStopMs": {"p95": 410.0, "threshold": 300.0, "pass": False},
+                    },
+                    "bottleneck": {"field": "interruptStopMs", "p95": 410.0, "threshold": 300.0},
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    audio = report["audio_diagnostics"]
+
+    assert audio["live_trace_summary"] == "not ready: interruptStopMs"
+    assert audio["provider_readiness"] == "degraded"
+    assert audio["provider_status"] == "1/2 configured"
+    assert audio["aec_readiness"] == "unavailable"
+    assert audio["aec_status"] == "aec_unavailable"
+    assert audio["interrupt_stop_ready"] is False
+    assert audio["interrupt_stop_p95_ms"] == 410.0
+    assert audio["interrupt_stop_threshold_ms"] == 300.0
+    assert audio["round_leak_count"] == 1
+    assert audio["round_leak_free"] is False
+    assert fake_key not in json.dumps(audio)
+    assert fake_key not in json.dumps(report)
+
+
 def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

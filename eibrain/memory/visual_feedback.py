@@ -76,6 +76,12 @@ def build_visual_feedback_record(
         ),
         "privacy": privacy_result,
     }
+    record["writeback"] = {
+        "eligible": True,
+        "durable": True,
+        "reason": "visual_feedback_event",
+        "target_memory_type": "visual_feedback",
+    }
     record["summary"] = _summary(record)
     record["tags"] = _tags(record)
     return _json_safe(record)
@@ -109,6 +115,7 @@ def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[
             "timestamp_ms": cleaned.get("timestamp_ms"),
             "privacy": cleaned.get("privacy", {}),
             "record_type": "visual_feedback",
+            "writeback": cleaned.get("writeback", {}),
         },
         "tags": list(cleaned.get("tags", [])),
     }

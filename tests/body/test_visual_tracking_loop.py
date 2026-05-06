@@ -137,7 +137,15 @@ def test_visual_tracking_loop_preserves_runtime_tracking_status() -> None:
                 running=True,
                 source=source,
                 status="waiting_for_target",
-                tracking_decision={"action": "hold", "reason": "target_missing"},
+                tracking_decision={
+                    "action": "hold",
+                    "reason": "target_missing",
+                    "target_angle": 90.0,
+                    "delta": 0.0,
+                    "deadband_applied": False,
+                    "suppressed_reason": "target_missing",
+                    "lock_id": "face-1",
+                },
             )
             return None
 
@@ -158,3 +166,8 @@ def test_visual_tracking_loop_preserves_runtime_tracking_status() -> None:
     assert runtime.state["source"] == "state"
     assert runtime.state["status"] == "waiting_for_target"
     assert runtime.state["tracking_decision"]["reason"] == "target_missing"
+    assert runtime.state["tracking_decision"]["target_angle"] == 90.0
+    assert runtime.state["tracking_decision"]["delta"] == 0.0
+    assert runtime.state["tracking_decision"]["deadband_applied"] is False
+    assert runtime.state["tracking_decision"]["suppressed_reason"] == "target_missing"
+    assert runtime.state["tracking_decision"]["lock_id"] == "face-1"

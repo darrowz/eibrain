@@ -178,6 +178,14 @@ class VoiceRuntimeBridge:
                 conversation_state="speaking",
                 lane="speaking",
                 blackboard_patch={"ttsPlayback": plan},
+                summary=self._summary(
+                    round_id=round_id,
+                    lane="speaking",
+                    conversation_state="speaking",
+                    action_count=0,
+                    has_speech_plan=False,
+                    stale=True,
+                ),
                 trace=self._trace(
                     event,
                     lane="speaking",
@@ -192,6 +200,14 @@ class VoiceRuntimeBridge:
             actions=[{"type": "speech_playback", "phase": phase, "roundId": round_id}],
             blackboard_patch={"ttsPlayback": plan},
             speech_plan=plan,
+            summary=self._summary(
+                round_id=round_id,
+                lane="speaking",
+                conversation_state="speaking",
+                action_count=1,
+                has_speech_plan=True,
+                stale=False,
+            ),
             trace=self._trace(
                 event,
                 lane="speaking",
@@ -358,16 +374,41 @@ class VoiceRuntimeBridge:
         current: Any,
     ) -> str | None:
         if current is None:
-            return None
+            return "stable_content_unavailable"
         event_round = event.get("roundId")
         event_token = event.get("cancellationToken")
         if event_round and str(event_round) != current.round_id:
             return "round_or_token_mismatch"
         if event_token and str(event_token) != current.cancellation_token:
             return "round_or_token_mismatch"
-        if not event_round and not event_token and not current.asr_final:
-            return "untagged_tts_without_active_final"
+        if not self._has_stable_speaking_content(current):
+            if not event_round and not event_token and not current.asr_final:
+                return "untagged_tts_without_active_final"
+            if not event_token and current.asr_final:
+                return None
+            return "stable_content_unavailable"
         return None
+
+    def _has_stable_speaking_content(self, turn: Any) -> bool:
+        if turn is None:
+            return False
+        if getattr(turn, "state", None) != "active":
+            return False
+        cancellation = getattr(turn, "cancellation", None)
+        if cancellation is not None and bool(getattr(cancellation, "cancelled", False)):
+            return False
+        stable_segments = getattr(turn, "stable_speech_segments", None)
+        if not isinstance(stable_segments, list) or not stable_segments:
+            return False
+        if not all(isinstance(item, Mapping) and item.get("stable") is True for item in stable_segments):
+            return False
+        safety_state = getattr(turn, "safety_state", {})
+        if not isinstance(safety_state, Mapping):
+            return False
+        verdict = safety_state.get("arbiter_verdict")
+        if not isinstance(verdict, Mapping):
+            return False
+        return str(verdict.get("state") or verdict.get("status") or "") == "approved"
 
     def _trace(
         self,
@@ -397,6 +438,7 @@ class VoiceRuntimeBridge:
         memory_hints: list[dict[str, Any]] | None = None,
         speech_plan: dict[str, Any] | None = None,
         interrupt: dict[str, Any] | None = None,
+        summary: dict[str, Any] | None = None,
         trace: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
@@ -408,7 +450,35 @@ class VoiceRuntimeBridge:
             "memoryHints": memory_hints or [],
             "speechPlan": speech_plan,
             "interrupt": interrupt,
+            "summary": summary
+            or self._summary(
+                round_id=round_id,
+                lane=lane,
+                conversation_state=conversation_state,
+                action_count=len(actions or []),
+                has_speech_plan=speech_plan is not None,
+                stale=False,
+            ),
             "trace": trace,
+        }
+
+    def _summary(
+        self,
+        *,
+        round_id: str,
+        lane: str,
+        conversation_state: str,
+        action_count: int,
+        has_speech_plan: bool,
+        stale: bool,
+    ) -> dict[str, Any]:
+        return {
+            "roundId": round_id,
+            "lane": lane,
+            "conversationState": conversation_state,
+            "actionCount": action_count,
+            "hasSpeechPlan": has_speech_plan,
+            "stale": stale,
         }
 
 

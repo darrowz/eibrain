@@ -294,6 +294,33 @@ class CapabilityManifest:
             "metadata": dict(self.metadata),
         }
 
+    @classmethod
+    def from_content(cls, data: Mapping[str, Any]) -> "CapabilityManifest":
+        capabilities = data.get("capabilities")
+        backends = data.get("backends")
+        health = data.get("health")
+        return cls(
+            manifest_id=str(data.get("manifestId", data.get("manifest_id", "")) or ""),
+            manifest_version=str(data.get("manifestVersion", data.get("manifest_version", "0.1.0")) or "0.1.0"),
+            device=_dict(data.get("device") if isinstance(data.get("device"), Mapping) else None),
+            runtime=_dict(data.get("runtime") if isinstance(data.get("runtime"), Mapping) else None),
+            transports=_dict(data.get("transports") if isinstance(data.get("transports"), Mapping) else None),
+            modalities=_dict(data.get("modalities") if isinstance(data.get("modalities"), Mapping) else None),
+            capabilities=[
+                Capability.from_dict(item)
+                for item in _list(capabilities if isinstance(capabilities, (list, tuple)) else None)
+                if isinstance(item, Mapping)
+            ],
+            backends=[
+                Capability.from_dict(item)
+                for item in _list(backends if isinstance(backends, (list, tuple)) else None)
+                if isinstance(item, Mapping)
+            ],
+            health=DeviceStatus.from_dict(health if isinstance(health, Mapping) else None),
+            limits=_dict(data.get("limits") if isinstance(data.get("limits"), Mapping) else None),
+            metadata=_dict(data.get("metadata") if isinstance(data.get("metadata"), Mapping) else None),
+        )
+
     def to_event(
         self,
         *,

@@ -204,12 +204,17 @@ def test_interrupt_playback_clears_pending_frames_stops_sink_and_tracks_metrics(
     assert runner.core.audio_playback_queue.push(_pcm_frame(3))
     assert runner.core.audio_playback_queue.push(_pcm_frame(4))
 
-    cleared = runner.interrupt_playback()
+    cleared = runner.interrupt_playback(reason="user_barge_in", round_id="round-worker-1")
     status = runner.status()
 
     assert cleared == 2
     assert runner.core.audio_playback_queue.pop() is None
     assert sink.stop_calls == 1
+    assert status["interruptStopReady"] is True
+    assert status["cancelledRoundCount"] == 1
+    assert status["lastInterrupt"]["reason"] == "user_barge_in"
+    assert status["lastInterrupt"]["roundId"] == "round-worker-1"
+    assert status["lastInterrupt"]["cleared"] == 2
     assert status["worker_metrics"]["playback_interrupts"] == 1
     assert status["worker_metrics"]["playback_frames_cleared"] == 2
 
@@ -238,7 +243,7 @@ def test_interrupt_playback_clears_all_downstream_tts_buffers() -> None:
     assert runner.core.opus_decode_queue.push(_pcm_frame(6, payload=b"decode-old-opus"))
     assert runner.core.audio_playback_queue.push(_pcm_frame(7, payload=b"playback-old-pcm"))
 
-    cleared = runner.interrupt_playback()
+    cleared = runner.interrupt_playback(reason="superseded", round_id="round-worker-old")
     status = runner.status()
 
     assert cleared == 3
@@ -250,6 +255,10 @@ def test_interrupt_playback_clears_all_downstream_tts_buffers() -> None:
     assert status["worker_metrics"]["playback_frames_cleared"] == 1
     assert status["worker_metrics"]["decode_frames_cleared"] == 1
     assert status["worker_metrics"]["transport_inbound_events_cleared"] == 1
+    assert status["diagnostics"]["interrupt"]["ready"] is True
+    assert status["diagnostics"]["interrupt"]["cancelled_round_count"] == 1
+    assert status["diagnostics"]["interrupt"]["last_interrupt"]["reason"] == "superseded"
+    assert status["diagnostics"]["interrupt"]["last_interrupt"]["transportInboundEventsCleared"] == 1
     assert status["transport"]["queues"]["inbound_queue"]["depth"] == 0
 
 
@@ -411,6 +420,9 @@ def test_runner_status_exposes_joyinside_like_audio_chain_diagnostics() -> None:
     assert diagnostics["audio_frontend"]["aec"]["enabled"] is True
     assert diagnostics["audio_frontend"]["ns"]["enabled"] is True
     assert diagnostics["audio_frontend"]["vad"]["enabled"] is True
+    assert diagnostics["interrupt"]["ready"] is True
+    assert diagnostics["interrupt"]["cancelled_round_count"] == 0
+    assert diagnostics["interrupt"]["last_interrupt"] is None
     assert diagnostics["upstream"]["state"] == "connected"
     assert diagnostics["downstream"]["state"] == "connected"
     assert diagnostics["heartbeat"]["due"] is False

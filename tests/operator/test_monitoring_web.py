@@ -108,6 +108,80 @@ def test_monitoring_web_renders_memory_trace_panel() -> None:
     assert "function renderMemoryTrace(report)" in html
 
 
+def test_monitoring_web_surfaces_audio_live_trace_readiness_without_secret_leaks(monkeypatch) -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    fake_key = "dashscope-secret-for-monitor"
+    monkeypatch.setenv("MINIMAX_API_KEY", fake_key)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+
+    class _Runtime:
+        def snapshot(self):
+            return {
+                "node_id": "honjia",
+                "degradation_mode": "normal",
+                "capabilities": {},
+                "organs": {},
+                "audio_frontend": {
+                    "aec": {"enabled": True, "available": False},
+                    "loopback": {"enabled": True, "available": True},
+                    "lastCapture": {
+                        "loopbackReference": {
+                            "ready": False,
+                            "state": "aec_unavailable",
+                            "reason": "aec_unavailable",
+                        }
+                    },
+                },
+                "voice_dialogue": {
+                    "enabled": True,
+                    "running": True,
+                    "voice_chain_benchmark": {
+                        "turnCount": 2,
+                        "roundLeakCount": 1,
+                        "metrics": {
+                            "interruptStopMs": {"p95": 410.0, "threshold": 300.0, "pass": False},
+                        },
+                        "bottleneck": {"field": "interruptStopMs", "p95": 410.0, "threshold": 300.0},
+                    },
+                },
+            }
+
+        def recent_events(self):
+            return []
+
+        def latest_visual_frame_path(self):
+            return None
+
+    server = MonitoringWebServer(runtime=_Runtime(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.port}/status.json") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}") as response:
+            html = response.read().decode("utf-8")
+    finally:
+        server.stop()
+
+    audio = payload["audio_diagnostics"]
+    assert audio["live_trace_summary"] == "not ready: interruptStopMs"
+    assert audio["provider_readiness"] == "degraded"
+    assert audio["aec_readiness"] == "unavailable"
+    assert audio["interrupt_stop_ready"] is False
+    assert audio["round_leak_count"] == 1
+    assert fake_key not in json.dumps(payload)
+    assert fake_key not in html
+    assert "Live trace" in html
+    assert "Provider readiness" in html
+    assert "AEC readiness" in html
+    assert "Interrupt stop" in html
+    assert "Round leak" in html
+    assert "audio.live_trace_summary || 'waiting'" in html
+    assert "audio.provider_readiness || 'unknown'" in html
+    assert "audio.aec_readiness || 'unknown'" in html
+
+
 def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
     from apps.operator_console.web import MonitoringWebServer
 

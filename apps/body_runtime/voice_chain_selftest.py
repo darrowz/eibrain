@@ -173,6 +173,12 @@ def run_voice_chain_selftest(*, thresholds: Mapping[str, Any] | None = None) -> 
             ),
         }
     )
+    checks = {
+        "code_ready": {"ok": code_ready},
+        "streaming_ready": {"ok": streaming_ready},
+        "interrupt_stop_ready": {"ok": interrupt_stop_ready},
+        "round_leak_free": {"ok": round_leak_free},
+    }
     return {
         "schema": SELFTEST_SCHEMA,
         "source": "offline_selftest",
@@ -185,6 +191,7 @@ def run_voice_chain_selftest(*, thresholds: Mapping[str, Any] | None = None) -> 
         "thresholds": threshold_values,
         "benchmark": benchmark,
         "readiness": readiness,
+        "checks": checks,
         "eventCount": len(event_names),
         "eventNames": event_names,
         "operationCounts": dict(sorted(operation_counts.items())),
@@ -279,6 +286,7 @@ def _run_turn(
             "asrPartial": "ei.voice.asr.partial" in event_names,
             "llmDelta": "ei.dialogue.agent.delta" in event_names,
             "ttsChunk": "ei.voice.tts.chunk" in event_names,
+            "playback": "ei.voice.playback.started" in event_names,
         },
         "roundLeak": False,
         "interrupted": interrupted,

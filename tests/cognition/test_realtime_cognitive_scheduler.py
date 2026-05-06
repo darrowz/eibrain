@@ -202,6 +202,57 @@ def test_scheduler_interrupt_blocks_old_token_from_committing_stable_decision() 
     assert snapshot["history"][old_round_id]["stable_decisions"] == []
 
 
+def test_scheduler_decide_returns_operator_summary_and_trace() -> None:
+    scheduler = RealtimeCognitiveScheduler(clock=_clock())
+
+    scheduler.observe_partial("帮我记一下")
+    scheduler.observe_final("帮我记一下明天给妈妈打电话")
+    result = scheduler.decide()
+
+    assert result["summary"] == {
+        "round_id": result["round_id"],
+        "cancellation_token": result["cancellation_token"],
+        "lane": "speaking",
+        "decision": result["decision"]["decision"],
+        "can_speak": True,
+        "speech_count": len(result["speech_segments"]),
+        "action_count": len(result["action_plan"]),
+    }
+    assert result["trace"] == {
+        "round_id": result["round_id"],
+        "cancellation_token": result["cancellation_token"],
+        "fast_hypothesis_count": 1,
+        "stable_decision_count": 1,
+        "speaking_state": "approved",
+        "source": "realtime_cognitive_scheduler",
+    }
+
+
+def test_scheduler_interrupt_cancels_old_action_plan_and_returns_trace() -> None:
+    scheduler = RealtimeCognitiveScheduler(clock=_clock())
+
+    scheduler.observe_partial("请打开灯")
+    scheduler.observe_final("请打开灯")
+    decided = scheduler.decide()
+    interrupt = scheduler.interrupt(reason="barge_in")
+    old_turn = scheduler.snapshot()["history"][decided["round_id"]]
+
+    assert old_turn["action_plan"]
+    assert old_turn["action_plan"][0]["status"] == "cancelled"
+    assert interrupt["summary"] == {
+        "old_round_id": decided["round_id"],
+        "new_round_id": interrupt["start_new_round"]["round_id"],
+        "reason": "barge_in",
+        "cancelled": True,
+    }
+    assert interrupt["trace"] == {
+        "round_id": interrupt["start_new_round"]["round_id"],
+        "cancellation_token": interrupt["start_new_round"]["cancellation_token"],
+        "interrupted_round_id": decided["round_id"],
+        "source": "realtime_cognitive_scheduler",
+    }
+
+
 def test_scheduler_explicitly_commits_memory_candidates_and_exposes_trace() -> None:
     class MemorySpy:
         last_writeback_status = {"status": "idle"}

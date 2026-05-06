@@ -183,6 +183,27 @@ def test_adapter_records_audio_frame_tts_chunk_and_heartbeat_for_live_trace() ->
     assert session.events[-1].payload["state"] == "capturing"
 
 
+def test_adapter_live_trace_distinguishes_partial_final_delta_tts_and_playback_events() -> None:
+    from apps.body_runtime.voice_streaming_adapter import VoiceStreamingAdapter
+
+    session = _session()
+    adapter = VoiceStreamingAdapter(session)
+
+    adapter.apply(_event("ei.voice.asr.partial", {"text": "ni"}))
+    adapter.apply(_event("ei.voice.asr.final", {"text": "ni hao"}))
+    adapter.apply(_event("ei.dialogue.agent.delta", {"delta": "hello"}))
+    adapter.apply(_event("ei.voice.tts.chunk", {"chunkIndex": 0, "pcmBytes": 320}))
+    trace = adapter.apply(_event("ei.voice.playback.started", {"state": "playing"}))
+
+    assert trace["live_trace"]["turn_summary"] == {
+        "asrPartial": {"count": 1, "seen": True},
+        "asrFinal": {"count": 1, "seen": True},
+        "llmDelta": {"count": 1, "seen": True},
+        "ttsChunk": {"count": 1, "seen": True},
+        "playback": {"count": 1, "seen": True},
+    }
+
+
 def test_adapter_maps_playback_stopped_to_complete_or_tts_stop_trace() -> None:
     from apps.body_runtime.voice_streaming_adapter import VoiceStreamingAdapter
 

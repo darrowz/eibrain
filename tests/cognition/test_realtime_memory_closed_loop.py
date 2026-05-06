@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from eibrain.cognition.realtime.memory import MemoryOrchestrator
+from eibrain.memory.adapters.eimemory_rpc import FakeEIMemoryRPCAdapter
+from eibrain.memory.contracts import MemoryResult
 
 
 def _turn() -> SimpleNamespace:
@@ -102,6 +104,9 @@ def test_visual_world_writeback_is_inert_and_commits_with_world_observation_writ
     assert trace["writeback"]["items"][0]["source"] == "eibrain.visual_world"
     assert trace["writeback"]["items"][0]["memory_type"] == "world_observation"
     assert trace["writeback"]["items"][0]["record_id"] == "world-1"
+    assert trace["write"]["proposed"][0]["summary"] == "person near desk"
+    assert trace["write"]["committed"][0]["record_id"] == "world-1"
+    assert trace["memory_trace_summary"]["write_committed"] == 1
     assert trace["trace_record"]["status"] == "ok"
     assert trace["trace_record"]["record_id"] == "trace-1"
     assert memory.memory_traces[0]["session_id"] == "vision:desk"
@@ -201,3 +206,57 @@ def test_action_outcome_writeback_builds_closed_loop_candidate_metadata() -> Non
     assert candidate["metadata"]["evidence"] == [{"type": "head_feedback", "message": "tracking overshot target"}]
     assert candidate["metadata"]["links"] == [{"rel": "frame", "href": "frame-789"}]
     assert "action_outcome" in candidate["metadata"]["tags"]
+
+
+def test_memory_orchestrator_records_recalled_items_used_in_reply() -> None:
+    turn = _turn()
+    memory = FakeEIMemoryRPCAdapter(
+        recall_result=MemoryResult(
+            summary="Prefer concise spoken replies.",
+            relevant_memories=["Reply Style: Prefer concise spoken replies."],
+            recall_diagnostics={
+                "selected_count": 1,
+                "selected_records": [
+                    {
+                        "record_id": "mem_reply_1",
+                        "title": "Reply Style",
+                        "source": "eibrain.preference",
+                        "memory_type": "preference",
+                    }
+                ],
+            },
+        )
+    )
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    orchestrator.build_recall_request(
+        turn,
+        query="用户回复风格偏好",
+        reason="prefetch_context_for_reply",
+        metadata={"task_type": "brain.respond"},
+    )
+
+    orchestrator.commit_candidates(turn, session_id="voice-session", actor_id="user-1")
+    trace = orchestrator.record_reply_memory_usage(
+        turn,
+        reply_text="我记得你喜欢更简短一点的回复。",
+        used_items=[{"record_id": "mem_reply_1"}],
+        session_id="voice-session",
+        actor_id="user-1",
+    )
+
+    recalled = [item for item in turn.memory_candidates if item.get("kind") == "recall"]
+    assert recalled[0]["record_id"] == "mem_reply_1"
+    assert recalled[0]["used_in_reply"] is True
+    assert trace["reply"]["reply_text"] == "我记得你喜欢更简短一点的回复。"
+    assert trace["reply"]["used_recall_items"] == [
+        {
+            "record_id": "mem_reply_1",
+            "text": "Reply Style: Prefer concise spoken replies.",
+            "title": "Reply Style",
+            "memory_type": "preference",
+            "memory_source": "eibrain.preference",
+        }
+    ]
+    assert trace["memory_trace_summary"]["reply_used"] == 1
+    assert trace["memory_trace_summary"]["used_memory_ids"] == ["mem_reply_1"]
+    assert memory.memory_traces[-1]["payload"]["reply"]["used_recall_items"][0]["record_id"] == "mem_reply_1"

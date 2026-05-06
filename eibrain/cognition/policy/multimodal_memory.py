@@ -308,6 +308,18 @@ class MultimodalMemoryPolicy:
             resolved_source = source or "eibrain.procedural_feedback"
             retention = "adjustment_candidate"
             promotion_status = "candidate"
+        elif event in {"dialogue_summary", "conversation_summary", "turn_summary"}:
+            candidate_types = ["episodic"]
+            memory_type = "conversation"
+            resolved_source = source or "eibrain.audio_dialogue"
+            retention = "episode"
+            promotion_status = "not_promoted"
+        elif event in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
+            candidate_types = ["working"]
+            memory_type = "working_event"
+            resolved_source = source or "eibrain.visual_frame"
+            retention = "short_lived"
+            promotion_status = "not_promoted"
         elif event in {"vision_observation", "visual_observation", "world_observation"} or modality == "vision":
             candidate_types = ["episodic"]
             memory_type = "world_observation"
@@ -357,12 +369,14 @@ class MultimodalMemoryPolicy:
             source_event_id=source_event_id,
         )
         writeback = self._writeback_policy(
+            event_type=event,
             memory_type=memory_type,
             explicit_memory_request=explicit_memory_request,
             training_candidate=training_candidate,
             adjustment=adjustment,
         )
         decision_trace = self._candidate_decision_trace(
+            event_type=event,
             memory_type=memory_type,
             candidate_types=candidate_types,
             explicit_memory_request=explicit_memory_request,
@@ -546,6 +560,7 @@ class MultimodalMemoryPolicy:
     @staticmethod
     def _writeback_policy(
         *,
+        event_type: str,
         memory_type: str,
         explicit_memory_request: bool,
         training_candidate: bool,
@@ -569,6 +584,18 @@ class MultimodalMemoryPolicy:
                 "reason": "visual_world_observation",
                 "target_memory_type": memory_type,
             }
+        if event_type in {"dialogue_summary", "conversation_summary", "turn_summary"}:
+            return {
+                "eligible": True,
+                "reason": "dialogue_summary",
+                "target_memory_type": memory_type,
+            }
+        if event_type in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
+            return {
+                "eligible": False,
+                "reason": "high_frequency_visual_frame",
+                "target_memory_type": memory_type,
+            }
         if training_candidate:
             return {
                 "eligible": True,
@@ -584,6 +611,7 @@ class MultimodalMemoryPolicy:
     @staticmethod
     def _candidate_decision_trace(
         *,
+        event_type: str,
         memory_type: str,
         candidate_types: list[str],
         explicit_memory_request: bool,
@@ -603,6 +631,16 @@ class MultimodalMemoryPolicy:
             return {
                 "decision": "writeback_visual_world_observation",
                 "why": "vision observation can be retained as situational episodic memory",
+            }
+        if event_type in {"dialogue_summary", "conversation_summary", "turn_summary"}:
+            return {
+                "decision": "writeback_dialogue_summary_episode",
+                "why": "conversation summaries are durable episodic memory, unlike raw dialogue turns",
+            }
+        if event_type in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
+            return {
+                "decision": "writeback_visual_frame_trace_only",
+                "why": "raw high-frequency visual frames stay in trace/working memory, not durable memory",
             }
         if "training" in candidate_types:
             return {

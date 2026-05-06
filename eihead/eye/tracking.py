@@ -18,6 +18,7 @@ class TrackingTarget:
     score: float
     label: str
     track_id: Any | None = None
+    lock_id: Any | None = None
     frame_id: Any | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -29,6 +30,7 @@ class TrackingTarget:
             "score": self.score,
             "label": self.label,
             "track_id": self.track_id,
+            "lock_id": self.lock_id,
             "frame_id": self.frame_id,
         }
 
@@ -91,6 +93,7 @@ def select_tracking_target(
         ),
     )
     x1, y1, x2, y2 = bbox
+    track_id = detection.get("trackId", detection.get("track_id", detection.get("id")))
     return TrackingTarget(
         bbox=bbox,
         center_x=x1 + (x2 - x1) / 2.0,
@@ -98,7 +101,8 @@ def select_tracking_target(
         horizontal_error=horizontal_error,
         score=score,
         label=_detection_label(detection),
-        track_id=detection.get("trackId", detection.get("track_id", detection.get("id"))),
+        track_id=track_id,
+        lock_id=detection.get("lockId", detection.get("lock_id", track_id)),
         frame_id=detection.get("frameId", detection.get("frame_id", frame_id)),
     )
 

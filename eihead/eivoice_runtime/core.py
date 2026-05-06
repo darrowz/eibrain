@@ -217,6 +217,9 @@ class EiVoiceRuntimeCore:
         self.state_machine = VoiceRuntimeStateMachine()
         self.wakeword_buffer = WakewordRingBuffer()
         self.codec = codec or PassthroughOpusCodec()
+        self._interrupt_stop_ready = False
+        self._last_interrupt: dict[str, Any] | None = None
+        self._cancelled_round_count = 0
         self.opus_encode_queue = BoundedAudioQueue(
             capacity=3,
             full_policy="block",
@@ -242,10 +245,47 @@ class EiVoiceRuntimeCore:
     def state(self) -> str:
         return self.state_machine.state
 
+    def set_interrupt_stop_ready(self, ready: bool) -> None:
+        self._interrupt_stop_ready = bool(ready)
+
+    def record_interrupt(
+        self,
+        *,
+        reason: str,
+        cleared: int,
+        source: str = "runtime",
+        round_id: str | None = None,
+        playback_frames_cleared: int = 0,
+        decode_frames_cleared: int = 0,
+        transport_inbound_events_cleared: int = 0,
+    ) -> dict[str, Any]:
+        self._cancelled_round_count += 1
+        self._last_interrupt = {
+            "reason": str(reason or "interrupt"),
+            "source": str(source or "runtime"),
+            "round_id": round_id,
+            "roundId": round_id,
+            "cleared": int(cleared),
+            "playback_frames_cleared": int(playback_frames_cleared),
+            "playbackFramesCleared": int(playback_frames_cleared),
+            "decode_frames_cleared": int(decode_frames_cleared),
+            "decodeFramesCleared": int(decode_frames_cleared),
+            "transport_inbound_events_cleared": int(transport_inbound_events_cleared),
+            "transportInboundEventsCleared": int(transport_inbound_events_cleared),
+            "ts": time(),
+        }
+        return dict(self._last_interrupt)
+
     def status(self) -> dict[str, Any]:
         return {
             "state": self.state_machine.state,
             "transition_count": len(self.state_machine.history),
+            "interruptStopReady": self._interrupt_stop_ready,
+            "interrupt_stop_ready": self._interrupt_stop_ready,
+            "lastInterrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
+            "last_interrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
+            "cancelledRoundCount": self._cancelled_round_count,
+            "cancelled_round_count": self._cancelled_round_count,
             "wakeword_buffer": {
                 "capacity_ms": self.wakeword_buffer.capacity_ms,
                 "duration_ms": self.wakeword_buffer.duration_ms,

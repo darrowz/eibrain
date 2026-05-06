@@ -30,8 +30,11 @@ DEFAULT_SCENARIOS = (
             {
                 "roundId": "rnd-short-001",
                 "wakeToListenMs": 120.0,
+                "firstAsrPartialMs": 180.0,
                 "asrFinalMs": 520.0,
+                "firstLlmDeltaMs": 360.0,
                 "firstTokenMs": 360.0,
+                "firstTtsChunkMs": 1180.0,
                 "firstAudioMs": 1280.0,
                 "interruptStopMs": 180.0,
                 "roundLeak": False,
@@ -45,8 +48,11 @@ DEFAULT_SCENARIOS = (
             {
                 "roundId": "rnd-child-001",
                 "wakeToListenMs": 180.0,
+                "firstAsrPartialMs": 260.0,
                 "asrFinalMs": 760.0,
+                "firstLlmDeltaMs": 520.0,
                 "firstTokenMs": 520.0,
+                "firstTtsChunkMs": 1660.0,
                 "firstAudioMs": 1760.0,
                 "interruptStopMs": 240.0,
                 "roundLeak": False,
@@ -59,8 +65,11 @@ DEFAULT_SCENARIOS = (
         turns=[
             {
                 "roundId": "rnd-barge-001",
+                "firstAsrPartialMs": 210.0,
                 "asrFinalMs": 610.0,
+                "firstLlmDeltaMs": 440.0,
                 "firstTokenMs": 440.0,
+                "firstTtsChunkMs": 1390.0,
                 "firstAudioMs": 1490.0,
                 "interruptStopMs": 210.0,
                 "interrupted": True,
@@ -74,16 +83,22 @@ DEFAULT_SCENARIOS = (
         turns=[
             {
                 "roundId": "rnd-follow-001",
+                "firstAsrPartialMs": 180.0,
                 "asrFinalMs": 560.0,
+                "firstLlmDeltaMs": 390.0,
                 "firstTokenMs": 390.0,
+                "firstTtsChunkMs": 1220.0,
                 "firstAudioMs": 1320.0,
                 "interruptStopMs": 190.0,
                 "roundLeak": False,
             },
             {
                 "roundId": "rnd-follow-002",
+                "firstAsrPartialMs": 190.0,
                 "asrFinalMs": 590.0,
+                "firstLlmDeltaMs": 410.0,
                 "firstTokenMs": 410.0,
+                "firstTtsChunkMs": 1280.0,
                 "firstAudioMs": 1380.0,
                 "interruptStopMs": 205.0,
                 "roundLeak": False,
@@ -96,8 +111,11 @@ DEFAULT_SCENARIOS = (
         turns=[
             {
                 "roundId": "rnd-jitter-001",
+                "firstAsrPartialMs": 240.0,
                 "asrFinalMs": 780.0,
+                "firstLlmDeltaMs": 690.0,
                 "firstTokenMs": 690.0,
+                "firstTtsChunkMs": 1860.0,
                 "firstAudioMs": 1960.0,
                 "interruptStopMs": 280.0,
                 "roundLeak": False,
@@ -154,27 +172,48 @@ def run_voice_chain_scenarios(
 
 def _benchmark_turn(turn: Mapping[str, Any], *, streaming_ready: bool) -> dict[str, Any]:
     item = dict(turn)
+    if "firstLlmDeltaMs" not in item and "firstTokenMs" in item:
+        item["firstLlmDeltaMs"] = item["firstTokenMs"]
+    if "firstTokenMs" not in item and "firstLlmDeltaMs" in item:
+        item["firstTokenMs"] = item["firstLlmDeltaMs"]
     if not any(key in item for key in ("stageLatencyMs", "stage_latency_ms", "lastStageLatencyMs", "last_stage_latency_ms")):
         item["stageLatencyMs"] = _derived_stage_latency_ms(item)
     if streaming_ready and "streaming" not in item and "streamingReady" not in item and "streaming_ready" not in item:
-        item["streaming"] = {"asrPartial": True, "llmDelta": True, "ttsChunk": True}
+        item["streaming"] = {
+            "asrPartial": True,
+            "asrFinal": True,
+            "llmDelta": True,
+            "ttsChunk": True,
+            "playback": True,
+        }
     return item
 
 
 def _derived_stage_latency_ms(turn: Mapping[str, Any]) -> dict[str, float]:
+    asr_partial = _number_or_none(turn.get("firstAsrPartialMs"))
     asr = _number_or_none(turn.get("asrFinalMs"))
+    first_delta = _number_or_none(turn.get("firstLlmDeltaMs"))
     first_token = _number_or_none(turn.get("firstTokenMs"))
+    first_tts_chunk = _number_or_none(turn.get("firstTtsChunkMs"))
     first_audio = _number_or_none(turn.get("firstAudioMs"))
     stages: dict[str, float] = {}
+    if asr_partial is not None:
+        stages["listen_asr_partial"] = asr_partial
     if asr is not None:
         stages["listen_asr"] = asr
+    if first_delta is not None:
+        stages["llm_first_delta"] = first_delta
     if first_token is not None:
         stages["llm_first_token"] = first_token
+    if first_tts_chunk is not None:
+        stages["tts_first_chunk"] = first_tts_chunk
     if first_audio is not None:
-        if asr is not None and first_token is not None:
-            stages["tts_first_audio"] = max(0.0, first_audio - asr - first_token)
+        llm_boundary = first_delta if first_delta is not None else first_token
+        if asr is not None and llm_boundary is not None:
+            stages["tts_first_audio"] = max(0.0, first_audio - max(asr, llm_boundary))
         else:
             stages["tts_first_audio"] = first_audio
+        stages["first_audio"] = first_audio
         stages["total"] = first_audio
     return stages
 

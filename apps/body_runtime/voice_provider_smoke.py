@@ -47,12 +47,20 @@ def build_readiness(provider: str, *, dry_run: bool = True, live: bool = False) 
 def build_report(provider: str, *, dry_run: bool = True, live: bool = False) -> dict[str, Any]:
     providers = ALL_PROVIDERS if provider == "all" else (provider,)
     readiness = [build_readiness(item, dry_run=dry_run, live=live) for item in providers]
+    configured_providers = [str(item["provider"]) for item in readiness if item["configured"] is True]
+    missing_providers = [str(item["provider"]) for item in readiness if item["configured"] is not True]
     return {
         "schema": SCHEMA,
         "dry_run": bool(dry_run),
         "live": bool(live),
         "providers": readiness,
         "configured": all(item["configured"] for item in readiness),
+        "readiness": {
+            "status": "healthy" if len(configured_providers) == len(readiness) else "degraded",
+            "configured_provider_count": len(configured_providers),
+            "configured_providers": configured_providers,
+            "missing_providers": missing_providers,
+        },
     }
 
 

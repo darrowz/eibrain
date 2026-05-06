@@ -117,3 +117,9 @@ def test_runtime_status_includes_joyinside_four_queue_metrics() -> None:
     assert status["queues"]["audio_playback_queue"]["capacity"] == 3
     assert status["queues"]["ws_send_queue"]["dropped_oldest"] > 0
     assert status["queues"]["opus_decode_queue"]["dropped_newest"] > 0
+    assert status["interruptStopReady"] is False
+    assert status["interrupt_stop_ready"] is False
+    assert status["lastInterrupt"] is None
+    assert status["last_interrupt"] is None
+    assert status["cancelledRoundCount"] == 0
+    assert status["cancelled_round_count"] == 0

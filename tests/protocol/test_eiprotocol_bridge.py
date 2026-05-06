@@ -96,6 +96,47 @@ def test_bridge_capability_manifest_to_eiprotocol_envelope() -> None:
     assert payload["content"]["metadata"]["legacyCapabilities"] == ["audio_turn", "vision_observation"]
 
 
+def test_bridge_capability_manifest_groups_devices_and_backends_by_modality() -> None:
+    from eibrain.protocol import to_eiprotocol_event
+    from eibrain.protocol.capabilities import CapabilityManifest, HeadBackend, HeadDevice, HeadHealth
+
+    manifest = CapabilityManifest(
+        ts=1.0,
+        source="eihead.honjia",
+        target="eibrain.honxin",
+        trace_id="trace-cap-groups",
+        node_id="honjia",
+        devices=[
+            HeadDevice(device_id="camera.main", kind="camera", name="front camera", capabilities=["frame_capture"]),
+            HeadDevice(device_id="mic.main", kind="microphone", name="usb mic", capabilities=["audio_capture"]),
+            HeadDevice(device_id="speaker.main", kind="speaker", name="default speaker", capabilities=["playback"]),
+            HeadDevice(device_id="neck.pan", kind="neck", name="neck pan", capabilities=["move_head"]),
+        ],
+        backends=[
+            HeadBackend(backend_id="asr.sherpa", kind="asr", provider="sherpa-onnx"),
+            HeadBackend(backend_id="tts.minimax", kind="tts", provider="minimax"),
+            HeadBackend(backend_id="vision.hailo", kind="vision", provider="hailo"),
+            HeadBackend(backend_id="embedding.bge", kind="embedding", provider="bge"),
+        ],
+        health=HeadHealth(status="ok", message="ready"),
+    )
+
+    payload = to_eiprotocol_event(manifest).to_dict()
+    modalities = payload["content"]["modalities"]
+
+    assert modalities["audio"] == {
+        "available": True,
+        "microphones": ["mic.main"],
+        "speakers": ["speaker.main"],
+        "asr": ["asr.sherpa"],
+        "tts": ["tts.minimax"],
+    }
+    assert modalities["vision"] == {"available": True, "cameras": ["camera.main"], "backends": ["vision.hailo"]}
+    assert modalities["actuation"] == {"available": True, "neck": ["neck.pan"]}
+    assert modalities["embedding"] == {"available": True, "backends": ["embedding.bge"]}
+    assert payload["content"]["health"]["status"] == "ok"
+
+
 def test_bridge_audio_turn_uses_final_flag_for_event_name() -> None:
     from eibrain.protocol.eiprotocol_bridge import audio_turn_to_eiprotocol_event
     from eibrain.protocol.head import AudioTurn
@@ -546,3 +587,52 @@ def test_v011_vision_bridge_defaults_to_head_to_brain_direction() -> None:
     assert payload["source"]["instanceId"] == "honjia"
     assert payload["target"]["domain"] == "eibrain"
     assert payload["target"]["instanceId"] == "honxin"
+
+
+def test_scheduler_snapshot_bridge_emits_memory_trace_events_with_trace_metadata() -> None:
+    from eibrain.protocol.eiprotocol_bridge import scheduler_snapshot_to_eiprotocol_events
+
+    events = scheduler_snapshot_to_eiprotocol_events(
+        {
+            "current": {"round_id": "rnd-memory-1", "session_id": "session-memory-1"},
+            "memory_traces": [
+                {
+                    "trace_id": "trace-memory-1",
+                    "trace_schema": "v0.1.1",
+                    "round_id": "rnd-memory-1",
+                    "session_id": "session-memory-1",
+                    "recall": {
+                        "items": [
+                            {
+                                "query": "favorite tea",
+                                "summary": "recalled tea preference",
+                                "selected_records": [{"memory_id": "mem-1", "summary": "likes oolong"}],
+                            }
+                        ]
+                    },
+                    "writeback": {
+                        "items": [
+                            {
+                                "memory_id": "mem-2",
+                                "status": "committed",
+                                "summary": "stored new preference",
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+        session_id="session-memory-1",
+        sequence_start=21,
+        time="2026-05-05T12:00:00.000+08:00",
+    )
+
+    recall_event = next(event for event in events if event.name == "ei.memory.recall.result")
+    write_event = next(event for event in events if event.name == "ei.memory.write.committed")
+
+    assert recall_event.content["traceSchema"] == "v0.1.1"
+    assert recall_event.content["traceRoundId"] == "rnd-memory-1"
+    assert recall_event.content["results"] == [{"memory_id": "mem-1", "summary": "likes oolong"}]
+    assert write_event.content["traceSchema"] == "v0.1.1"
+    assert write_event.content["traceRoundId"] == "rnd-memory-1"
+    assert write_event.content["memoryId"] == "mem-2"

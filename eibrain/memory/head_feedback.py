@@ -159,6 +159,7 @@ def build_head_feedback_record(
         "outcome": outcome_map,
         "feedback": feedback_map,
     }
+    record["writeback"] = _writeback_for(resolved_memory_kind)
     record["summary"] = summarize_head_feedback_record(record)
     record["tags"] = _tags_for(record)
     return record
@@ -198,6 +199,7 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
             "persona_memory": cleaned.get("persona_memory", False),
             "retention": cleaned.get("retention"),
             "promotion_status": cleaned.get("promotion_status"),
+            "writeback": cleaned.get("writeback", {}),
         },
         "tags": list(cleaned.get("tags", [])),
     }
@@ -382,6 +384,29 @@ def _retention_for(memory_kind: str) -> str:
         "episodic": "episode",
         "procedural": "adjustment_candidate",
     }[memory_kind]
+
+
+def _writeback_for(memory_kind: str) -> dict[str, object]:
+    if memory_kind == "procedural":
+        return {
+            "eligible": True,
+            "durable": True,
+            "reason": "procedural_adjustment",
+            "target_memory_type": "head_execution_feedback",
+        }
+    if memory_kind == "episodic":
+        return {
+            "eligible": True,
+            "durable": True,
+            "reason": "execution_outcome",
+            "target_memory_type": "head_execution_feedback",
+        }
+    return {
+        "eligible": False,
+        "durable": False,
+        "reason": "transient_signal",
+        "target_memory_type": "head_execution_feedback",
+    }
 
 
 def _title_for(record: Mapping[str, object]) -> str:

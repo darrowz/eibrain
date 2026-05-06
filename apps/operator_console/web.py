@@ -837,17 +837,36 @@ class MonitoringWebServer:
       const vadMs = typeof audio.vad_elapsed_ms === 'number' ? `${{audio.vad_elapsed_ms.toFixed(0)}} ms` : '—';
       const decodeMs = typeof audio.asr_decode_elapsed_ms === 'number' ? `${{audio.asr_decode_elapsed_ms.toFixed(0)}} ms` : '—';
       const totalAsrMs = typeof audio.asr_elapsed_ms === 'number' ? `${{audio.asr_elapsed_ms.toFixed(0)}} ms` : '—';
+      const liveTraceSummary = audio.live_trace_summary || 'waiting';
+      const providerReadiness = audio.provider_readiness || 'unknown';
+      const providerStatus = audio.provider_status || 'waiting for smoke report';
+      const aecReadiness = audio.aec_readiness || 'unknown';
+      const aecStatus = audio.aec_status || 'unknown';
+      const interruptStopState = audio.interrupt_stop_ready === true ? 'healthy' : (audio.interrupt_stop_ready === false ? 'degraded' : 'waiting');
+      const interruptStopLabel = audio.interrupt_stop_ready === true ? 'ready' : (audio.interrupt_stop_ready === false ? 'degraded' : 'waiting');
+      const interruptStopP95 = typeof audio.interrupt_stop_p95_ms === 'number' ? `${{audio.interrupt_stop_p95_ms.toFixed(0)}} ms` : '—';
+      const interruptStopThreshold = typeof audio.interrupt_stop_threshold_ms === 'number' ? `${{audio.interrupt_stop_threshold_ms.toFixed(0)}} ms` : '—';
+      const roundLeak = Number.isInteger(audio.round_leak_count) ? String(audio.round_leak_count) : 'unknown';
       document.getElementById('audio-summary').innerHTML = [
         ['Capture', audio.capture_health || 'unknown'],
         ['ASR', audio.asr_health || 'unknown'],
         ['Voice', audio.voice_activity ? 'active' : 'idle'],
         ['Level', dbfs],
+        ['Live trace', audio.live_trace_summary || 'waiting'],
+        ['Provider readiness', audio.provider_readiness || 'unknown'],
+        ['AEC readiness', audio.aec_readiness || 'unknown'],
+        ['Interrupt stop', interruptStopLabel],
+        ['Round leak', roundLeak],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
       const items = [];
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Input device</strong><span class="health-tag ${{healthClass(audio.capture_health || 'unknown')}}">${{audio.capture_status || audio.capture_health || 'unknown'}}</span></div><div class="metric-label">${{audio.capture_device || 'unknown device'}} · ${{audio.sample_rate || '—'}} Hz · ${{audio.channels || '—'}} ch · chunks=${{audio.chunk_count ?? '—'}} · bytes=${{audio.payload_bytes ?? '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Speech window</strong><span class="health-tag ${{healthClass(audio.vad_health || 'unknown')}}">${{audio.vad_status || audio.vad_health || 'unknown'}}</span></div><div class="metric-label">${{audio.speech_window_summary || 'waiting for audio sample'}} · rms=${{rms}} · capture=${{captureMs}} · vad=${{vadMs}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Last transcript</strong><span class="health-tag ${{healthClass(audio.asr_health || 'unknown')}}">${{audio.asr_status || audio.asr_health || 'unknown'}}</span></div><div class="metric-label">${{audio.transcript ? audio.transcript : 'No transcript yet'}} · decode=${{decodeMs}} · total=${{totalAsrMs}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Live trace</strong><span class="health-tag ${{healthClass(liveTraceSummary.startsWith('ready:') ? 'healthy' : (liveTraceSummary.startsWith('waiting') ? 'waiting' : 'degraded'))}}">${{liveTraceSummary}}</span></div><div class="metric-label">${{audio.interrupt_stop_ready === null || audio.interrupt_stop_ready === undefined ? 'waiting for live benchmark' : `interrupt=${{interruptStopLabel}} · p95=${{interruptStopP95}} / ${{interruptStopThreshold}} · round_leak=${{roundLeak}}`}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Provider readiness</strong><span class="health-tag ${{healthClass(providerReadiness)}}">${{providerReadiness}}</span></div><div class="metric-label">${{providerStatus}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>AEC readiness</strong><span class="health-tag ${{healthClass(aecReadiness)}}">${{aecReadiness}}</span></div><div class="metric-label">${{aecStatus}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Interrupt stop</strong><span class="health-tag ${{healthClass(interruptStopState)}}">${{interruptStopLabel}}</span></div><div class="metric-label">p95=${{interruptStopP95}} · threshold=${{interruptStopThreshold}} · round leak=${{roundLeak}}</div></div>`);
       document.getElementById('audio-events').innerHTML = items.join('');
     }}
 

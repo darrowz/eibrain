@@ -479,3 +479,65 @@ class EIMemoryRPCAdapter:
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         return headers
+
+
+class FakeEIMemoryRPCAdapter:
+    """In-memory test double for closed-loop memory tests."""
+
+    def __init__(self, recall_result: MemoryResult | None = None) -> None:
+        self.recall_result = recall_result or MemoryResult()
+        self.queries: list[MemoryQuery] = []
+        self.episodes: list[dict[str, object]] = []
+        self.world_observations: list[dict[str, object]] = []
+        self.memory_traces: list[dict[str, object]] = []
+        self.last_recall_diagnostics: dict[str, object] = dict(self.recall_result.recall_diagnostics)
+        self.last_writeback_status: dict[str, object] = {"status": "idle"}
+
+    def retrieve_context(self, query: MemoryQuery) -> MemoryResult:
+        self.queries.append(query)
+        self.last_recall_diagnostics = dict(self.recall_result.recall_diagnostics)
+        return self.recall_result
+
+    def remember_episode(self, **kwargs: object) -> dict[str, object]:
+        payload = dict(kwargs)
+        self.episodes.append(payload)
+        record_id = f"episode_{len(self.episodes)}"
+        self.last_writeback_status = {
+            "status": "ok",
+            "source": payload.get("source"),
+            "memory_type": payload.get("memory_type"),
+            "modality": payload.get("modality"),
+            "organ": payload.get("organ"),
+            "record_id": record_id,
+        }
+        return {"record_id": record_id}
+
+    def remember_world_observation(self, **kwargs: object) -> dict[str, object]:
+        payload = dict(kwargs)
+        self.world_observations.append(payload)
+        record_id = f"world_{len(self.world_observations)}"
+        self.last_writeback_status = {
+            "status": "ok",
+            "source": "eibrain.visual_world",
+            "memory_type": "world_observation",
+            "modality": "vision",
+            "organ": "eye",
+            "record_id": record_id,
+        }
+        return {"record_id": record_id}
+
+    def record_memory_trace(
+        self,
+        payload: dict[str, object],
+        *,
+        session_id: str | None = None,
+        actor_id: str | None = None,
+    ) -> dict[str, object]:
+        self.memory_traces.append(
+            {
+                "payload": dict(payload),
+                "session_id": session_id,
+                "actor_id": actor_id,
+            }
+        )
+        return {"ok": True, "result": {"record_id": f"memory_trace_{len(self.memory_traces)}"}}

@@ -423,6 +423,74 @@ def test_vision_soak_cli_returns_nonzero_for_failing_summary(monkeypatch):
     assert vision_soak_cli.main(["--duration", "1", "--interval", "1"]) == 1
 
 
+def test_normalize_vision_status_sample_preserves_monitor_and_restart_evidence():
+    sample = normalize_vision_status_sample(
+        {
+            "status": "ok",
+            "monitor": {"active": True, "status": "serving"},
+            "visual_diagnostics": {
+                "vision_fps": 9.9,
+                "vision_target_fps": 10.0,
+                "vision_frame_age_s": 0.05,
+                "vision_service_status": "ok",
+                "data_status": "live",
+                "tracking_running": True,
+            },
+            "services": {
+                "vision": {
+                    "active": True,
+                    "restart_count": 2,
+                    "last_restart_ts": "2026-05-06T12:00:00Z",
+                    "active_since_ts": "2026-05-06T12:03:00Z",
+                }
+            },
+        },
+        elapsed_s=1.0,
+    )
+
+    assert sample["monitor_active"] is True
+    assert sample["monitor_status"] == "serving"
+    assert sample["service_restart_count"] == 2
+    assert sample["service_restart_evidence"]["last_restart_ts"] == "2026-05-06T12:00:00Z"
+
+
+def test_vision_soak_builds_readiness_summary_for_live_monitor_samples():
+    samples = [
+        {
+            "fps": 10.2,
+            "target_fps": 10.0,
+            "frame_age_ms": 80.0,
+            "dropped_frames": 0,
+            "service_state": "ok",
+            "monitor_active": True,
+            "monitor_status": "serving",
+            "service_restart_count": 1,
+            "service_restart_evidence": {"last_restart_ts": "2026-05-06T12:00:00Z"},
+        },
+        {
+            "fps": 9.8,
+            "target_fps": 10.0,
+            "frame_age_ms": 95.0,
+            "dropped_frames": 0,
+            "service_state": "ok",
+            "monitor_active": True,
+            "monitor_status": "serving",
+            "service_restart_count": 1,
+            "service_restart_evidence": {"last_restart_ts": "2026-05-06T12:00:00Z"},
+        },
+    ]
+
+    summary = summarize_vision_soak(samples)
+
+    assert summary["monitor_active_ratio"] == 1.0
+    assert summary["service_restart_evidence"]["observed"] is True
+    assert summary["service_restart_evidence"]["restart_count"] == 1
+    assert summary["readiness"]["hailo_fps"]["ok"] is True
+    assert summary["readiness"]["hailo_drop_rate"]["ok"] is True
+    assert summary["readiness"]["hailo_frame_age"]["ok"] is True
+    assert summary["readiness"]["monitor_active"]["ok"] is True
+
+
 class _FakeClock:
     def __init__(self) -> None:
         self.now = 0.0

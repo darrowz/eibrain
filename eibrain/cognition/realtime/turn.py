@@ -64,7 +64,34 @@ class TurnBlackboard:
         return asdict(self)
 
     def status_payload(self) -> dict[str, Any]:
-        return self.to_dict()
+        payload = self.to_dict()
+        payload["summary"] = self.operator_summary()
+        payload["trace"] = self.operator_trace()
+        return payload
+
+    def operator_summary(self) -> dict[str, Any]:
+        return {
+            "round_id": self.round_id,
+            "cancellation_token": self.cancellation_token,
+            "state": self.state,
+            "fast_hypothesis_count": len(self.fast_hypotheses),
+            "stable_decision_count": len(self.stable_decisions),
+            "stable_speech_count": len(self.stable_speech_segments),
+            "action_count": len(self.action_plan),
+            "cancelled": bool(self.cancellation and self.cancellation.cancelled),
+        }
+
+    def operator_trace(self) -> dict[str, Any]:
+        return {
+            "round_id": self.round_id,
+            "cancellation_token": self.cancellation_token,
+            "state": self.state,
+            "created_at_ts": self.created_at_ts,
+            "updated_at_ts": self.updated_at_ts,
+            "interrupted_at_ts": self.interrupted_at_ts,
+            "cancelled": bool(self.cancellation and self.cancellation.cancelled),
+            "cancellation_reason": self.cancellation.reason if self.cancellation is not None else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -178,7 +205,6 @@ class RealtimeTurnManager:
             raise RuntimeError("no active turn")
         if hypothesis.get("stable") is True or "decision" in hypothesis:
             raise ValueError("fast lane may only record non-stable hypotheses")
-
         now = self._clock()
         payload = dict(hypothesis)
         payload.update(
@@ -210,6 +236,14 @@ class RealtimeTurnManager:
         speech_segments = list(decision.get("speech_segments") or [])
         if any(segment.get("stable") is not True for segment in speech_segments):
             raise ValueError("stable decision speech_segments must be stable")
+        action_segments = list(
+            decision.get("action_segments")
+            or decision.get("action_plan")
+            or decision.get("actions")
+            or []
+        )
+        if any(segment.get("stable") is not True for segment in action_segments):
+            raise ValueError("stable decision action segments must be stable")
 
         now = self._clock()
         payload = dict(decision)
@@ -223,6 +257,7 @@ class RealtimeTurnManager:
         )
         self._current_turn.stable_decisions.append(payload)
         self._current_turn.stable_speech_segments = speech_segments
+        self._current_turn.action_plan = [dict(segment) for segment in action_segments]
         self._current_turn.updated_at_ts = now
         return payload
 
@@ -245,8 +280,8 @@ class RealtimeTurnManager:
         return {
             "active": current is not None and current.state == "active",
             "current_round_id": current.round_id if current is not None else None,
-            "current": current.to_dict() if current is not None else None,
-            "history": {round_id: turn.to_dict() for round_id, turn in self._history.items()},
+            "current": current.status_payload() if current is not None else None,
+            "history": {round_id: turn.status_payload() for round_id, turn in self._history.items()},
             "round_count": self._round_index,
         }
 

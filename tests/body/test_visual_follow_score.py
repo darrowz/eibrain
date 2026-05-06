@@ -128,3 +128,22 @@ def test_visual_follow_score_treats_no_command_hold_as_success_when_settled() ->
     assert result.reason == "held_settled"
     assert result.metrics["held"] is True
     assert result.metrics["commanded"] is False
+
+
+def test_visual_follow_score_reports_target_missing_when_feedback_is_incomplete() -> None:
+    from eibrain.body.visual_follow_score import score_visual_follow
+
+    result = score_visual_follow(
+        before_error=0.18,
+        after_error=None,
+        command_angle_delta=4.0,
+        target_age_s=None,
+        action_elapsed_s=0.12,
+        settle_time_s=None,
+    )
+
+    assert result.success is False
+    assert result.score == 0.0
+    assert result.reason == "target_missing"
+    assert result.metrics["after_error"] is None
+    assert result.metrics["target_age_s"] is None

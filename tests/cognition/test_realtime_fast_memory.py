@@ -211,11 +211,27 @@ def test_memory_orchestrator_commits_recall_and_writeback_candidates_with_trace(
     assert trace["schema"] == "eibrain.memory.closed_loop_trace.v1"
     assert trace["round_id"] == "round-fast-1"
     assert trace["external_call"] is True
+    assert trace["prefetch"]["requested"][0]["query"] == "用户提到简短回复偏好"
+    assert trace["prefetch"]["result"][0]["record_id"] == "mem_1"
     assert trace["recall"]["count"] == 1
     assert trace["recall"]["items"][0]["summary"] == "Prefer concise spoken replies."
     assert trace["recall"]["items"][0]["selected_count"] == 1
+    assert trace["write"]["proposed"][0]["summary"] == "用户偏好更短的语音回复。"
+    assert trace["write"]["committed"][0]["status"] == "ok"
     assert trace["writeback"]["count"] == 1
     assert trace["writeback"]["items"][0]["status"] == "ok"
+    assert trace["memory_trace_summary"] == {
+        "trace_id": trace["trace_id"],
+        "status": "ok",
+        "prefetch_requested": 1,
+        "prefetch_result": 1,
+        "write_proposed": 1,
+        "write_committed": 1,
+        "reply_used": 0,
+        "queries": ["用户提到简短回复偏好"],
+        "written_memory_types": ["semantic_candidate"],
+        "used_memory_ids": [],
+    }
     assert trace["errors"] == []
     assert memory.queries[0].query == "用户提到简短回复偏好"
     assert memory.queries[0].session_id == "s1"
@@ -292,3 +308,53 @@ def test_memory_orchestrator_counts_writeback_errors() -> None:
         assert trace["writeback"]["count"] == 1
         assert trace["writeback"]["items"][0]["status"] == "error"
         assert trace["writeback"]["items"][0]["error"] == expected_error
+
+
+def test_memory_orchestrator_prefetch_records_requested_result_and_trace_summary() -> None:
+    from eibrain.memory.adapters.eimemory_rpc import FakeEIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryResult
+
+    turn = _duck_turn()
+    memory = FakeEIMemoryRPCAdapter(
+        recall_result=MemoryResult(
+            summary="Prefer concise spoken replies.",
+            relevant_memories=["Reply Style: Prefer concise spoken replies."],
+            recall_diagnostics={
+                "selected_count": 1,
+                "selected_records": [
+                    {
+                        "record_id": "mem_prefetch_1",
+                        "title": "Reply Style",
+                        "source": "eibrain.preference",
+                        "memory_type": "preference",
+                    }
+                ],
+            },
+        )
+    )
+
+    resolved = MemoryOrchestrator(memory_service=memory).prefetch_recall(
+        turn,
+        query="用户可能偏好简短回复",
+        channels=["voice"],
+        session_id="prefetch-session",
+        actor_id="user-1",
+        task_context={"task_type": "brain.respond"},
+    )
+
+    assert resolved[0]["record_id"] == "mem_prefetch_1"
+    trace = turn.memory_traces[0]
+    assert trace["prefetch"]["requested"] == [
+        {
+            "candidate_index": 0,
+            "query": "用户可能偏好简短回复",
+            "reason": "prefetch_context_for_fast_lane",
+            "channels": ["voice"],
+            "limit": 3,
+        }
+    ]
+    assert trace["prefetch"]["result"][0]["record_id"] == "mem_prefetch_1"
+    assert trace["memory_trace_summary"]["status"] == "ok"
+    assert trace["memory_trace_summary"]["prefetch_requested"] == 1
+    assert trace["memory_trace_summary"]["prefetch_result"] == 1
+    assert memory.memory_traces[-1]["payload"]["memory_trace_summary"]["prefetch_result"] == 1

@@ -208,6 +208,12 @@ def build_visual_memory_candidate(
         "identity_memory": False,
         "persona_memory": False,
         "privacy": _privacy_for(event_type),
+        "writeback": {
+            "eligible": True,
+            "durable": True,
+            "reason": "important_visual_event",
+            "target_memory_type": retention["memory_type"],
+        },
     }
 
     trace = {
@@ -226,6 +232,7 @@ def build_visual_memory_candidate(
             "decision": "visual_memory_candidate",
             "why": _decision_reason(event_type),
             "upsert_candidate": True,
+            "durable": True,
         },
     }
     scope = _scope(session_id=session_id, actor_id=actor_id)

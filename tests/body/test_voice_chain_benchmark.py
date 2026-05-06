@@ -172,7 +172,13 @@ def test_summarize_voice_chain_reports_round_stage_and_readiness_summary() -> No
                     "tts_first_audio": 440.0,
                     "total": 1200.0,
                 },
-                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "streaming": {
+                    "asrPartial": True,
+                    "asrFinal": True,
+                    "llmDelta": True,
+                    "ttsChunk": True,
+                    "playback": True,
+                },
                 "roundLeak": False,
             },
             {
@@ -188,7 +194,13 @@ def test_summarize_voice_chain_reports_round_stage_and_readiness_summary() -> No
                     "tts_first_audio": 580.0,
                     "total": 1600.0,
                 },
-                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "streaming": {
+                    "asrPartial": True,
+                    "asrFinal": True,
+                    "llmDelta": True,
+                    "ttsChunk": True,
+                    "playback": True,
+                },
                 "interrupted": True,
                 "roundLeak": False,
             },
@@ -204,7 +216,13 @@ def test_summarize_voice_chain_reports_round_stage_and_readiness_summary() -> No
                     "tts_first_audio": 550.0,
                     "total": 1500.0,
                 },
-                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                "streaming": {
+                    "asrPartial": True,
+                    "asrFinal": True,
+                    "llmDelta": True,
+                    "ttsChunk": True,
+                    "playback": True,
+                },
                 "roundLeak": True,
             },
         ],
@@ -247,8 +265,10 @@ def test_summarize_voice_chain_treats_non_empty_streaming_payloads_as_present() 
                 "status": "interrupted",
                 "streaming": {
                     "asrPartial": "ni hao",
+                    "asrFinal": "ni hao",
                     "replyDelta": "hello",
                     "ttsChunk": "chunk-001",
+                    "playback": "started",
                 },
             }
         ]
@@ -257,6 +277,67 @@ def test_summarize_voice_chain_treats_non_empty_streaming_payloads_as_present() 
     assert summary["streaming"]["ready"] is True
     assert summary["rounds"][0]["streamingReady"] is True
     assert summary["readinessSummary"]["streamingReady"] is True
+
+
+def test_summarize_voice_chain_reports_real_streaming_stage_metrics_and_playback_signal() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
+
+    summary = summarize_voice_chain(
+        [
+            {
+                "roundId": "round-streaming-sample",
+                "status": "reply_ready",
+                "firstAsrPartialMs": 120.0,
+                "asrFinalMs": 460.0,
+                "firstLlmDeltaMs": 640.0,
+                "firstTokenMs": 640.0,
+                "firstTtsChunkMs": 910.0,
+                "firstAudioMs": 1040.0,
+                "streaming": {
+                    "asrPartial": True,
+                    "asrFinal": True,
+                    "llmDelta": True,
+                    "ttsChunk": True,
+                    "playback": True,
+                },
+            }
+        ]
+    )
+
+    assert summary["metrics"]["firstAsrPartialMs"]["avg"] == 120.0
+    assert summary["metrics"]["asrFinalMs"]["avg"] == 460.0
+    assert summary["metrics"]["firstLlmDeltaMs"]["avg"] == 640.0
+    assert summary["metrics"]["firstTokenMs"]["avg"] == 640.0
+    assert summary["metrics"]["firstTtsChunkMs"]["avg"] == 910.0
+    assert summary["metrics"]["firstAudioMs"]["avg"] == 1040.0
+    assert summary["rounds"][0]["streamingReady"] is True
+    assert summary["streaming"]["ready"] is True
+
+
+def test_summarize_voice_chain_requires_asr_final_and_playback_evidence_for_streaming_readiness() -> None:
+    from apps.body_runtime.voice_chain_benchmark import summarize_voice_chain
+
+    summary = summarize_voice_chain(
+        [
+            {
+                "roundId": "round-missing-playback",
+                "status": "reply_ready",
+                "firstAsrPartialMs": 120.0,
+                "asrFinalMs": 460.0,
+                "firstLlmDeltaMs": 640.0,
+                "firstTtsChunkMs": 910.0,
+                "streaming": {
+                    "asrPartial": True,
+                    "llmDelta": True,
+                    "ttsChunk": True,
+                },
+            }
+        ]
+    )
+
+    assert summary["rounds"][0]["streamingReady"] is False
+    assert summary["rounds"][0]["streamingMissingSignals"] == ["playback"]
+    assert summary["streaming"]["ready"] is False
 
 
 def test_summarize_joyinside_voice_readiness_is_ready_when_acceptance_signals_pass() -> None:
@@ -269,7 +350,13 @@ def test_summarize_joyinside_voice_readiness_is_ready_when_acceptance_signals_pa
                 "asrFinalMs": 520.0,
                 "firstTokenMs": 280.0,
                 "firstAudioMs": 1300.0,
-                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                    "streaming": {
+                        "asrPartial": True,
+                        "asrFinal": True,
+                        "llmDelta": True,
+                        "ttsChunk": True,
+                        "playback": True,
+                    },
                 "roundLeak": False,
             },
             {
@@ -280,7 +367,13 @@ def test_summarize_joyinside_voice_readiness_is_ready_when_acceptance_signals_pa
                 "firstTokenMs": 310.0,
                 "firstAudioMs": 1500.0,
                 "interruptStopMs": 180.0,
-                "streaming": {"asrPartial": True, "llmDelta": True, "ttsChunk": True},
+                    "streaming": {
+                        "asrPartial": True,
+                        "asrFinal": True,
+                        "llmDelta": True,
+                        "ttsChunk": True,
+                        "playback": True,
+                    },
                 "roundLeak": False,
             },
         ],
@@ -324,7 +417,7 @@ def test_summarize_joyinside_voice_readiness_reports_actionable_blocking_reasons
         "Reduce firstAudioMs p95 to <= 2000.0ms.",
         "Capture at least one interrupted turn with interruptStopMs <= 300.0ms.",
         "Fix stale round suppression until roundLeak count is 0.",
-        "Emit ASR partial, LLM delta, and TTS chunk streaming signals for every turn.",
+            "Emit ASR partial/final, LLM delta, TTS chunk, and playback streaming signals for every turn.",
     ]
 
 

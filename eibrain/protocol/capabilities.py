@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from typing import Iterable
 from typing import Any
 
 from .base import ProtocolMessage
@@ -163,3 +164,85 @@ class CapabilityManifest(ProtocolMessage):
         )
         payload["metadata"] = dict(payload.get("metadata", {}))
         return cls(**payload)
+
+
+def build_modality_inventory(
+    devices: Iterable[HeadDevice],
+    backends: Iterable[HeadBackend],
+) -> dict[str, dict[str, Any]]:
+    audio = {
+        "available": False,
+        "microphones": [],
+        "speakers": [],
+        "asr": [],
+        "tts": [],
+    }
+    vision = {"available": False, "cameras": [], "backends": []}
+    actuation = {"available": False, "neck": []}
+    embedding = {"available": False, "backends": []}
+
+    for device in devices:
+        bucket = classify_device_bucket(device)
+        if bucket == "microphones":
+            audio["microphones"].append(device.device_id)
+        elif bucket == "speakers":
+            audio["speakers"].append(device.device_id)
+        elif bucket == "cameras":
+            vision["cameras"].append(device.device_id)
+        elif bucket == "neck":
+            actuation["neck"].append(device.device_id)
+
+    for backend in backends:
+        bucket = classify_backend_bucket(backend)
+        if bucket == "asr":
+            audio["asr"].append(backend.backend_id)
+        elif bucket == "tts":
+            audio["tts"].append(backend.backend_id)
+        elif bucket == "vision":
+            vision["backends"].append(backend.backend_id)
+        elif bucket == "embedding":
+            embedding["backends"].append(backend.backend_id)
+
+    audio["available"] = any(audio[key] for key in ("microphones", "speakers", "asr", "tts"))
+    vision["available"] = bool(vision["cameras"] or vision["backends"])
+    actuation["available"] = bool(actuation["neck"])
+    embedding["available"] = bool(embedding["backends"])
+
+    modalities: dict[str, dict[str, Any]] = {}
+    if audio["available"]:
+        modalities["audio"] = audio
+    if vision["available"]:
+        modalities["vision"] = vision
+    if actuation["available"]:
+        modalities["actuation"] = actuation
+    if embedding["available"]:
+        modalities["embedding"] = embedding
+    return modalities
+
+
+def classify_device_bucket(device: HeadDevice) -> str | None:
+    kind = str(device.kind or "").strip().lower()
+    capabilities = {str(item).strip().lower() for item in device.capabilities}
+
+    if kind == "camera":
+        return "cameras"
+    if kind in {"microphone", "mic", "audio_input"}:
+        return "microphones"
+    if kind in {"speaker", "audio_output"}:
+        return "speakers"
+    if kind in {"neck", "actuator", "servo"} or {"move_head", "neck_follow"} & capabilities:
+        return "neck"
+    return None
+
+
+def classify_backend_bucket(backend: HeadBackend) -> str | None:
+    kind = str(backend.kind or "").strip().lower()
+    if kind in {"asr", "speech_to_text"}:
+        return "asr"
+    if kind in {"tts", "text_to_speech"}:
+        return "tts"
+    if kind == "vision":
+        return "vision"
+    if kind == "embedding":
+        return "embedding"
+    return None

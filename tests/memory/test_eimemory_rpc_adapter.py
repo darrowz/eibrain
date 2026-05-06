@@ -767,6 +767,53 @@ def test_eimemory_rpc_adapter_record_memory_trace_degrades_on_failure(monkeypatc
     assert adapter.record_memory_trace({"trace_id": "trace-down"}) == {}
 
 
+def test_fake_eimemory_rpc_adapter_supports_closed_loop_fixtures() -> None:
+    from eibrain.memory.adapters.eimemory_rpc import FakeEIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery, MemoryResult
+
+    adapter = FakeEIMemoryRPCAdapter(
+        recall_result=MemoryResult(
+            summary="Prefer concise spoken replies.",
+            relevant_memories=["Reply Style: Prefer concise spoken replies."],
+            recall_diagnostics={
+                "selected_count": 1,
+                "selected_records": [{"record_id": "mem_fake_1", "title": "Reply Style"}],
+            },
+        )
+    )
+
+    result = adapter.retrieve_context(MemoryQuery(query="reply style", session_id="s1", actor_id="user-1"))
+    adapter.remember_episode(
+        session_id="s1",
+        actor_id="user-1",
+        summary="用户偏好简短回复。",
+        memory_type="semantic_candidate",
+        source="eibrain.semantic_candidate",
+        modality="audio_text",
+        organ="ear",
+    )
+    trace_result = adapter.record_memory_trace(
+        {
+            "trace_id": "trace-fake-1",
+            "memory_trace_summary": {
+                "prefetch_requested": 1,
+                "prefetch_result": 1,
+                "write_proposed": 1,
+                "write_committed": 1,
+                "reply_used": 0,
+            },
+        },
+        session_id="s1",
+        actor_id="user-1",
+    )
+
+    assert result.summary == "Prefer concise spoken replies."
+    assert adapter.queries[0].query == "reply style"
+    assert adapter.episodes[0]["memory_type"] == "semantic_candidate"
+    assert trace_result["result"]["record_id"] == "memory_trace_1"
+    assert adapter.memory_traces[0]["payload"]["memory_trace_summary"]["write_committed"] == 1
+
+
 def test_eimemory_rpc_adapter_reports_missing_endpoint_writeback_status() -> None:
     from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
 

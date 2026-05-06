@@ -207,6 +207,9 @@ class StreamingAsrSession:
         self._first_partial_ms: int | None = None
         self._final_ms: int | None = None
         self._latest_voice: dict[str, Any] = {}
+        self._cancelled = False
+        self._cancel_count = 0
+        self._last_cancel: dict[str, Any] | None = None
 
     def accept_frame(self, frame: AudioFrame) -> list[StreamingAsrEvent]:
         self._frames_received += 1
@@ -237,6 +240,14 @@ class StreamingAsrSession:
         return events
 
     def cancel(self, reason: str = "cancelled") -> dict[str, Any]:
+        self._cancelled = True
+        self._cancel_count += 1
+        self._last_cancel = {
+            "reason": str(reason or "cancelled"),
+            "round_id": self.round_id,
+            "roundId": self.round_id,
+            "frames_pending": len(self._pending),
+        }
         cancel = getattr(self.provider, "cancel", None)
         if callable(cancel):
             try:
@@ -245,10 +256,15 @@ class StreamingAsrSession:
                 result = cancel()
             except BaseException as exc:  # pragma: no cover - defensive provider boundary
                 self._errors.append(_error_record(exc, context="cancel"))
+                self._pending.clear()
                 return {"cancelled": False, "reason": reason, "error": str(exc)}
-            return dict(result) if isinstance(result, Mapping) else {"cancelled": True, "reason": reason}
+            self._pending.clear()
+            response = dict(result) if isinstance(result, Mapping) else {"cancelled": True, "reason": reason}
+            response.setdefault("round_id", self.round_id)
+            response.setdefault("roundId", self.round_id)
+            return response
         self._pending.clear()
-        return {"cancelled": True, "reason": reason}
+        return {"cancelled": True, "reason": reason, "round_id": self.round_id, "roundId": self.round_id}
 
     def close(self) -> None:
         close = getattr(self.provider, "close", None)
@@ -286,6 +302,10 @@ class StreamingAsrSession:
             "max_inflight_frames": self.max_inflight_frames,
             "audio_ms_received": self._audio_ms_received,
             "latest_voice": dict(self._latest_voice),
+            "interrupt_stop_ready": True,
+            "cancelled": self._cancelled,
+            "cancel_count": self._cancel_count,
+            "last_cancel": dict(self._last_cancel) if self._last_cancel is not None else None,
             "errors": errors,
             "provider_diagnostics": dict(provider_diagnostics),
         }

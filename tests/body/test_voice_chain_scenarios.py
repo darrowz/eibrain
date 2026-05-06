@@ -18,9 +18,18 @@ def test_run_voice_chain_scenarios_reports_honjia_ready_summary() -> None:
     assert report["readinessSummary"]["streamingReady"] is True
     assert report["readinessSummary"]["interruptStopReady"] is True
     assert report["summary"]["roundLeakCount"] == 0
-    assert {"asrFinalMs", "firstTokenMs", "firstAudioMs", "interruptStopMs"} <= set(report["summary"]["metrics"])
+    assert {
+        "firstAsrPartialMs",
+        "asrFinalMs",
+        "firstLlmDeltaMs",
+        "firstTokenMs",
+        "firstTtsChunkMs",
+        "firstAudioMs",
+        "interruptStopMs",
+    } <= set(report["summary"]["metrics"])
     assert "listen_asr" in report["summary"]["stageLatencyMetrics"]
     assert report["summary"]["rounds"][0]["stageLatencyMs"]["listen_asr"] > 0
+    assert report["summary"]["rounds"][0]["streamingReady"] is True
     assert {scenario["name"] for scenario in report["scenarios"]} >= {
         "short_chinese",
         "child_fuzzy",
@@ -115,3 +124,41 @@ def test_run_voice_chain_scenarios_requires_streaming_signals_for_readiness() ->
     assert report["honjiaReady"] is False
     assert report["readinessSummary"]["streamingReady"] is False
     assert "streaming" in report["readinessSummary"]["readinessMessage"]
+
+
+def test_run_voice_chain_scenarios_preserves_real_streaming_event_metrics_in_custom_turns() -> None:
+    from apps.body_runtime.voice_chain_scenarios import VoiceScenario, run_voice_chain_scenarios
+
+    report = run_voice_chain_scenarios(
+        scenarios=[
+            VoiceScenario(
+                name="streaming_sample",
+                description="turn assembled from provider-like event timings",
+                turns=[
+                    {
+                        "roundId": "rnd-stream-001",
+                        "firstAsrPartialMs": 90.0,
+                        "asrFinalMs": 420.0,
+                        "firstLlmDeltaMs": 610.0,
+                        "firstTokenMs": 610.0,
+                        "firstTtsChunkMs": 860.0,
+                        "firstAudioMs": 980.0,
+                        "streaming": {
+                            "asrPartial": True,
+                            "asrFinal": True,
+                            "llmDelta": True,
+                            "ttsChunk": True,
+                            "playback": True,
+                        },
+                        "roundLeak": False,
+                    }
+                ],
+            )
+        ]
+    )
+
+    assert report["streamingReady"] is True
+    assert report["summary"]["metrics"]["firstAsrPartialMs"]["avg"] == 90.0
+    assert report["summary"]["metrics"]["firstLlmDeltaMs"]["avg"] == 610.0
+    assert report["summary"]["metrics"]["firstTtsChunkMs"]["avg"] == 860.0
+    assert report["summary"]["rounds"][0]["streamingReady"] is True

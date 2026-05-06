@@ -21,6 +21,7 @@ class VisualTargetLockConfig:
 @dataclass(slots=True)
 class VisualTargetLockResult:
     track_id: str | None
+    lock_id: str | None
     label: str | None
     bbox: dict[str, float] | None
     center: dict[str, float] | None
@@ -34,6 +35,7 @@ class VisualTargetLockResult:
     def to_dict(self) -> dict[str, object]:
         return {
             "track_id": self.track_id,
+            "lock_id": self.lock_id,
             "label": self.label,
             "bbox": dict(self.bbox) if self.bbox is not None else None,
             "center": dict(self.center) if self.center is not None else None,
@@ -68,6 +70,7 @@ class VisualTargetLockSelector:
     def __init__(self, config: VisualTargetLockConfig | None = None) -> None:
         self.config = config or VisualTargetLockConfig()
         self._locked: _Candidate | None = None
+        self._lock_id: str | None = None
         self._locked_at_ts: float | None = None
         self._last_seen_ts: float | None = None
         self._candidate_seen_since: dict[str, float] = {}
@@ -275,11 +278,13 @@ class VisualTargetLockSelector:
 
     def _switch_lock(self, candidate: _Candidate, now_ts: float) -> None:
         self._locked = candidate
+        self._lock_id = candidate.identity_key or candidate.track_id
         self._locked_at_ts = now_ts
         self._last_seen_ts = now_ts
 
     def _clear_lock(self) -> None:
         self._locked = None
+        self._lock_id = None
         self._locked_at_ts = None
         self._last_seen_ts = None
 
@@ -308,8 +313,13 @@ class VisualTargetLockSelector:
         competing_candidate: _Candidate | None = None,
     ) -> VisualTargetLockResult:
         result_diagnostics = dict(diagnostics)
+        target_payload = dict(candidate.target)
+        if self._lock_id is not None:
+            target_payload["lock_id"] = self._lock_id
         result_diagnostics.update(
             {
+                "lock_id": self._lock_id,
+                "lock_track_id": self._lock_id,
                 "selected_priority": candidate.priority_name,
                 "selected_score": round(candidate.score, 4),
                 "locked_at_ts": self._locked_at_ts,
@@ -323,6 +333,7 @@ class VisualTargetLockSelector:
             result_diagnostics["competing_score"] = round(competing_candidate.score, 4)
         return VisualTargetLockResult(
             track_id=candidate.track_id,
+            lock_id=self._lock_id,
             label=candidate.label,
             bbox=dict(candidate.bbox),
             center=dict(candidate.center),
@@ -330,7 +341,7 @@ class VisualTargetLockSelector:
             lock_state=lock_state,
             switch_reason=switch_reason,
             is_locked=True,
-            target=dict(candidate.target),
+            target=target_payload,
             diagnostics=result_diagnostics,
         )
 
@@ -342,6 +353,8 @@ class VisualTargetLockSelector:
         result_diagnostics = dict(diagnostics)
         result_diagnostics.update(
             {
+                "lock_id": None,
+                "lock_track_id": None,
                 "selected_priority": None,
                 "selected_score": 0.0,
                 "locked_at_ts": None,
@@ -350,6 +363,7 @@ class VisualTargetLockSelector:
         )
         return VisualTargetLockResult(
             track_id=None,
+            lock_id=None,
             label=None,
             bbox=None,
             center=None,

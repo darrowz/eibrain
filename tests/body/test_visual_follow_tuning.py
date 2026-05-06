@@ -123,3 +123,17 @@ def test_visual_follow_tuning_refuses_aggressive_changes_near_pan_boundary() -> 
     assert recommendation.step_gain < 24.0
     assert recommendation.max_step <= 2
     assert recommendation.min_interval >= 0.45
+
+
+def test_visual_follow_tuning_flags_bias_confirmation_jitter() -> None:
+    recommendation = _recommend(
+        filtered_error=0.07,
+        stable_error_count=1,
+        suppress_reason="bias_not_confirmed",
+        pan_proof_dx=0.01,
+    )
+
+    assert recommendation.reason == "jitter_too_sensitive"
+    assert recommendation.safe_to_apply is True
+    assert recommendation.deadband > 0.08
+    assert recommendation.min_interval > 0.45

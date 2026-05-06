@@ -240,6 +240,32 @@ def test_explicit_preference_dialogue_is_semantic_candidate_not_identity() -> No
     assert candidate["meta"]["decision_trace"]["why"] == "explicit user memory request, but not durable identity"
 
 
+def test_dialogue_summary_is_durable_episode_candidate() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="dialogue_summary",
+        summary="用户偏好简短回复，并希望以后保持这个风格。",
+        modality="audio_text",
+        organ="ear",
+        success=True,
+        status="planned",
+        action_count=1,
+        reply_present=True,
+        trace_id="summary-1",
+        source_event_id="turn-summary-1",
+    )
+
+    assert candidate["candidate_types"] == ["episodic"]
+    assert candidate["memory_type"] == "conversation"
+    assert candidate["retention"] == "episode"
+    assert candidate["promotion_status"] == "not_promoted"
+    assert candidate["writeback"] == {
+        "eligible": True,
+        "reason": "dialogue_summary",
+        "target_memory_type": "conversation",
+    }
+    assert candidate["meta"]["decision_trace"]["decision"] == "writeback_dialogue_summary_episode"
+
+
 def test_visual_observation_is_episodic_candidate_with_source_trace_metadata() -> None:
     candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
         event_type="vision_observation",
@@ -263,6 +289,28 @@ def test_visual_observation_is_episodic_candidate_with_source_trace_metadata() -
     assert candidate["meta"]["dedupe_key"].startswith("world_observation:vision:eye:")
     assert candidate["meta"]["privacy"]["sensitivity"] == "environmental"
     assert candidate["meta"]["decision_trace"]["decision"] == "writeback_visual_world_observation"
+
+
+def test_visual_frame_is_trace_only_and_not_durable_memory() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="visual_frame",
+        summary="raw frame 42 with transient detections",
+        modality="vision",
+        organ="eye",
+        source="eibrain.visual_frame",
+        trace_id="vision-frame-42",
+        source_event_id="frame-42",
+    )
+
+    assert candidate["candidate_types"] == ["working"]
+    assert candidate["memory_type"] == "working_event"
+    assert candidate["retention"] == "short_lived"
+    assert candidate["writeback"] == {
+        "eligible": False,
+        "reason": "high_frequency_visual_frame",
+        "target_memory_type": "working_event",
+    }
+    assert candidate["meta"]["decision_trace"]["decision"] == "writeback_visual_frame_trace_only"
 
 
 def test_action_outcome_feedback_is_procedural_and_training_candidate() -> None:

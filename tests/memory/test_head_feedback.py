@@ -35,6 +35,12 @@ def test_head_feedback_builds_episodic_execution_record_from_protocol_outcome() 
     assert record["trace_id"] == "trace-1"
     assert record["timestamp_ms"] == 123000
     assert record["persona_memory"] is False
+    assert record["writeback"] == {
+        "eligible": True,
+        "durable": True,
+        "reason": "execution_outcome",
+        "target_memory_type": "head_execution_feedback",
+    }
     assert "tracking looks stable" in record["summary"]
 
 
@@ -57,6 +63,7 @@ def test_head_feedback_marks_suggested_adjustment_as_procedural_candidate() -> N
     assert record["retention"] == "adjustment_candidate"
     assert record["promotion_status"] == "candidate"
     assert record["persona_memory"] is False
+    assert record["writeback"]["reason"] == "procedural_adjustment"
     assert "adjustment_candidate" in record["tags"]
 
 
@@ -76,6 +83,12 @@ def test_head_feedback_keeps_unknown_transient_signal_in_working_memory_kind() -
     assert record["success"] is None
     assert record["retention"] == "short_lived"
     assert record["persona_memory"] is False
+    assert record["writeback"] == {
+        "eligible": False,
+        "durable": False,
+        "reason": "transient_signal",
+        "target_memory_type": "head_execution_feedback",
+    }
 
 
 def test_head_feedback_builds_eimemory_and_eitraining_payloads_without_network() -> None:
@@ -101,6 +114,7 @@ def test_head_feedback_builds_eimemory_and_eitraining_payloads_without_network()
     assert ingest_params["source"] == "eibrain.head_feedback"
     assert ingest_params["meta"]["memory_kind"] == "episodic"
     assert ingest_params["meta"]["persona_memory"] is False
+    assert ingest_params["meta"]["writeback"]["eligible"] is True
     assert ingest_params["outcome"] == {
         "success": True,
         "latency_ms": 15,

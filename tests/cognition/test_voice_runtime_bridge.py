@@ -86,6 +86,7 @@ def test_tts_sentence_and_chunk_route_to_speaking_plan() -> None:
             "payload": {"text": "开始播报"},
         }
     )
+    bridge.scheduler.decide()
 
     sentence = bridge.handle_event(
         {
@@ -113,7 +114,7 @@ def test_tts_sentence_and_chunk_route_to_speaking_plan() -> None:
         "lane": "speaking",
         "cancellationToken": final["trace"]["cancellationToken"],
         "source": "voice_runtime_bridge",
-        "timestamp": 5000.15,
+        "timestamp": 5000.2,
     }
     assert chunk["lane"] == "speaking"
     assert chunk["speechPlan"]["phase"] == "chunk"
@@ -125,8 +126,33 @@ def test_tts_sentence_and_chunk_route_to_speaking_plan() -> None:
         "lane": "speaking",
         "cancellationToken": final["trace"]["cancellationToken"],
         "source": "voice_runtime_bridge",
-        "timestamp": 5000.2,
+        "timestamp": 5000.25,
     }
+
+
+def test_tts_without_stable_scheduler_content_is_marked_stale() -> None:
+    bridge = VoiceRuntimeBridge(clock=_clock())
+    final = bridge.handle_event(
+        {
+            "type": "ASR_FINAL",
+            "payload": {"text": "开始播报"},
+        }
+    )
+
+    tts = bridge.handle_event(
+        {
+            "type": "TTS_SENTENCE_START",
+            "roundId": final["roundId"],
+            "cancellationToken": final["trace"]["cancellationToken"],
+            "payload": {"sentenceId": "s1", "text": "这是一条还没 stable 的播报"},
+        }
+    )
+
+    assert tts["lane"] == "speaking"
+    assert tts["actions"] == []
+    assert tts["speechPlan"] is None
+    assert tts["blackboardPatch"]["ttsPlayback"]["stale"] is True
+    assert tts["blackboardPatch"]["ttsPlayback"]["staleReason"] == "stable_content_unavailable"
 
 
 def test_tts_from_stale_round_is_marked_stale_and_does_not_emit_speaking_actions() -> None:

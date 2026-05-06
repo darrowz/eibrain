@@ -121,6 +121,15 @@ def test_known_event_name_must_match_type_and_required_content_fields() -> None:
     assert by_path["content.pingId"].code == "missing_content_field"
 
 
+def test_capability_manifest_grouped_modalities_backends_and_health_remain_optional_for_compatibility() -> None:
+    payload = _fixture("capability_manifest.json")
+    del payload["content"]["modalities"]
+    del payload["content"]["backends"]
+    del payload["content"]["health"]
+
+    assert validate_event_strict(payload, known_event_required=True) == []
+
+
 def test_catalog_round_scoped_events_require_round_id_even_for_policy_events() -> None:
     payload = _fixture("policy_decision.json")
     payload["roundId"] = ""

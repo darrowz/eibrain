@@ -42,6 +42,7 @@ OPTIONAL_FILES = (
     # Transitional visual memory adapters are used by apps.body_runtime.app
     # to prepare eimemory/eitraining payloads from eye feedback.
     "eibrain/memory/__init__.py",
+    "eibrain/memory/contracts.py",
     "eibrain/memory/visual_feedback.py",
     "eibrain/memory/visual_memory.py",
 )

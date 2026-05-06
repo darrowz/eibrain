@@ -113,6 +113,7 @@ class _StreamingTtsRoundState:
     chunk_count: int = 0
     cancelled: bool = False
     cancel_reason: str = ""
+    superseded_by_round_id: str | None = None
     completed: bool = False
     provider_state: dict[str, Any] = field(default_factory=dict)
     last_error: dict[str, Any] | None = None
@@ -132,6 +133,8 @@ class StreamingTtsSession:
         self._rounds: dict[str, _StreamingTtsRoundState] = {}
         self._active_round_id: str | None = None
         self._last_round_id: str | None = None
+        self._cancelled_round_count = 0
+        self._last_interrupt: dict[str, Any] | None = None
 
     def synthesize(
         self,
@@ -200,6 +203,11 @@ class StreamingTtsSession:
                 "voice_code": None,
                 "emotion": None,
                 "cancelled": False,
+                "interrupt_stop_ready": True,
+                "cancelled_round_count": self._cancelled_round_count,
+                "cancelledRoundCount": self._cancelled_round_count,
+                "last_interrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
+                "lastInterrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
                 "provider_state": self._provider_status(),
             }
         state = self._rounds[str(target_round_id)]
@@ -209,6 +217,7 @@ class StreamingTtsSession:
         if self._active_round_id and self._active_round_id != request.round_id:
             previous = self._rounds.get(self._active_round_id)
             if previous is not None and not previous.completed:
+                previous.superseded_by_round_id = request.round_id
                 self._mark_cancelled(previous, reason="superseded")
         state = _StreamingTtsRoundState(
             request=request,
@@ -244,6 +253,17 @@ class StreamingTtsSession:
             return
         state.cancelled = True
         state.cancel_reason = str(reason or "cancelled")
+        self._cancelled_round_count += 1
+        self._last_interrupt = {
+            "reason": state.cancel_reason,
+            "round_id": state.request.round_id,
+            "roundId": state.request.round_id,
+            "cancellation_token": state.request.cancellation_token,
+            "cancellationToken": state.request.cancellation_token,
+            "superseded_by_round_id": state.superseded_by_round_id,
+            "supersededByRoundId": state.superseded_by_round_id,
+            "ts": self._now(),
+        }
         cancel = getattr(self.provider, "cancel", None)
         if callable(cancel):
             try:
@@ -399,7 +419,14 @@ class StreamingTtsSession:
             "volume": state.request.volume,
             "cancelled": state.cancelled,
             "reason": state.cancel_reason,
+            "superseded_by_round_id": state.superseded_by_round_id,
+            "supersededByRoundId": state.superseded_by_round_id,
             "completed": state.completed,
+            "interrupt_stop_ready": True,
+            "cancelled_round_count": self._cancelled_round_count,
+            "cancelledRoundCount": self._cancelled_round_count,
+            "last_interrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
+            "lastInterrupt": dict(self._last_interrupt) if self._last_interrupt is not None else None,
             "provider_state": provider_state,
             "last_error": dict(state.last_error) if state.last_error is not None else None,
         }

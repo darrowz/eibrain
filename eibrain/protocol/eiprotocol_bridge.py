@@ -27,6 +27,7 @@ from .capabilities import (
     HeadDevice,
     HeadHealth,
     HeadLimit,
+    build_modality_inventory,
 )
 from .head import (
     AudioTurn as LegacyAudioTurn,
@@ -574,6 +575,7 @@ def capability_manifest_to_eiprotocol_event(
 ) -> EventEnvelope:
     """Wrap a legacy capability manifest in an eiprotocol manifest event."""
 
+    modalities = build_modality_inventory(manifest.devices, manifest.backends)
     content = {
         "manifestId": _first_text(manifest.node_id, manifest.trace_id, manifest.source, fallback="manifest"),
         "manifestVersion": manifest.protocol_version or "head.v1",
@@ -585,9 +587,13 @@ def capability_manifest_to_eiprotocol_event(
             "timestampMs": manifest.timestamp_ms,
             "devices": [_device_to_capability_metadata(device) for device in manifest.devices],
         },
-        "runtime": {},
+        "runtime": {
+            "nodeRole": manifest.node_role,
+            "protocolVersion": manifest.protocol_version or "head.v1",
+            "timestampMs": manifest.timestamp_ms,
+        },
         "transports": {},
-        "modalities": {},
+        "modalities": modalities,
         "capabilities": [_device_to_capability(device) for device in manifest.devices],
         "backends": [_backend_to_capability(backend) for backend in manifest.backends],
         "health": _health_to_dict(manifest.health),
@@ -595,6 +601,7 @@ def capability_manifest_to_eiprotocol_event(
         "metadata": {
             **dict(manifest.metadata),
             "legacyCapabilities": list(manifest.capabilities),
+            "modalitySummary": {name: {"available": value["available"], "count": _modality_count(value)} for name, value in modalities.items()},
         },
     }
     return _event(
@@ -1190,6 +1197,16 @@ def _backend_to_capability(backend: HeadBackend) -> dict[str, Any]:
             "health": _health_to_dict(backend.health),
         },
     }
+
+
+def _modality_count(modality: Mapping[str, Any]) -> int:
+    count = 0
+    for key, value in modality.items():
+        if key == "available":
+            continue
+        if isinstance(value, list):
+            count += len(value)
+    return count
 
 
 def _device_to_capability_metadata(device: HeadDevice) -> dict[str, Any]:

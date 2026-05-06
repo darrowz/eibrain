@@ -168,6 +168,35 @@ def test_streaming_session_diagnostics_track_counts_latency_provider_state_and_e
     assert diagnostics["errors"][-1]["message"] == "provider warning"
 
 
+def test_streaming_session_cancel_updates_interrupt_diagnostics() -> None:
+    from eihead.eivoice_runtime import SimulatedStreamingAsrProvider, StreamingAsrSession
+
+    provider = SimulatedStreamingAsrProvider(
+        partial_text="partial",
+        final_text="final",
+        final_after_frames=3,
+        blocked=True,
+    )
+    session = StreamingAsrSession(
+        session_id="session-cancel",
+        round_id="round-cancel",
+        provider=provider,
+        max_inflight_frames=2,
+    )
+
+    assert session.accept_frame(_frame(1)) == []
+    assert session.accept_frame(_frame(2)) == []
+    cancellation = session.cancel(reason="barge_in")
+    diagnostics = session.diagnostics()
+
+    assert cancellation["cancelled"] is True
+    assert diagnostics["interrupt_stop_ready"] is True
+    assert diagnostics["cancelled"] is True
+    assert diagnostics["cancel_count"] == 1
+    assert diagnostics["last_cancel"]["reason"] == "barge_in"
+    assert diagnostics["frames_pending"] == 0
+
+
 def test_runtime_can_hold_streaming_asr_diagnostics_without_real_provider() -> None:
     from eihead.eivoice_runtime import (
         EiVoiceRuntimeRunner,

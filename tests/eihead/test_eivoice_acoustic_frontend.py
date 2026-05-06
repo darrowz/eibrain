@@ -133,6 +133,9 @@ def test_loopback_reference_diagnostics_reports_ready_reference() -> None:
         "matched_by": "sequence",
         "max_age_ms": 120,
         "device": "alsa_output.usb-speaker.monitor",
+        "device_ready": True,
+        "device_state": "ready",
+        "dry_run": True,
         "aec_status": "passthrough",
     }
 
@@ -206,6 +209,31 @@ def test_loopback_reference_diagnostics_reports_aec_unavailable() -> None:
     assert diagnostics["aec_status"] == "unavailable"
 
 
+def test_loopback_reference_diagnostics_report_dry_run_and_missing_device() -> None:
+    config = AcousticFrontendConfig(
+        aec_enabled=True,
+        aec_available=True,
+        loopback_enabled=True,
+        loopback_available=True,
+        mode="noop",
+        loopback_device=None,
+    )
+    match = LoopbackReferenceMatch(
+        frame=_frame(21, created_at_ts=43.000),
+        age_ms=24.0,
+        matched_by="time",
+    )
+
+    diagnostics = build_loopback_reference_diagnostics(config, match, max_age_ms=120)
+
+    assert diagnostics["ready"] is True
+    assert diagnostics["state"] == "ready"
+    assert diagnostics["device"] is None
+    assert diagnostics["device_ready"] is False
+    assert diagnostics["device_state"] == "missing"
+    assert diagnostics["dry_run"] is True
+
+
 def test_noop_frontend_last_capture_reuses_loopback_reference_diagnostics() -> None:
     frontend = NoOpAcousticFrontend(
         AcousticFrontendConfig(
@@ -225,4 +253,5 @@ def test_noop_frontend_last_capture_reuses_loopback_reference_diagnostics() -> N
     assert processed.diagnostics["loopback_reference"]["ready"] is True
     assert processed.diagnostics["loopback_reference_state"] == "ready"
     assert processed.diagnostics["loopback_reference_reason"] == "loopback_reference_ready"
+    assert processed.diagnostics["loopback_reference"]["dry_run"] is True
     assert frontend.readiness()["last_capture"]["loopback_reference"]["matched_by"] == "explicit"

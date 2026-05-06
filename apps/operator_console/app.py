@@ -827,6 +827,18 @@ class OperatorConsoleApp:
             if asr_details.get("elapsed_ms") is None and isinstance(asr_elapsed_ms, (int, float)):
                 asr_details["elapsed_ms"] = asr_elapsed_ms
         transcript = str(asr_details.get("transcript", "") or "")
+        audio_frontend = self._audio_frontend_diagnostics(body_snapshot)
+        voice_provider_smoke = build_voice_provider_smoke_report("all", dry_run=True)
+        voice_dialogue = body_snapshot.get("voice_dialogue", {})
+        if not isinstance(voice_dialogue, dict):
+            voice_dialogue = {}
+        voice_chain_readiness = self._build_voice_chain_readiness(voice_dialogue)
+        interrupt_metric = voice_chain_readiness.get("metrics", {}).get("interruptStopMs", {})
+        if not isinstance(interrupt_metric, dict):
+            interrupt_metric = {}
+        interrupt_stop_ready = voice_chain_readiness.get("interruptStopReady")
+        if interrupt_stop_ready is None and isinstance(interrupt_metric.get("pass"), bool):
+            interrupt_stop_ready = bool(interrupt_metric.get("pass"))
         return {
             "enabled": bool(capture_details or asr_details),
             "capture_health": capture.get("health", "unknown"),
@@ -858,8 +870,18 @@ class OperatorConsoleApp:
             "capture_elapsed_ms": capture_details.get("elapsed_ms"),
             "asr_elapsed_ms": asr_details.get("asr_elapsed_ms", asr_details.get("elapsed_ms")),
             "asr_decode_elapsed_ms": asr_details.get("asr_decode_elapsed_ms"),
-            "audio_frontend": self._audio_frontend_diagnostics(body_snapshot),
-            "voice_provider_smoke": build_voice_provider_smoke_report("all", dry_run=True),
+            "audio_frontend": audio_frontend,
+            "voice_provider_smoke": voice_provider_smoke,
+            "live_trace_summary": str(voice_chain_readiness.get("summary") or "waiting for live benchmark"),
+            "provider_readiness": self._provider_readiness(voice_provider_smoke),
+            "provider_status": self._provider_status(voice_provider_smoke),
+            "aec_readiness": self._aec_readiness(audio_frontend),
+            "aec_status": self._aec_status(audio_frontend),
+            "interrupt_stop_ready": interrupt_stop_ready,
+            "interrupt_stop_p95_ms": interrupt_metric.get("p95"),
+            "interrupt_stop_threshold_ms": interrupt_metric.get("threshold"),
+            "round_leak_count": voice_chain_readiness.get("roundLeakCount"),
+            "round_leak_free": voice_chain_readiness.get("roundLeakFree"),
         }
 
     @staticmethod
@@ -877,6 +899,79 @@ class OperatorConsoleApp:
                 if isinstance(value, dict):
                     return dict(value)
         return {}
+
+    @staticmethod
+    def _provider_readiness(provider_smoke: dict[str, object]) -> str:
+        providers = provider_smoke.get("providers", [])
+        if not isinstance(providers, list) or not providers:
+            return "unknown"
+        configured = [
+            item for item in providers if isinstance(item, dict) and item.get("configured") is True
+        ]
+        return "healthy" if len(configured) == len(providers) else "degraded"
+
+    @staticmethod
+    def _provider_status(provider_smoke: dict[str, object]) -> str:
+        providers = provider_smoke.get("providers", [])
+        if not isinstance(providers, list) or not providers:
+            return "waiting for smoke report"
+        configured_count = sum(
+            1 for item in providers if isinstance(item, dict) and item.get("configured") is True
+        )
+        return f"{configured_count}/{len(providers)} configured"
+
+    @staticmethod
+    def _aec_readiness(audio_frontend: dict[str, object]) -> str:
+        if not isinstance(audio_frontend, dict) or not audio_frontend:
+            return "unknown"
+        last_capture = audio_frontend.get("lastCapture", {})
+        if not isinstance(last_capture, dict):
+            last_capture = {}
+        loopback_reference = last_capture.get("loopbackReference", {})
+        if not isinstance(loopback_reference, dict):
+            loopback_reference = {}
+        ready = loopback_reference.get("ready")
+        if isinstance(ready, bool):
+            if ready:
+                return "healthy"
+            state = str(loopback_reference.get("state") or loopback_reference.get("reason") or "")
+            return "unavailable" if state in {"aec_unavailable", "unavailable", "missing"} else "waiting"
+        aec = audio_frontend.get("aec", {})
+        if not isinstance(aec, dict):
+            aec = {}
+        enabled = aec.get("enabled")
+        available = aec.get("available")
+        if enabled is False:
+            return "waiting"
+        if available is True:
+            return "healthy"
+        if available is False:
+            return "unavailable"
+        return "unknown"
+
+    @staticmethod
+    def _aec_status(audio_frontend: dict[str, object]) -> str:
+        if not isinstance(audio_frontend, dict) or not audio_frontend:
+            return "unknown"
+        last_capture = audio_frontend.get("lastCapture", {})
+        if not isinstance(last_capture, dict):
+            last_capture = {}
+        loopback_reference = last_capture.get("loopbackReference", {})
+        if not isinstance(loopback_reference, dict):
+            loopback_reference = {}
+        state = loopback_reference.get("state") or loopback_reference.get("reason")
+        if state:
+            return str(state)
+        aec = audio_frontend.get("aec", {})
+        if not isinstance(aec, dict):
+            aec = {}
+        if aec.get("enabled") is False:
+            return "disabled"
+        if aec.get("available") is True:
+            return "ready"
+        if aec.get("available") is False:
+            return "unavailable"
+        return "unknown"
 
     @staticmethod
     def _latest_audio_trace_details(traces: list[dict[str, object]]) -> dict[str, object]:

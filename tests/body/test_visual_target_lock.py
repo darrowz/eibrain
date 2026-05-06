@@ -94,11 +94,14 @@ def test_visual_target_lock_holds_then_releases_briefly_lost_target() -> None:
     released = selector.select([], now_ts=10.9)
 
     assert locked.track_id == "face-1"
+    assert locked.lock_id == "face-1"
     assert held.track_id == "face-1"
+    assert held.lock_id == "face-1"
     assert held.lock_state == "lost_hold"
     assert held.switch_reason == "target_lost_hold"
     assert held.is_locked is True
     assert released.track_id is None
+    assert released.lock_id is None
     assert released.target is None
     assert released.lock_state == "unlocked"
     assert released.switch_reason == "target_lost_timeout"
@@ -172,6 +175,7 @@ def test_visual_target_lock_reports_empty_unlocked_state_without_targets() -> No
     result = selector.select([], now_ts=40.0)
 
     assert result.track_id is None
+    assert result.lock_id is None
     assert result.label is None
     assert result.bbox is None
     assert result.center is None
@@ -181,6 +185,29 @@ def test_visual_target_lock_reports_empty_unlocked_state_without_targets() -> No
     assert result.lock_state == "unlocked"
     assert result.switch_reason == "no_target"
     assert result.diagnostics["candidate_count"] == 0
+
+
+def test_visual_target_lock_keeps_lock_id_stable_when_tracker_id_jitters() -> None:
+    from eibrain.body.visual_target_lock import VisualTargetLockSelector
+
+    selector = VisualTargetLockSelector()
+
+    first = selector.select(
+        [_det("person-1", "person", 0.84, _bbox(0.34, 0.18, 0.58, 0.84))],
+        now_ts=50.0,
+    )
+    relinked = selector.select(
+        [_det("person-1b", "person", 0.83, _bbox(0.35, 0.18, 0.59, 0.84))],
+        now_ts=50.2,
+    )
+
+    assert first.track_id == "person-1"
+    assert first.lock_id == "person-1"
+    assert relinked.track_id == "person-1b"
+    assert relinked.lock_id == "person-1"
+    assert relinked.lock_state == "locked"
+    assert relinked.switch_reason == "maintained"
+    assert relinked.diagnostics["lock_track_id"] == "person-1"
 
 
 def _bbox(

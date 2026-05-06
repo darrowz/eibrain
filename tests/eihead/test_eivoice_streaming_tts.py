@@ -111,3 +111,41 @@ def test_streaming_tts_interrupt_cancels_round_and_stops_old_audio_chunks() -> N
     assert any(event["event"] == "audio_chunk" for event in new_events)
     assert all(event["round_id"] == "round-new" for event in new_events)
     assert session.status()["round_id"] == "round-new"
+
+
+def test_streaming_tts_superseded_round_updates_session_interrupt_diagnostics() -> None:
+    session = StreamingTtsSession(
+        provider=SimulatedStreamingTtsProvider(chunk_chars=2, chunk_duration_ms=30),
+        clock=ManualClock(),
+    )
+    old_stream = session.synthesize(
+        text="旧轮次",
+        round_id="round-old-2",
+        cancellation_token="token-old-2",
+    )
+
+    assert next(old_stream)["event"] == "sentence_start"
+
+    new_stream = session.synthesize(
+        text="新轮次",
+        round_id="round-new-2",
+        cancellation_token="token-new-2",
+    )
+    old_remaining = list(old_stream)
+
+    assert next(new_stream)["event"] == "sentence_start"
+    assert [event["event"] for event in old_remaining] == ["complete"]
+    assert old_remaining[0]["content"]["cancelled"] is True
+    assert old_remaining[0]["content"]["reason"] == "superseded"
+
+    old_status = session.status(round_id="round-old-2")
+    current_status = session.status(round_id="round-new-2")
+
+    assert old_status["cancelled"] is True
+    assert old_status["reason"] == "superseded"
+    assert old_status["superseded_by_round_id"] == "round-new-2"
+    assert current_status["interrupt_stop_ready"] is True
+    assert current_status["cancelled_round_count"] == 1
+    assert current_status["last_interrupt"]["reason"] == "superseded"
+    assert current_status["last_interrupt"]["roundId"] == "round-old-2"
+    assert current_status["last_interrupt"]["supersededByRoundId"] == "round-new-2"

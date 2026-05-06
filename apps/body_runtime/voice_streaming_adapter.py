@@ -50,6 +50,13 @@ class VoiceStreamingAdapter:
         self.session = session
         self._audio_frames = 0
         self._tts_chunks = 0
+        self._turn_summary: dict[str, dict[str, object]] = {
+            "asrPartial": {"count": 0, "seen": False},
+            "asrFinal": {"count": 0, "seen": False},
+            "llmDelta": {"count": 0, "seen": False},
+            "ttsChunk": {"count": 0, "seen": False},
+            "playback": {"count": 0, "seen": False},
+        }
         self._last_heartbeat: dict[str, object] = {}
         self._asr_trace: dict[str, object] = {
             "partial_count": 0,
@@ -132,6 +139,7 @@ class VoiceStreamingAdapter:
             self._audio_frames += 1
             return "note_audio"
         if name in ASR_PARTIAL_EVENTS:
+            self._note_turn_signal("asrPartial")
             self.session.update_partial_transcript(
                 self._text_content(content, "text"),
                 **round_scope,
@@ -139,6 +147,7 @@ class VoiceStreamingAdapter:
             self._record_asr_trace(name, content, session_id=session_id, round_id=round_id, final=False)
             return "update_partial_transcript"
         if name in ASR_FINAL_EVENTS:
+            self._note_turn_signal("asrFinal")
             self.session.finalize_transcript(
                 self._text_content(content, "text"),
                 **round_scope,
@@ -146,15 +155,19 @@ class VoiceStreamingAdapter:
             self._record_asr_trace(name, content, session_id=session_id, round_id=round_id, final=True)
             return "finalize_transcript"
         if name in AGENT_DELTA_EVENTS:
+            self._note_turn_signal("llmDelta")
             self.session.append_reply_delta(
                 self._text_content(content, "delta", "text"),
                 **round_scope,
             )
             return "append_reply_delta"
         if name in SPEAKING_START_EVENTS:
+            if name == "ei.voice.playback.started":
+                self._note_turn_signal("playback")
             self.session.start_speaking(**round_scope)
             return "start_speaking"
         if name in TTS_CHUNK_EVENTS:
+            self._note_turn_signal("ttsChunk")
             self.session.record_stream_event(
                 event_type="tts_chunk",
                 status="tts_chunk_observed",
@@ -196,7 +209,15 @@ class VoiceStreamingAdapter:
             "tts_chunks": self._tts_chunks,
             "last_heartbeat": dict(self._last_heartbeat),
             "asr": dict(self._asr_trace),
+            "turn_summary": {key: dict(value) for key, value in self._turn_summary.items()},
         }
+
+    def _note_turn_signal(self, key: str) -> None:
+        signal = self._turn_summary.get(key)
+        if signal is None:
+            return
+        signal["count"] = int(signal.get("count") or 0) + 1
+        signal["seen"] = True
 
     def _record_asr_trace(
         self,

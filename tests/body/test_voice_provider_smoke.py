@@ -97,3 +97,19 @@ def test_all_providers_cli_aggregates_json_without_secret_leakage(monkeypatch, c
     assert [item["provider"] for item in payload["providers"]] == ["minimax-tts", "dashscope-asr"]
     assert payload["dry_run"] is True
     assert secret not in captured.out
+
+
+def test_build_report_includes_provider_configuration_summary(monkeypatch) -> None:
+    from apps.body_runtime.voice_provider_smoke import build_report
+
+    monkeypatch.setenv("EIVOICE_MINIMAX_API_KEY", "minimax-secret-token")
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+
+    report = build_report("all", dry_run=True)
+
+    assert report["configured"] is False
+    assert report["readiness"]["status"] == "degraded"
+    assert report["readiness"]["configured_provider_count"] == 1
+    assert report["readiness"]["configured_providers"] == ["minimax-tts"]
+    assert report["readiness"]["missing_providers"] == ["dashscope-asr"]

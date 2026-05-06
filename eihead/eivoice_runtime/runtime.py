@@ -124,6 +124,7 @@ class EiVoiceRuntimeRunner:
 
     def __post_init__(self) -> None:
         self.core = EiVoiceRuntimeCore(codec=self.codec)
+        self.core.set_interrupt_stop_ready(self._interrupt_stop_ready())
 
     def step_once(self) -> dict[str, bool]:
         self.worker_metrics.step_once_calls += 1
@@ -236,18 +237,35 @@ class EiVoiceRuntimeRunner:
         self.worker_metrics.last_playback_frame_duration_ms = frame.duration_ms
         return True
 
-    def interrupt_playback(self) -> int:
+    def interrupt_playback(
+        self,
+        *,
+        reason: str = "interrupt",
+        round_id: str | None = None,
+        source: str = "runtime",
+    ) -> int:
         self.playback_sink.stop()
         playback_cleared = _drain_queue(self.core.audio_playback_queue)
         decode_cleared = _drain_queue(self.core.opus_decode_queue)
         transport_cleared = 0
         if self.transport is not None:
             transport_cleared = len(self.transport.drain_inbound_events())
+        cleared = playback_cleared + decode_cleared + transport_cleared
         self.worker_metrics.playback_interrupts += 1
         self.worker_metrics.playback_frames_cleared += playback_cleared
         self.worker_metrics.decode_frames_cleared += decode_cleared
         self.worker_metrics.transport_inbound_events_cleared += transport_cleared
-        return playback_cleared + decode_cleared + transport_cleared
+        self.core.set_interrupt_stop_ready(self._interrupt_stop_ready())
+        self.core.record_interrupt(
+            reason=reason,
+            source=source,
+            round_id=round_id,
+            cleared=cleared,
+            playback_frames_cleared=playback_cleared,
+            decode_frames_cleared=decode_cleared,
+            transport_inbound_events_cleared=transport_cleared,
+        )
+        return cleared
 
     def drain_asr_events(self) -> list[StreamingAsrEvent]:
         if self.asr_session is None:
@@ -255,6 +273,7 @@ class EiVoiceRuntimeRunner:
         return self.asr_session.drain_events()
 
     def status(self) -> dict[str, Any]:
+        self.core.set_interrupt_stop_ready(self._interrupt_stop_ready())
         status = dict(self.core.status())
         audio_frontend = self._audio_frontend_readiness()
         transport_status: dict[str, Any] = {}
@@ -300,6 +319,7 @@ class EiVoiceRuntimeRunner:
             "queues": {str(name): dict(_mapping(queue)) for name, queue in queues.items()},
             "audio_frontend": dict(audio_frontend),
             "asr": dict(asr_diagnostics),
+            "interrupt": self._interrupt_status(),
             "upstream": {
                 "state": transport_state,
                 "queue": "ws_send_queue",
@@ -344,6 +364,18 @@ class EiVoiceRuntimeRunner:
             "provider": None,
             "provider_state": "unknown",
         }
+
+    def _interrupt_status(self) -> dict[str, Any]:
+        core_status = self.core.status()
+        last_interrupt = core_status.get("last_interrupt")
+        return {
+            "ready": bool(core_status.get("interrupt_stop_ready")),
+            "last_interrupt": dict(last_interrupt) if isinstance(last_interrupt, Mapping) else None,
+            "cancelled_round_count": int(core_status.get("cancelled_round_count") or 0),
+        }
+
+    def _interrupt_stop_ready(self) -> bool:
+        return callable(getattr(self.playback_sink, "stop", None))
 
     def _read_receive_frame(self) -> AudioFrame | None:
         if self.ws_receive_source is not None:

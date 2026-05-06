@@ -724,6 +724,7 @@ class VoiceDialogueLoop:
                 for key, value in self._numeric_mapping(payload.get("last_latency_s")).items()
             }
         realtime_latency_ms = self._numeric_mapping(payload.get("realtime_latency_ms"))
+        event_sample_metrics = self._event_sample_metrics(payload)
         interruption = payload.get("interruption")
         interruption_payload = interruption if isinstance(interruption, dict) else {}
         tts_stop_confirmed = bool(payload.get("tts_stop_confirmed") or interruption_payload.get("tts_stop_confirmed"))
@@ -738,25 +739,67 @@ class VoiceDialogueLoop:
         interrupted = status == "interrupted" or bool(payload.get("interrupt_active"))
         stale_round_payload = payload.get("stale_round")
         round_leak = status == "stale_round_blocked" or isinstance(stale_round_payload, dict)
-        if not stage_latency_ms and not realtime_latency_ms and interrupt_stop_ms is None and not round_leak and not interrupted:
+        if not stage_latency_ms and event_sample_metrics:
+            stage_latency_ms = self._stage_latency_from_event_metrics(event_sample_metrics)
+        else:
+            stage_latency_ms = self._merge_stage_latency_metrics(stage_latency_ms, event_sample_metrics)
+        if (
+            not stage_latency_ms
+            and not realtime_latency_ms
+            and not event_sample_metrics
+            and interrupt_stop_ms is None
+            and not round_leak
+            and not interrupted
+        ):
             return None
+        first_asr_partial_ms = self._first_number(
+            payload.get("firstAsrPartialMs"),
+            realtime_latency_ms.get("first_partial_asr"),
+            realtime_latency_ms.get("partial_asr"),
+            stage_latency_ms.get("listen_asr_partial"),
+            event_sample_metrics.get("firstAsrPartialMs"),
+        )
         asr_final_ms = self._first_number(
+            payload.get("asrFinalMs"),
             realtime_latency_ms.get("final_asr"),
             realtime_latency_ms.get("asr_final"),
             stage_latency_ms.get("listen_asr"),
             stage_latency_ms.get("asr"),
+            event_sample_metrics.get("asrFinalMs"),
+        )
+        if first_asr_partial_ms is None:
+            first_asr_partial_ms = asr_final_ms
+        first_llm_delta_ms = self._first_number(
+            payload.get("firstLlmDeltaMs"),
+            realtime_latency_ms.get("first_reply_token"),
+            realtime_latency_ms.get("first_llm_delta"),
+            stage_latency_ms.get("llm_first_delta"),
+            stage_latency_ms.get("llm_first_token"),
+            event_sample_metrics.get("firstLlmDeltaMs"),
+            payload.get("firstTokenMs"),
+        )
+        first_token_ms = self._first_number(payload.get("firstTokenMs"), first_llm_delta_ms)
+        first_tts_chunk_ms = self._first_number(
+            payload.get("firstTtsChunkMs"),
+            realtime_latency_ms.get("first_tts_chunk"),
+            stage_latency_ms.get("tts_first_chunk"),
+            event_sample_metrics.get("firstTtsChunkMs"),
         )
         first_audio_ms = self._first_number(
+            payload.get("firstAudioMs"),
             realtime_latency_ms.get("first_speech"),
             realtime_latency_ms.get("first_audio"),
             realtime_latency_ms.get("firstAudioMs"),
             stage_latency_ms.get("first_audio"),
             stage_latency_ms.get("firstAudioMs"),
+            event_sample_metrics.get("firstAudioMs"),
         )
         if first_audio_ms is None and ("listen_asr" in stage_latency_ms or "think" in stage_latency_ms):
             first_audio_ms = stage_latency_ms.get("listen_asr", 0.0) + stage_latency_ms.get("think", 0.0)
         if first_audio_ms is None:
-            first_audio_ms = self._first_number(stage_latency_ms.get("total"))
+            first_audio_ms = self._first_number(stage_latency_ms.get("total"), event_sample_metrics.get("totalMs"))
+        if first_tts_chunk_ms is None:
+            first_tts_chunk_ms = first_audio_ms
         trace: dict[str, object] = {
             "roundId": payload.get("round_id") or payload.get("current_round_id") or "",
             "cancellationToken": payload.get("cancellation_token") or payload.get("current_cancellation_token") or "",
@@ -769,8 +812,16 @@ class VoiceDialogueLoop:
         streaming = self._streaming_trace_from_payload(payload)
         if streaming:
             trace["streaming"] = streaming
+        if first_asr_partial_ms is not None:
+            trace["firstAsrPartialMs"] = first_asr_partial_ms
         if asr_final_ms is not None:
             trace["asrFinalMs"] = asr_final_ms
+        if first_llm_delta_ms is not None:
+            trace["firstLlmDeltaMs"] = first_llm_delta_ms
+        if first_token_ms is not None:
+            trace["firstTokenMs"] = first_token_ms
+        if first_tts_chunk_ms is not None:
+            trace["firstTtsChunkMs"] = first_tts_chunk_ms
         if first_audio_ms is not None:
             trace["firstAudioMs"] = first_audio_ms
         if interrupt_stop_ms is not None:
@@ -779,12 +830,6 @@ class VoiceDialogueLoop:
 
     def _streaming_trace_from_payload(self, payload: dict[str, object]) -> dict[str, bool]:
         explicit = payload.get("streaming")
-        if isinstance(explicit, dict):
-            return {
-                "asrPartial": bool(explicit.get("asrPartial") or explicit.get("asr_partial")),
-                "llmDelta": bool(explicit.get("llmDelta") or explicit.get("llm_delta")),
-                "ttsChunk": bool(explicit.get("ttsChunk") or explicit.get("tts_chunk")),
-            }
         closed_loop = payload.get("closed_loop_state")
         closed = closed_loop if isinstance(closed_loop, dict) else {}
         events = payload.get("realtime_events")
@@ -794,12 +839,129 @@ class VoiceDialogueLoop:
             for event in event_list
             if isinstance(event, dict)
         }
+        stage_latency_ms = self._numeric_mapping(payload.get("last_stage_latency_ms"))
+        realtime_latency_ms = self._numeric_mapping(payload.get("realtime_latency_ms"))
+        event_sample_metrics = self._event_sample_metrics(payload)
+        explicit_mapping = explicit if isinstance(explicit, dict) else {}
         streaming = {
-            "asrPartial": bool(closed.get("final_asr") or "asr_partial" in event_types or "asr_final" in event_types),
-            "llmDelta": bool(payload.get("last_reply_delta") or closed.get("reply_delta") or "agent_think" in event_types),
-            "ttsChunk": bool(closed.get("speaking") or "tts_started" in event_types),
+            "asrPartial": bool(
+                explicit_mapping.get("asrPartial")
+                or explicit_mapping.get("asr_partial")
+                or payload.get("firstAsrPartialMs")
+                or realtime_latency_ms.get("first_partial_asr")
+                or stage_latency_ms.get("listen_asr_partial")
+                or event_sample_metrics.get("firstAsrPartialMs")
+                or closed.get("final_asr")
+                or "asr_partial" in event_types
+                or "asr_final" in event_types
+            ),
+            "asrFinal": bool(
+                explicit_mapping.get("asrFinal")
+                or explicit_mapping.get("asr_final")
+                or payload.get("asrFinalMs")
+                or realtime_latency_ms.get("final_asr")
+                or stage_latency_ms.get("listen_asr")
+                or event_sample_metrics.get("asrFinalMs")
+                or closed.get("final_asr")
+                or "asr_final" in event_types
+            ),
+            "llmDelta": bool(
+                explicit_mapping.get("llmDelta")
+                or explicit_mapping.get("llm_delta")
+                or payload.get("firstLlmDeltaMs")
+                or payload.get("firstTokenMs")
+                or realtime_latency_ms.get("first_reply_token")
+                or stage_latency_ms.get("llm_first_delta")
+                or stage_latency_ms.get("llm_first_token")
+                or event_sample_metrics.get("firstLlmDeltaMs")
+                or payload.get("last_reply_delta")
+                or closed.get("reply_delta")
+                or "agent_think" in event_types
+            ),
+            "ttsChunk": bool(
+                explicit_mapping.get("ttsChunk")
+                or explicit_mapping.get("tts_chunk")
+                or payload.get("firstTtsChunkMs")
+                or stage_latency_ms.get("tts_first_chunk")
+                or event_sample_metrics.get("firstTtsChunkMs")
+                or closed.get("speaking")
+                or "tts_chunk" in event_types
+                or "tts_started" in event_types
+            ),
+            "playback": bool(
+                explicit_mapping.get("playback")
+                or explicit_mapping.get("playback_started")
+                or payload.get("firstAudioMs")
+                or realtime_latency_ms.get("first_speech")
+                or stage_latency_ms.get("first_audio")
+                or event_sample_metrics.get("firstAudioMs")
+                or closed.get("speaking")
+                or "tts_started" in event_types
+            ),
         }
         return streaming if any(streaming.values()) else {}
+
+    @classmethod
+    def _merge_stage_latency_metrics(
+        cls,
+        stage_latency_ms: dict[str, float],
+        event_sample_metrics: dict[str, float],
+    ) -> dict[str, float]:
+        result = dict(stage_latency_ms)
+        for field, key in (
+            ("firstAsrPartialMs", "listen_asr_partial"),
+            ("asrFinalMs", "listen_asr"),
+            ("firstLlmDeltaMs", "llm_first_delta"),
+            ("firstTokenMs", "llm_first_token"),
+            ("firstTtsChunkMs", "tts_first_chunk"),
+            ("firstAudioMs", "first_audio"),
+        ):
+            value = cls._number_or_none(event_sample_metrics.get(field))
+            if value is not None:
+                result.setdefault(key, value)
+        total_ms = cls._number_or_none(event_sample_metrics.get("totalMs"))
+        if total_ms is not None:
+            result.setdefault("total", total_ms)
+        elif "firstAudioMs" in event_sample_metrics:
+            result.setdefault("total", float(event_sample_metrics["firstAudioMs"]))
+        return result
+
+    @classmethod
+    def _stage_latency_from_event_metrics(cls, event_sample_metrics: dict[str, float]) -> dict[str, float]:
+        return cls._merge_stage_latency_metrics({}, event_sample_metrics)
+
+    @classmethod
+    def _event_sample_metrics(cls, payload: dict[str, object]) -> dict[str, float]:
+        events = payload.get("realtime_events")
+        event_list = [event for event in events if isinstance(event, dict)] if isinstance(events, list) else []
+        if not event_list:
+            return {}
+        typed_events: list[tuple[str, float]] = []
+        for event in event_list:
+            at_s = cls._number_or_none(event.get("at_s"))
+            if at_s is None:
+                continue
+            typed_events.append((str(event.get("event_type") or ""), at_s))
+        if not typed_events:
+            return {}
+        start_at_s = next((at_s for event_type, at_s in typed_events if event_type == "listening_started"), typed_events[0][1])
+        result: dict[str, float] = {}
+        for event_type, at_s in typed_events:
+            elapsed_ms = round((at_s - start_at_s) * 1000.0, 3)
+            if event_type == "asr_partial":
+                result.setdefault("firstAsrPartialMs", elapsed_ms)
+            elif event_type == "asr_final":
+                result.setdefault("asrFinalMs", elapsed_ms)
+            elif event_type == "agent_think":
+                result.setdefault("firstLlmDeltaMs", elapsed_ms)
+                result.setdefault("firstTokenMs", elapsed_ms)
+            elif event_type == "tts_chunk":
+                result.setdefault("firstTtsChunkMs", elapsed_ms)
+            elif event_type == "tts_started":
+                result.setdefault("firstAudioMs", elapsed_ms)
+            elif event_type == "complete":
+                result.setdefault("totalMs", elapsed_ms)
+        return result
 
     @staticmethod
     def _numeric_mapping(value: object) -> dict[str, float]:
