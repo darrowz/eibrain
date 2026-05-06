@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 from typing import Any
 
+from apps.body_runtime.voice_provider_smoke import build_report as build_voice_provider_smoke_report
 from eibrain.voice.readiness import build_voice_chain_readiness
 
 
@@ -76,7 +77,7 @@ class OperatorConsoleApp:
             probe_metrics=probe_metrics,
         )
         driver_breakdown = self._build_driver_breakdown(probe_metrics)
-        audio_diagnostics = self._build_audio_diagnostics(organs, traces=traces)
+        audio_diagnostics = self._build_audio_diagnostics(body_snapshot, organs, traces=traces)
         visual_diagnostics = self._build_visual_diagnostics(
             body_snapshot=body_snapshot,
             organs=organs,
@@ -722,7 +723,13 @@ class OperatorConsoleApp:
             "tracking_last_error": str(visual_tracking.get("last_error", "") or ""),
         }
 
-    def _build_audio_diagnostics(self, organs: dict[str, object], *, traces: list[dict[str, object]] | None = None) -> dict[str, object]:
+    def _build_audio_diagnostics(
+        self,
+        body_snapshot: dict[str, object],
+        organs: dict[str, object],
+        *,
+        traces: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
         ear = organs.get("ear", {})
         if not isinstance(ear, dict):
             ear = {}
@@ -851,7 +858,25 @@ class OperatorConsoleApp:
             "capture_elapsed_ms": capture_details.get("elapsed_ms"),
             "asr_elapsed_ms": asr_details.get("asr_elapsed_ms", asr_details.get("elapsed_ms")),
             "asr_decode_elapsed_ms": asr_details.get("asr_decode_elapsed_ms"),
+            "audio_frontend": self._audio_frontend_diagnostics(body_snapshot),
+            "voice_provider_smoke": build_voice_provider_smoke_report("all", dry_run=True),
         }
+
+    @staticmethod
+    def _audio_frontend_diagnostics(body_snapshot: dict[str, object]) -> dict[str, object]:
+        for key in ("audio_frontend", "audioFrontend"):
+            value = body_snapshot.get(key)
+            if isinstance(value, dict):
+                return dict(value)
+        for runtime_key in ("eivoice_runtime", "eivoiceRuntime", "voice_runtime"):
+            runtime = body_snapshot.get(runtime_key)
+            if not isinstance(runtime, dict):
+                continue
+            for key in ("audio_frontend", "audioFrontend"):
+                value = runtime.get(key)
+                if isinstance(value, dict):
+                    return dict(value)
+        return {}
 
     @staticmethod
     def _latest_audio_trace_details(traces: list[dict[str, object]]) -> dict[str, object]:

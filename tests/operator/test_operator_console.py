@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 
 def test_operator_console_cli_decodes_unicode_escaped_voice_words() -> None:
     from apps.operator_console.__main__ import _decode_cli_text
@@ -220,6 +222,46 @@ def test_operator_console_backfills_live_ear_card_from_recent_audio_trace() -> N
     assert report["audio_diagnostics"]["capture_elapsed_ms"] == 21.5
     assert report["audio_diagnostics"]["asr_elapsed_ms"] == 5333.3
     assert report["audio_diagnostics"]["asr_decode_elapsed_ms"] == 320.4
+
+
+def test_operator_console_exposes_voice_provider_and_audio_frontend_readiness(monkeypatch) -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    fake_key = "tok"
+    monkeypatch.setenv("MINIMAX_API_KEY", fake_key)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": False},
+                "loopback": {"enabled": True, "available": True},
+                "lastCapture": {
+                    "loopbackReference": {
+                        "ready": False,
+                        "state": "aec_unavailable",
+                        "reason": "aec_unavailable",
+                    }
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    audio = report["audio_diagnostics"]
+    provider_smoke = audio["voice_provider_smoke"]
+    assert audio["audio_frontend"]["lastCapture"]["loopbackReference"]["state"] == "aec_unavailable"
+    assert provider_smoke["providers"][0]["provider"] == "minimax-tts"
+    assert provider_smoke["providers"][0]["configured"] is True
+    assert provider_smoke["providers"][1]["provider"] == "dashscope-asr"
+    assert provider_smoke["providers"][1]["missing_fields"] == ["api_key"]
+    assert fake_key not in json.dumps(provider_smoke)
 
 
 def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:
