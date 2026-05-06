@@ -181,6 +181,27 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
     assert config.memory.openclaw.agent_id == "honxin"
     assert config.memory.openclaw.workspace_id == "honjia"
 
+
+def test_honjia_config_normalizes_field_wake_word_confusions(monkeypatch) -> None:
+    from pathlib import Path
+
+    from eibrain.infra.config import load_config
+
+    monkeypatch.setenv("EIMEMORY_ENDPOINT", "http://honxin:8091/")
+    config_path = Path(__file__).resolve().parents[2] / "config" / "eibrain.honjia.yaml"
+
+    config = load_config(config_path)
+    replacements = (
+        config.body.organs["ear"]
+        .subfunctions["asr"]
+        .driver.extra["transcript_replacements"]
+    )
+
+    for phrase in ("你好洪福", "你好胡服", "你好红烛", "你好红姑", "你好黄图", "你好黄渤"):
+        assert replacements[phrase] == "你好鸿途"
+    assert "黄渤" not in replacements
+
+
 def test_primary_config_uses_reachable_eimemory_endpoint(monkeypatch) -> None:
     from pathlib import Path
 
