@@ -11,7 +11,7 @@ Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/home/darrow/dev-project/eibrain/.env
 ExecStartPre=-/usr/bin/systemctl --user stop brain-runtime.service
 ExecStartPre=-/usr/bin/amixer -c U4K sset Mic 24
-ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --visual-tracking-source state --security-vision-always-on --wake-word \u9e3f\u9014 --sleep-word \u7ed3\u675f\u5bf9\u8bdd
+ExecStart=/home/darrow/dev-project/eibrain/.venv/bin/python -m apps.operator_console --config /home/darrow/dev-project/eibrain/config/eibrain.honjia.yaml --visual-tracking-source state --security-vision-always-on
 Restart=always
 RestartSec=3
 StandardOutput=append:/home/darrow/dev-project/eibrain/.tmp-test-artifacts/eibrain-monitor.service.log
