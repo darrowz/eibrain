@@ -100,7 +100,6 @@ class VisualTrackingLoop:
                         continue
                 if hasattr(self.body_runtime, "_update_visual_tracking_state"):
                     self.body_runtime._update_visual_tracking_state(
-                        status="tracking",
                         source=self.source,
                         running=True,
                     )

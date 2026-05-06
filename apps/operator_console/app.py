@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 import time
 from typing import Any
 
@@ -10,6 +12,8 @@ from eibrain.voice.readiness import build_voice_chain_readiness
 
 class OperatorConsoleApp:
     """Operator console for status summaries."""
+
+    PAN_MOTION_PROOF_PATH = Path("/tmp/eibrain-pan-proof/summary.json")
 
     IMPORTANT_CAPABILITIES = (
         "can_hear_voice",
@@ -545,6 +549,18 @@ class OperatorConsoleApp:
             tracking_target = dict(tracking_target)
         else:
             tracking_target = None
+        tracking_decision = visual_tracking.get("tracking_decision", {})
+        if not isinstance(tracking_decision, dict):
+            tracking_decision = {}
+        tracking_target_center_x = visual_tracking.get("tracking_target_center_x")
+        if tracking_target_center_x is None and isinstance(tracking_target, dict):
+            tracking_target_center_x = tracking_target.get("target_x")
+        tracking_target_error_x = visual_tracking.get("tracking_target_error_x")
+        if tracking_target_error_x is None:
+            tracking_target_error_x = self._target_error_x(tracking_target_center_x)
+        tracking_suppressed_reason = str(
+            visual_tracking.get("tracking_suppressed_reason") or tracking_decision.get("reason") or ""
+        )
         recognized_identity: dict[str, object] = {}
         identity_summary = identity_details.get("identity_summary", "waiting for identity data")
         if registered_identity.get("registered"):
@@ -619,6 +635,10 @@ class OperatorConsoleApp:
             "tracking_age_s": self._age_seconds(visual_tracking.get("updated_at_ts")),
             "tracking_running": bool(visual_tracking.get("running", False)),
             "tracking_target": tracking_target,
+            "tracking_target_center_x": tracking_target_center_x,
+            "tracking_target_error_x": tracking_target_error_x,
+            "tracking_decision": tracking_decision,
+            "tracking_suppressed_reason": tracking_suppressed_reason,
             "tracking_miss_count": int(visual_tracking.get("miss_count", 0) or 0),
             "tracking_last_outcome_status": visual_tracking.get("last_outcome_status"),
             "tracking_last_error": str(visual_tracking.get("last_error", "") or ""),
@@ -1149,8 +1169,8 @@ class OperatorConsoleApp:
         normalized["summary"] = value.get("summary", normalized.get("summary", ""))
         return normalized
 
-    @staticmethod
-    def _build_neck_control_diagnostics(*, body_snapshot: dict[str, object]) -> dict[str, object]:
+    @classmethod
+    def _build_neck_control_diagnostics(cls, *, body_snapshot: dict[str, object]) -> dict[str, object]:
         neck_control = body_snapshot.get("neck_control", {})
         if not isinstance(neck_control, dict):
             neck_control = {}
@@ -1200,7 +1220,36 @@ class OperatorConsoleApp:
             "last_command_status": last_command_status,
             "last_command_status_label": str(last_command_status.get("status", "")),
             "intent_count": int(neck_control.get("intent_count", 0)),
+            "pan_motion_proof": cls._load_pan_motion_proof(),
         }
+
+    @classmethod
+    def _load_pan_motion_proof(cls) -> dict[str, object]:
+        path = Path(cls.PAN_MOTION_PROOF_PATH)
+        if not path.exists():
+            return {"status": "missing", "verified": False, "path": str(path)}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            return {"status": "error", "verified": False, "path": str(path), "error": str(exc)}
+        if not isinstance(payload, dict):
+            return {"status": "invalid", "verified": False, "path": str(path)}
+        proof = dict(payload)
+        proof.setdefault("status", "available")
+        proof.setdefault("verified", bool(proof.get("status") == "verified"))
+        proof["path"] = str(path)
+        try:
+            proof["age_s"] = round(time.time() - path.stat().st_mtime, 2)
+        except OSError:
+            pass
+        return proof
+
+    @staticmethod
+    def _target_error_x(value: object) -> float | None:
+        try:
+            return round(float(value) - 0.5, 4)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _derive_stage_latency_ms(last_latency_s: dict[str, object]) -> dict[str, float]:

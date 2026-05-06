@@ -655,10 +655,13 @@ class MonitoringWebServer:
       const recognizedIdentity = visual.recognized_identity || {{}};
       const topDetection = visual.top_detection || {{}};
       const topBbox = visual.top_detection_bbox || topDetection.bbox || {{}};
+      const trackingDecision = visual.tracking_decision || {{}};
       const topLabel = topDetection.label ? `${{topDetection.label}} ${{Number(topDetection.score || 0).toFixed(2)}}` : 'none';
       const bboxSummary = topBbox.x_min !== undefined
         ? `x:${{Number(topBbox.x_min || 0).toFixed(2)}}-${{Number(topBbox.x_max || 0).toFixed(2)}} y:${{Number(topBbox.y_min || 0).toFixed(2)}}-${{Number(topBbox.y_max || 0).toFixed(2)}}`
         : 'none';
+      const trackingError = typeof visual.tracking_target_error_x === 'number' ? visual.tracking_target_error_x.toFixed(2) : '—';
+      const trackingAngle = typeof trackingDecision.target_angle === 'number' ? `${{trackingDecision.target_angle}} deg` : '—';
       const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
       document.getElementById('identity-action-status').textContent = registeredIdentity.registered
         ? `Registered: ${{identityName || 'known person'}}`
@@ -672,6 +675,8 @@ class MonitoringWebServer:
         ['State age', fmtSeconds(visual.state_age_s)],
         ['Detection', visual.detection_status || visual.detection_health || 'unknown'],
         ['Tracking', `${{visual.tracking_status || 'idle'}} / ${{visual.tracking_source || 'inactive'}}`],
+        ['Track error', trackingError],
+        ['Track angle', trackingAngle],
         ['Identity', identityName || (visual.identity_status || 'unknown')],
         ['Targets', String(visual.detection_count ?? 0)],
         ['Top', topLabel],
@@ -718,12 +723,19 @@ class MonitoringWebServer:
         const targetLabel = target.identity || target.label || 'none';
         const targetScore = typeof target.score === 'number' ? target.score.toFixed(2) : '—';
         const targetX = typeof target.target_x === 'number' ? target.target_x.toFixed(2) : '—';
+        const decisionText = trackingDecision.action
+          ? `${{trackingDecision.action}} / ${{trackingDecision.reason || '-'}}`
+          : 'decision pending';
         const missCount = visual.tracking_miss_count ?? 0;
         const trackingDetails = [
           `target ${{targetLabel}}`,
           `score ${{targetScore}}`,
           `x ${{targetX}}`,
+          `err ${{trackingError}}`,
+          `decision ${{decisionText}}`,
           `misses ${{missCount}}`,
+          trackingDecision.deadband !== undefined ? `deadband ${{Number(trackingDecision.deadband).toFixed(2)}}` : '',
+          trackingDecision.min_command_interval_s !== undefined ? `min interval ${{Number(trackingDecision.min_command_interval_s).toFixed(2)}}s` : '',
           bbox.x_min !== undefined ? `bbox x:${{Number(bbox.x_min || 0).toFixed(2)}}-${{Number(bbox.x_max || 0).toFixed(2)}}` : '',
           visual.tracking_last_outcome_status ? `neck ${{visual.tracking_last_outcome_status}}` : '',
           visual.tracking_age_s !== undefined && visual.tracking_age_s !== null ? `updated ${{fmtSeconds(visual.tracking_age_s)}} ago` : '',
@@ -889,10 +901,15 @@ class MonitoringWebServer:
     function renderNeckControl(report) {{
       const neck = report.neck_control_diagnostics || {{}};
       const commandStatus = neck.last_command_status || {{}};
+      const panProof = neck.pan_motion_proof || {{}};
       const commandLabel = neck.last_command_status_label || commandStatus.status || (typeof commandStatus === 'string' ? commandStatus : 'waiting');
       const desiredAngle = typeof neck.desired_angle === 'number' ? `${{neck.desired_angle.toFixed(2)}} deg` : (neck.desired_angle ?? 'n/a');
       const lastAngle = typeof neck.last_angle === 'number' ? `${{neck.last_angle.toFixed(2)}} deg` : (neck.last_angle ?? 'n/a');
       const source = neck.active_source || '-';
+      const proofStatus = panProof.status || 'missing';
+      const proofShift = panProof.verified
+        ? `left ${{Number(panProof.left_dx_px || 0).toFixed(1)}}px | right ${{Number(panProof.right_dx_px || 0).toFixed(1)}}px | return ${{Number(panProof.center_return_dx_px || 0).toFixed(2)}}px`
+        : (panProof.error || panProof.path || 'run pan motion proof to verify image movement');
       document.getElementById('neck-control-summary').innerHTML = [
         ['State', neck.state || 'unavailable'],
         ['Intent', neck.active_intent || '-'],
@@ -900,12 +917,14 @@ class MonitoringWebServer:
         ['Intent count', String(neck.intent_count ?? 0)],
         ['Desired angle', desiredAngle],
         ['Last angle', lastAngle],
+        ['Pan proof', proofStatus],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
       const items = [
         `<div class="subfunction-item"><div class="sub-top"><strong>Fusion state</strong><span class="health-tag ${{healthClass(neck.enabled ? (neck.state || 'healthy') : 'waiting_for_data')}}">${{neck.state || 'unavailable'}}</span></div><div class="metric-label">active_intent=${{neck.active_intent || '-'}} | source=${{source}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Angles</strong><span class="health-tag ${{neck.last_angle !== undefined && neck.last_angle !== null ? 'healthy' : 'waiting'}}">${{lastAngle}}</span></div><div class="metric-label">desired_angle=${{desiredAngle}} | last_angle=${{lastAngle}}</div></div>`,
         `<div class="subfunction-item"><div class="sub-top"><strong>Command</strong><span class="health-tag ${{healthClass(commandLabel || 'waiting_for_data')}}">${{commandLabel}}</span></div><div class="metric-label">suppressed_reason=${{neck.suppressed_reason || '-'}}</div></div>`,
+        `<div class="subfunction-item"><div class="sub-top"><strong>Pan motion proof</strong><span class="health-tag ${{panProof.verified ? 'healthy' : 'waiting'}}">${{proofStatus}}</span></div><div class="metric-label">${{proofShift}}</div></div>`,
       ];
       document.getElementById('neck-control-events').innerHTML = items.join('');
     }}

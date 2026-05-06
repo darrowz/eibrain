@@ -5,7 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import sys
+import time
+from urllib import request
 
 from eibrain.body.raspbot_driver import RaspbotDriver
 from eibrain.body.runtime_linux import capture_frame
@@ -18,6 +21,9 @@ from eibrain.body.runtime_linux import run_hailo_frame_inference
 from eibrain.body.runtime_linux import run_hailo_detection
 from eibrain.body.runtime_linux import probe_sherpa_model_dir
 from eibrain.body.runtime_linux import speak_text
+from eibrain.body.pan_motion_proof import compare_frame_paths
+from eibrain.body.pan_motion_proof import summarize_pan_motion_pairs
+from eibrain.body.pan_motion_proof import write_pan_motion_summary
 
 
 def main() -> None:
@@ -66,6 +72,17 @@ def main() -> None:
     gimbal = subparsers.add_parser("move-gimbal")
     gimbal.add_argument("--servo-id", type=int, default=1)
     gimbal.add_argument("--home-angle", type=int, default=90)
+
+    pan_motion = subparsers.add_parser("verify-pan-motion")
+    pan_motion.add_argument("--servo-id", type=int, default=1)
+    pan_motion.add_argument("--center-angle", type=int, default=90)
+    pan_motion.add_argument("--left-angle", type=int, default=75)
+    pan_motion.add_argument("--right-angle", type=int, default=105)
+    pan_motion.add_argument("--settle-s", type=float, default=1.2)
+    pan_motion.add_argument("--frame-url", default="http://127.0.0.1:18080/vision/latest.jpg")
+    pan_motion.add_argument("--output-dir", default="/tmp/eibrain-pan-proof")
+    pan_motion.add_argument("--min-shift-px", type=float, default=20.0)
+    pan_motion.add_argument("--max-return-shift-px", type=float, default=5.0)
 
     capture = subparsers.add_parser("capture-frame")
     capture.add_argument("--device", required=True)
@@ -142,6 +159,8 @@ def main() -> None:
             )
         except Exception as exc:  # pragma: no cover - only on honjia
             result = {"status": "error", "details": {"error": str(exc), "driver": "raspbot"}}
+    elif args.command == "verify-pan-motion":
+        result = _verify_pan_motion(args)
     elif args.command == "capture-frame":
         result = capture_frame(device=args.device, output_path=args.output_path)
     elif args.command == "compare-frames":
@@ -160,6 +179,70 @@ def main() -> None:
     else:  # pragma: no cover - argparse enforces
         raise SystemExit(2)
     print(json.dumps(result, ensure_ascii=False))
+
+
+def _verify_pan_motion(args: argparse.Namespace) -> dict[str, object]:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    driver = RaspbotDriver(bus=1, addr=0x2B, servo_id=args.servo_id, enabled=True, mock=False)
+    samples = [
+        ("center_a", int(args.center_angle)),
+        ("left", int(args.left_angle)),
+        ("right", int(args.right_angle)),
+        ("center_b", int(args.center_angle)),
+    ]
+    command_results: dict[str, object] = {}
+    for name, angle in samples:
+        command_results[name] = move_gimbal(
+            target_name=f"pan_motion_proof_{name}",
+            servo_id=args.servo_id,
+            home_angle=args.center_angle,
+            target_angle=angle,
+            pan_min=0,
+            pan_max=180,
+            driver=driver,
+        )
+        (output_dir / f"{name}.cmd.json").write_text(
+            json.dumps(command_results[name], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        time.sleep(max(0.0, float(args.settle_s)))
+        frame_bytes = request.urlopen(args.frame_url, timeout=5).read()
+        (output_dir / f"{name}.jpg").write_bytes(frame_bytes)
+
+    try:
+        pair_metrics = {
+            "center_to_left": compare_frame_paths(output_dir / "center_a.jpg", output_dir / "left.jpg"),
+            "center_to_right": compare_frame_paths(output_dir / "center_a.jpg", output_dir / "right.jpg"),
+            "center_return": compare_frame_paths(output_dir / "center_a.jpg", output_dir / "center_b.jpg"),
+            "left_to_right": compare_frame_paths(output_dir / "left.jpg", output_dir / "right.jpg"),
+        }
+        summary = summarize_pan_motion_pairs(
+            pair_metrics,
+            min_shift_px=float(args.min_shift_px),
+            max_return_shift_px=float(args.max_return_shift_px),
+        )
+    except Exception as exc:  # pragma: no cover - host dependency
+        summary = {
+            "status": "error",
+            "verified": False,
+            "error": str(exc),
+            "pairs": {},
+        }
+    summary.update(
+        {
+            "servo_id": int(args.servo_id),
+            "center_angle": int(args.center_angle),
+            "left_angle": int(args.left_angle),
+            "right_angle": int(args.right_angle),
+            "frame_url": str(args.frame_url),
+            "output_dir": str(output_dir),
+            "command_results": command_results,
+            "generated_at_ts": time.time(),
+        }
+    )
+    write_pan_motion_summary(output_dir / "summary.json", summary)
+    return {"status": "ok" if summary.get("verified") else "degraded", "details": summary}
 
 
 if __name__ == "__main__":

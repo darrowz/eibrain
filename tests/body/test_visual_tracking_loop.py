@@ -121,3 +121,40 @@ def test_visual_tracking_loop_pauses_runtime_once_while_sleeping(tmp_path) -> No
 
     assert runtime.calls == 0
     assert runtime.pauses == ["engagement_inactive"]
+
+
+def test_visual_tracking_loop_preserves_runtime_tracking_status() -> None:
+    from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.state: dict[str, object] = {}
+
+        def track_visual_target_once(self, *, session_id: str, actor_id: str, source: str):
+            self.calls += 1
+            self._update_visual_tracking_state(
+                running=True,
+                source=source,
+                status="waiting_for_target",
+                tracking_decision={"action": "hold", "reason": "target_missing"},
+            )
+            return None
+
+        def _update_visual_tracking_state(self, **updates: object) -> None:
+            self.state.update(updates)
+
+    runtime = _Runtime()
+    loop = VisualTrackingLoop(body_runtime=runtime, interval_s=0.05, source="state")
+    loop.start()
+    try:
+        deadline = time.time() + 1.0
+        while runtime.calls < 1 and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        loop.stop()
+
+    assert runtime.state["running"] is True
+    assert runtime.state["source"] == "state"
+    assert runtime.state["status"] == "waiting_for_target"
+    assert runtime.state["tracking_decision"]["reason"] == "target_missing"

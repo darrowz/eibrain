@@ -316,6 +316,28 @@ def test_raspbot_driver_falls_back_to_legacy_smbus(monkeypatch) -> None:
     assert closed == [True]
 
 
+def test_pan_motion_proof_summary_requires_opposite_horizontal_shifts() -> None:
+    from eibrain.body.pan_motion_proof import summarize_pan_motion_pairs
+
+    summary = summarize_pan_motion_pairs(
+        {
+            "center_to_left": {"phase_dx_px_320": -76.2, "corr": 0.19},
+            "center_to_right": {"phase_dx_px_320": 75.8, "corr": 0.23},
+            "center_return": {"phase_dx_px_320": 0.13, "corr": 0.996},
+            "left_to_right": {"phase_dx_px_320": 155.4, "corr": -0.01},
+        },
+        min_shift_px=20.0,
+        max_return_shift_px=5.0,
+    )
+
+    assert summary["status"] == "verified"
+    assert summary["verified"] is True
+    assert summary["left_dx_px"] == -76.2
+    assert summary["right_dx_px"] == 75.8
+    assert summary["center_return_dx_px"] == 0.13
+    assert summary["motion_score"] == 1.0
+
+
 def test_run_hailo_detection_reports_uvc_camera_gap() -> None:
     from eibrain.body.runtime_linux import run_hailo_detection
 

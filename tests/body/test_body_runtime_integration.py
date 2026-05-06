@@ -415,6 +415,54 @@ def test_body_runtime_holds_neck_command_when_target_shift_is_small() -> None:
     assert runtime.snapshot()["visual_tracking"]["target"]["label"] == "face"
 
 
+def test_body_runtime_records_visual_tracking_fusion_diagnostics_on_hold() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    runtime = BodyRuntimeApp()
+
+    class _Eye:
+        name = "eye"
+
+        def supports_action(self, action) -> bool:
+            return False
+
+        def heartbeat(self):
+            detection = {
+                "label": "face",
+                "score": 0.92,
+                "bbox": {"x_min": 0.49, "x_max": 0.55, "y_min": 0.2, "y_max": 0.6},
+            }
+            return OrganHealth(
+                organ="eye",
+                health="healthy",
+                subfunctions={
+                    "detection": SubfunctionHealth(
+                        name="detection",
+                        health="healthy",
+                        details={
+                            "frame_captured_at_ts": 30.0,
+                            "top_detection": detection,
+                            "detections": [detection],
+                        },
+                    )
+                },
+            )
+
+    runtime.organs = [_Eye()]
+
+    outcome = runtime.track_visual_target_once(session_id="track-hold", actor_id="vision-hold")
+    tracking = runtime.snapshot()["visual_tracking"]
+
+    assert outcome is None
+    assert tracking["status"] == "holding_target"
+    assert tracking["tracking_target_center_x"] == 0.52
+    assert tracking["tracking_target_error_x"] == 0.02
+    assert tracking["tracking_decision"]["action"] == "hold"
+    assert tracking["tracking_decision"]["reason"] == "inside_deadband"
+    assert tracking["tracking_decision"]["deadband"] == 0.08
+
+
 def test_body_runtime_ignores_non_preferred_visual_tracking_labels() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
     from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth

@@ -706,6 +706,99 @@ def test_operator_console_reads_nested_neck_control_from_body_state() -> None:
     assert neck["last_command_status_label"] == "ok"
 
 
+def test_operator_console_exposes_visual_tracking_decision_diagnostics() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True, "can_identify_person": True},
+            "visual_tracking": {
+                "running": True,
+                "source": "state",
+                "status": "holding_target",
+                "target": {
+                    "label": "face",
+                    "score": 0.91,
+                    "target_x": 0.62,
+                    "raw_target_x": 0.64,
+                    "bbox": {"x_min": 0.54, "x_max": 0.70},
+                },
+                "tracking_target_center_x": 0.62,
+                "tracking_target_error_x": 0.12,
+                "tracking_decision": {
+                    "action": "hold",
+                    "reason": "rate_limited",
+                    "target_angle": 94,
+                    "current_angle": 90,
+                    "deadband": 0.08,
+                    "min_command_interval_s": 0.9,
+                },
+            },
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {"health": "healthy", "details": {"frame_path": "/tmp/latest.jpg"}},
+                        "detection": {"health": "healthy", "details": {"detections": [], "status": "live"}},
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    visual = report["visual_diagnostics"]
+    assert visual["tracking_status"] == "holding_target"
+    assert visual["tracking_target_center_x"] == 0.62
+    assert visual["tracking_target_error_x"] == 0.12
+    assert visual["tracking_decision"]["reason"] == "rate_limited"
+    assert visual["tracking_suppressed_reason"] == "rate_limited"
+
+
+def test_operator_console_exposes_pan_motion_proof_file(tmp_path, monkeypatch) -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    proof_path = tmp_path / "summary.json"
+    proof_path.write_text(
+        """{
+          "status": "verified",
+          "verified": true,
+          "center_return_dx_px": 0.13,
+          "left_dx_px": -76.2,
+          "right_dx_px": 75.8,
+          "motion_score": 1.0
+        }""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(OperatorConsoleApp, "PAN_MOTION_PROOF_PATH", proof_path)
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_orient_head": True},
+            "neck_control": {
+                "state": "tracking",
+                "last_angle": 90,
+                "desired_angle": 90,
+                "last_command_status": {"status": "ok"},
+            },
+            "organs": {},
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    proof = report["neck_control_diagnostics"]["pan_motion_proof"]
+    assert proof["status"] == "verified"
+    assert proof["verified"] is True
+    assert proof["left_dx_px"] == -76.2
+    assert proof["right_dx_px"] == 75.8
+
+
 def test_operator_console_exposes_audio_diagnostics() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 

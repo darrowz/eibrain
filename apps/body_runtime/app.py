@@ -46,6 +46,7 @@ class BodyRuntimeApp:
         self.ear_processor: EarStreamProcessor | None = None
         self._neck_fusion = NeckFusionPolicy(NeckFusionConfig(consecutive_bias_required=1))
         self._neck_fusion_last_action: dict[str, object] | None = None
+        self._last_visual_tracking_decision: dict[str, object] = {}
         self._visual_tracking_misses = 0
         self._visual_tracking_recentered_this_episode = False
         self._speech_busy_until = 0.0
@@ -79,6 +80,10 @@ class BodyRuntimeApp:
             "last_outcome_status": None,
             "last_error": "",
             "miss_count": 0,
+            "tracking_decision": {},
+            "tracking_target_center_x": None,
+            "tracking_target_error_x": None,
+            "tracking_suppressed_reason": "",
         }
         self._identity_registry_path = Path(".tmp-test-artifacts/identity_registry.json")
         self.identity_registry: dict[str, object] = self._load_identity_registry()
@@ -699,6 +704,24 @@ class BodyRuntimeApp:
             now_ts=time.time() if now_ts is None else float(now_ts),
         )
         self._neck_fusion_last_action = dict(recommendation.last_action)
+        target_error_x = None if target_x is None else round(float(target_x) - 0.5, 4)
+        self._last_visual_tracking_decision = {
+            "action": recommendation.action,
+            "reason": recommendation.reason,
+            "target_angle": recommendation.target_angle,
+            "current_angle": current_angle,
+            "target_x": None if target_x is None else round(float(target_x), 4),
+            "target_error_x": target_error_x,
+            "score": round(float(score), 4),
+            "deadband": self._neck_fusion.config.deadband,
+            "hysteresis": self._neck_fusion.config.hysteresis,
+            "min_command_interval_s": self._neck_fusion.config.min_command_interval_s,
+            "cooldown_s": self._neck_fusion.config.cooldown_s,
+            "max_step_degrees": self._neck_fusion.config.max_step_degrees,
+            "bias_direction": recommendation.last_action.get("bias_direction"),
+            "bias_count": recommendation.last_action.get("bias_count"),
+            "acted_at_ts": recommendation.last_action.get("acted_at_ts"),
+        }
         if recommendation.action == "hold":
             return None
         return MoveHeadAction(
@@ -736,6 +759,15 @@ class BodyRuntimeApp:
                 target=None,
                 miss_count=self._visual_tracking_misses,
                 last_outcome_status=None,
+                tracking_decision={
+                    "action": "hold",
+                    "reason": "target_missing",
+                    "target_angle": self._neck_home_angle(),
+                    "current_angle": self._neck_home_angle(),
+                },
+                tracking_target_center_x=None,
+                tracking_target_error_x=None,
+                tracking_suppressed_reason="target_missing",
             )
             if self._visual_tracking_recentered_this_episode:
                 return None
@@ -757,6 +789,15 @@ class BodyRuntimeApp:
                 target={"label": "recenter", "target_angle": self._neck_home_angle()},
                 miss_count=self._visual_tracking_misses,
                 last_outcome_status=getattr(outcome, "status", None),
+                tracking_decision={
+                    "action": "recenter",
+                    "reason": "recenter_after_miss",
+                    "target_angle": self._neck_home_angle(),
+                    "current_angle": self._neck_home_angle(),
+                },
+                tracking_target_center_x=None,
+                tracking_target_error_x=None,
+                tracking_suppressed_reason="",
             )
             self._refresh_interaction_mode(force_reason="recenter_after_miss")
             return outcome
@@ -769,6 +810,13 @@ class BodyRuntimeApp:
                 target=target,
                 miss_count=0,
                 last_outcome_status=None,
+                tracking_decision={
+                    "action": "hold",
+                    "reason": "target_preparation_suppressed",
+                },
+                tracking_target_center_x=target.get("target_x"),
+                tracking_target_error_x=self._target_error_x(target.get("target_x")),
+                tracking_suppressed_reason="target_preparation_suppressed",
             )
             return None
         action = self.plan_visual_tracking_action(
@@ -784,6 +832,10 @@ class BodyRuntimeApp:
                 target=tracking_target,
                 miss_count=0,
                 last_outcome_status=None,
+                tracking_decision=dict(self._last_visual_tracking_decision),
+                tracking_target_center_x=tracking_target.get("target_x"),
+                tracking_target_error_x=self._target_error_x(tracking_target.get("target_x")),
+                tracking_suppressed_reason=str(self._last_visual_tracking_decision.get("reason", "")),
             )
             return None
         outcomes = self.dispatch_actions([action])
@@ -794,6 +846,10 @@ class BodyRuntimeApp:
             target=tracking_target,
             miss_count=0,
             last_outcome_status=getattr(outcome, "status", None),
+            tracking_decision=dict(self._last_visual_tracking_decision),
+            tracking_target_center_x=tracking_target.get("target_x"),
+            tracking_target_error_x=self._target_error_x(tracking_target.get("target_x")),
+            tracking_suppressed_reason="",
         )
         return outcome
 
@@ -810,6 +866,10 @@ class BodyRuntimeApp:
             top_detection=None,
             last_outcome_status=None,
             last_error="",
+            tracking_decision={},
+            tracking_target_center_x=None,
+            tracking_target_error_x=None,
+            tracking_suppressed_reason=reason,
         )
         self.interaction_state.update(
             {
@@ -1238,8 +1298,17 @@ class BodyRuntimeApp:
             "score": score,
             "target_x": smoothed_target_x,
             "raw_target_x": round(raw_target_x, 4),
+            "tracking_target_center_x": smoothed_target_x,
+            "tracking_target_error_x": self._target_error_x(smoothed_target_x),
             "tracking_stable_count": stable_count,
         }
+
+    @staticmethod
+    def _target_error_x(value: object) -> float | None:
+        try:
+            return round(float(value) - 0.5, 4)
+        except (TypeError, ValueError):
+            return None
 
     def _note_voice_activity(self) -> None:
         now_ts = time.time()
