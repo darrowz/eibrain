@@ -659,7 +659,7 @@ class CognitiveRuntimeApp:
 
         persona_constraints = meta.get("persona_constraints")
         if not isinstance(persona_constraints, Mapping):
-            persona_code = str(meta.get("persona_code") or "gentle_companion")
+            persona_code = str(meta.get("persona_code") or "hongtu_core")
             persona_constraints = PersonaRuntime.from_persona_code(persona_code).stable_style_constraints()
         return {
             "existing_memories": existing_memories,

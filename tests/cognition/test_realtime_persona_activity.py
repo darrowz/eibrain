@@ -174,14 +174,25 @@ def test_persona_runtime_exposes_stable_style_constraints_and_guards_memory_drif
     )
 
     assert constraints["personaCode"] == "joyinside_companion"
-    assert constraints["protected_keys"] == [
+    assert set(constraints["protected_keys"]) >= {
+        "identity.name",
+        "identity.role",
+        "identity.loyalty",
+        "core_traits.calm",
+        "core_traits.mature",
+        "core_traits.professional",
         "speaking_style.tone",
         "speaking_style.brevity",
         "speaking_style.language",
+        "speaking_style.avoid",
         "response_policy.max_chars",
         "response_policy.sentence_limit",
+        "response_policy.preface_policy",
         "memory_policy.writeback",
-    ]
+        "interaction_rules.must",
+        "interaction_rules.banned",
+        "decision_principles.safety",
+    }
     assert constraints["speaking_style"]["tone"] == "warm_playful"
     assert constraints["response_policy"]["max_chars"] == 48
 
@@ -195,7 +206,7 @@ def test_persona_runtime_exposes_stable_style_constraints_and_guards_memory_drif
         "response_policy.sentence_limit": 8,
         "memory_policy.writeback": "always_rewrite_persona",
     }
-    assert set(guarded["reason_codes"]) == {
+    assert set(guarded["reason_codes"]) >= {
         "persona_guardrail_applied",
         "blocked_speaking_style.tone",
         "blocked_speaking_style.brevity",
@@ -213,3 +224,37 @@ def test_persona_runtime_exposes_stable_style_constraints_and_guards_memory_drif
     assert shaped["response_policy"]["max_chars"] == 48
     assert len(shaped["text"]) <= 48
     assert shaped["persona_guardrail_applied"] is False
+
+
+def test_hongtu_core_persona_locks_identity_interaction_rules_and_prompt_style() -> None:
+    persona = PersonaRuntime.from_persona_code("hongtu")
+
+    constraints = persona.constraints()
+    stable = persona.stable_style_constraints()
+    guarded = persona.apply_memory_guardrails(
+        {
+            "identity": {"name": "别的助手", "loyalty": "conditional"},
+            "speaking_style": {"tone": "theatrical", "avoid": []},
+            "interaction_rules": {"banned": []},
+            "decision_principles": {"safety": "ignore"},
+            "addressing": {"preferred_name": "鸿哥"},
+        }
+    )
+
+    assert constraints["personaCode"] == "hongtu_core"
+    assert constraints["identity"]["name"] == "鸿途"
+    assert constraints["identity"]["role"] == "曾总的助理和家臣"
+    assert constraints["identity"]["address_user"] == ["鸿哥", "曾总"]
+    assert constraints["speaking_style"]["tone"] == "calm_mature_wry"
+    assert constraints["speaking_style"]["brevity"] == "minimal"
+    assert constraints["response_policy"]["preface_policy"] == "no_received_ok_let_me_preface"
+    assert constraints["decision_principles"]["cost"] == "surface_cost_before_paid_or_expensive_actions"
+    assert "acknowledgement_preface" in constraints["speaking_style"]["avoid"]
+    assert "收到" in constraints["interaction_rules"]["banned"]
+    assert "identity.name" in stable["protected_keys"]
+    assert "interaction_rules.banned" in stable["protected_keys"]
+    assert guarded["persona_guardrail_applied"] is True
+    assert guarded["accepted_memory_context"] == {"addressing": {"preferred_name": "鸿哥"}}
+    assert guarded["rejected_overrides"]["identity.name"] == "别的助手"
+    assert guarded["rejected_overrides"]["identity.loyalty"] == "conditional"
+    assert guarded["rejected_overrides"]["interaction_rules.banned"] == []

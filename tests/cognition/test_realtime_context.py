@@ -68,17 +68,22 @@ def test_context_blackboard_appends_lanes_and_snapshots_without_aliasing() -> No
     assert json.loads(json.dumps(snapshot, ensure_ascii=False))["cancellation_token"] == "tok-1"
 
 
-def test_persona_runtime_defaults_to_gentle_companion_constraints() -> None:
+def test_persona_runtime_defaults_to_hongtu_core_constraints() -> None:
     persona = PersonaRuntime()
     constraints = persona.constraints()
 
-    assert persona.persona_id == "gentle_companion"
-    assert constraints["speaking_style"]["tone"] == "gentle"
-    assert constraints["voice_code"] == "gentle_companion_zh_cn"
+    assert persona.persona_id == "hongtu_core"
+    assert constraints["identity"]["name"] == "鸿途"
+    assert constraints["identity"]["role"] == "曾总的助理和家臣"
+    assert constraints["identity"]["loyalty"] == "absolute"
+    assert constraints["speaking_style"]["tone"] == "calm_mature_wry"
+    assert constraints["speaking_style"]["brevity"] == "minimal"
+    assert constraints["voice_code"] == "hongtu_calm_zh_cn"
     assert constraints["emotion_policy"]["de_escalate_on_stress"] is True
     assert constraints["action_style"]["interruptibility"] == "high"
     assert constraints["memory_policy"]["writeback"] == "salient_or_user_requested"
-    assert json.loads(json.dumps(persona.to_dict(), ensure_ascii=False))["persona_id"] == "gentle_companion"
+    assert "收到" in constraints["interaction_rules"]["banned"]
+    assert json.loads(json.dumps(persona.to_dict(), ensure_ascii=False))["persona_id"] == "hongtu_core"
 
 
 def test_emotion_context_builder_merges_prosody_environment_and_vision_hints() -> None:
