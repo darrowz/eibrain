@@ -41,24 +41,89 @@ def test_eimemory_rpc_adapter_posts_recall_request(monkeypatch) -> None:
 
     assert captured["url"] == "http://127.0.0.1:8091/"
     assert captured["auth"] == "Bearer secret"
-    assert captured["body"] == {
-        "method": "memory.recall",
-        "params": {
-            "query": "where is the user",
-            "limit": 8,
-            "scope": {
-                "tenant_id": "default",
-                "agent_id": "honxin",
-                "workspace_id": "robot",
-                "user_id": "user-1",
-            },
-            "task_context": {
-                "task_type": "brain.respond",
-                "goal": "retrieve memory for embodied response",
-                "session_id": "session-1",
-            },
-        },
+    assert captured["body"]["method"] == "memory.recall"
+    params = captured["body"]["params"]
+    assert params["query"] == "where is the user"
+    assert params["limit"] == 8
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
     }
+    task_context = params["task_context"]
+    assert task_context["task_type"] == "brain.respond"
+    assert task_context["goal"] == "retrieve memory for embodied response"
+    assert task_context["session_id"] == "session-1"
+    assert task_context["channel_id"] == "voice"
+    assert task_context["subject_context"]["subject_id"] == "hongtu"
+    assert task_context["subject_context"]["canonical_user_id"] == "darrow"
+    assert task_context["subject_context"]["actor_id"] == "user-1"
+    assert "user-1" in task_context["subject_context"]["user_aliases"]
+
+
+def test_eimemory_rpc_adapter_recall_uses_hongtu_subject_context_and_scope(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"items": [], "rules": [], "explanation": {}}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    adapter.retrieve_context(
+        MemoryQuery(
+            query="diagnose prompt bridge",
+            session_id="session-1",
+            actor_id="user-1",
+            task_context={
+                "channel_id": "openclaw.feishu",
+                "source": "openclaw.before_prompt_build",
+            },
+        )
+    )
+
+    params = captured["body"]["params"]
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    subject = params["task_context"]["subject_context"]
+    assert subject["subject_id"] == "hongtu"
+    assert subject["channel_id"] == "openclaw.feishu"
+    assert subject["canonical_user_id"] == "darrow"
+    assert subject["actor_id"] == "user-1"
+    assert subject["session_id"] == "session-1"
+    assert subject["source"] == "openclaw.before_prompt_build"
+    assert subject["memory_layer"] == "trace"
+    assert "user-1" in subject["user_aliases"]
+    assert params["task_context"]["memory_layer"] == "trace"
 
 
 def test_eimemory_rpc_adapter_merges_custom_task_context(monkeypatch) -> None:
@@ -215,25 +280,89 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
 
     assert adapter.last_writeback_status["status"] == "ok"
     assert adapter.last_writeback_status["record_id"] == "mem_1"
-    assert captured["body"] == {
-        "method": "memory.ingest",
-        "params": {
-            "text": "user:hello | reply:hi",
-            "title": "Audio dialogue turn",
-            "memory_type": "conversation",
-            "source": "eibrain.audio_dialogue",
-            "scope": {
-                "tenant_id": "default",
-                "agent_id": "honxin",
-                "workspace_id": "honjia",
-                "user_id": "user-1",
-            },
-            "organ": "ear",
-            "modality": "audio_text",
-            "outcome": {"success": True, "status": "planned", "action_count": 1},
-            "meta": {"session_id": "voice-session"},
-        },
+    assert captured["body"]["method"] == "memory.ingest"
+    params = captured["body"]["params"]
+    assert params["text"] == "user:hello | reply:hi"
+    assert params["title"] == "Audio dialogue turn"
+    assert params["memory_type"] == "conversation"
+    assert params["source"] == "eibrain.audio_dialogue"
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
     }
+    assert params["organ"] == "ear"
+    assert params["modality"] == "audio_text"
+    assert params["outcome"] == {"success": True, "status": "planned", "action_count": 1}
+    assert params["meta"]["session_id"] == "voice-session"
+    assert params["meta"]["source_channel"] == "voice.honjia"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
+
+
+def test_eimemory_rpc_adapter_memory_ingest_meta_uses_hongtu_subject_metadata(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_1"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(
+        OpenClawConfig(
+            provider="eimemory_rpc",
+            endpoint="http://127.0.0.1:8091/",
+            agent_id="honxin",
+            workspace_id="honjia",
+        )
+    )
+    adapter.remember_episode(
+        session_id="voice-session",
+        actor_id="user-1",
+        summary="user:hello | reply:hi",
+        memory_type="conversation",
+        source="eibrain.audio_dialogue",
+        meta={"trace_id": "trace-1"},
+    )
+
+    params = captured["body"]["params"]
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert params["meta"]["trace_id"] == "trace-1"
+    assert params["meta"]["session_id"] == "voice-session"
+    assert params["meta"]["memory_layer"] == "episodic"
+    assert params["meta"]["source_channel"] == "voice.honjia"
+    assert params["meta"]["raw_actor_id"] == "user-1"
+    assert params["meta"]["actor_alias"] == "user-1"
+    subject = params["meta"]["subject_context"]
+    assert subject["subject_id"] == "hongtu"
+    assert subject["channel_id"] == "voice.honjia"
+    assert subject["canonical_user_id"] == "darrow"
+    assert subject["source"] == "eibrain.audio_dialogue"
+    assert subject["memory_layer"] == "episodic"
+    assert "user-1" in subject["user_aliases"]
+    assert adapter.last_writeback_status["subject_context"] == subject
+    assert adapter.last_writeback_status["memory_layer"] == "episodic"
 
 
 def test_eimemory_rpc_adapter_passes_structured_episode_fields(monkeypatch) -> None:
@@ -278,7 +407,11 @@ def test_eimemory_rpc_adapter_passes_structured_episode_fields(monkeypatch) -> N
 
     params = captured["body"]["params"]
     assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
-    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91, "session_id": "vision:user-1"}
+    assert params["meta"]["dedupe_key"] == "vision:person:desk"
+    assert params["meta"]["confidence"] == 0.91
+    assert params["meta"]["session_id"] == "vision:user-1"
+    assert params["meta"]["source_channel"] == "vision"
+    assert params["meta"]["subject_context"]["channel_id"] == "vision"
     assert params["tags"] == ["vision", "world_observation"]
     assert params["evidence"] == [{"type": "frame", "url": "https://example.com/frame.jpg"}]
     assert params["links"] == [{"rel": "actor", "id": "user-1"}]
@@ -453,7 +586,11 @@ def test_eimemory_rpc_adapter_posts_world_observation(monkeypatch) -> None:
     assert params["modality"] == "vision"
     assert params["organ"] == "eye"
     assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
-    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91, "session_id": "vision:user-1"}
+    assert params["meta"]["dedupe_key"] == "vision:person:desk"
+    assert params["meta"]["confidence"] == 0.91
+    assert params["meta"]["session_id"] == "vision:user-1"
+    assert params["meta"]["source_channel"] == "vision"
+    assert params["meta"]["subject_context"]["channel_id"] == "vision"
     assert params["tags"] == ["person", "world_observation", "vision"]
 
 
@@ -565,7 +702,16 @@ def test_eimemory_rpc_adapter_gets_active_policy(monkeypatch) -> None:
 
     assert policy == {"retrieval_policy": {"recall_profile": "precision"}}
     assert captured["body"]["method"] == "evolution.get_active_policy"
-    assert captured["body"]["params"]["task_type"] == "brain.respond"
+    params = captured["body"]["params"]
+    assert params["task_type"] == "brain.respond"
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert params["meta"]["session_id"] == "s1"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
 
 
 def test_eimemory_rpc_adapter_observe_posts_evolution_observe(monkeypatch) -> None:
@@ -596,8 +742,17 @@ def test_eimemory_rpc_adapter_observe_posts_evolution_observe(monkeypatch) -> No
     adapter.observe("cognitive_turn", {"action_count": 1}, session_id="s1", actor_id="user-1")
 
     assert captured["body"]["method"] == "evolution.observe"
-    assert captured["body"]["params"]["signal_type"] == "cognitive_turn"
-    assert captured["body"]["params"]["payload"] == {"action_count": 1}
+    params = captured["body"]["params"]
+    assert params["signal_type"] == "cognitive_turn"
+    assert params["payload"] == {"action_count": 1}
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert params["meta"]["session_id"] == "s1"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
 
 
 def test_eimemory_rpc_adapter_posts_memory_ingest_for_preference(monkeypatch) -> None:
@@ -634,23 +789,23 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_preference(monkeypatch) ->
     )
     adapter.remember_preference(actor_id="user-1", profile={"style": "concise", "tea": "oolong"})
 
-    assert captured["body"] == {
-        "method": "memory.ingest",
-        "params": {
-            "text": "Preference profile for user-1: style=concise, tea=oolong",
-            "title": "Preference profile: user-1",
-            "memory_type": "preference",
-            "source": "eibrain.preference",
-            "scope": {
-                "tenant_id": "default",
-                "agent_id": "honxin",
-                "workspace_id": "honjia",
-                "user_id": "user-1",
-            },
-            "organ": "cognition",
-            "modality": "text",
-        },
+    assert captured["body"]["method"] == "memory.ingest"
+    params = captured["body"]["params"]
+    assert params["text"] == "Preference profile for user-1: style=concise, tea=oolong"
+    assert params["title"] == "Preference profile: user-1"
+    assert params["memory_type"] == "preference"
+    assert params["source"] == "eibrain.preference"
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
     }
+    assert params["organ"] == "cognition"
+    assert params["modality"] == "text"
+    assert params["meta"]["source_channel"] == "voice.honjia"
+    assert params["meta"]["raw_actor_id"] == "user-1"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
 
 
 
@@ -722,28 +877,28 @@ def test_eimemory_rpc_adapter_records_skill_trace(monkeypatch) -> None:
     )
 
     assert result["ok"] is True
-    assert captured["body"] == {
-        "method": "experience.record_skill_trace",
-        "params": {
-            "payload": {
-                "trace_id": "voice-session",
-                "task_type": "brain.respond",
-                "input_summary": "hello",
-                "selected_skills": ["reply.default"],
-                "actions": ["play_speech_action"],
-                "outcome": "planned",
-                "feedback": "unknown",
-                "latency_ms": 12,
-            },
-            "scope": {
-                "tenant_id": "default",
-                "agent_id": "honxin",
-                "workspace_id": "honjia",
-                "user_id": "user-1",
-            },
-            "meta": {"session_id": "voice-session"},
-        },
+    assert captured["body"]["method"] == "experience.record_skill_trace"
+    params = captured["body"]["params"]
+    assert params["payload"] == {
+        "trace_id": "voice-session",
+        "task_type": "brain.respond",
+        "input_summary": "hello",
+        "selected_skills": ["reply.default"],
+        "actions": ["play_speech_action"],
+        "outcome": "planned",
+        "feedback": "unknown",
+        "latency_ms": 12,
     }
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert params["meta"]["session_id"] == "voice-session"
+    assert params["meta"]["memory_layer"] == "trace"
+    assert params["meta"]["source_channel"] == "voice.honjia"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
 
 
 def test_eimemory_rpc_adapter_records_memory_trace(monkeypatch) -> None:
@@ -780,6 +935,7 @@ def test_eimemory_rpc_adapter_records_memory_trace(monkeypatch) -> None:
     )
     result = adapter.record_memory_trace(
         {
+            "schema": "eibrain.memory.visual_trace.v1",
             "trace_id": "trace-vision-12",
             "task_type": "brain.respond",
             "memory_reads": [{"query": "where is user", "selected_count": 2}],
@@ -791,25 +947,27 @@ def test_eimemory_rpc_adapter_records_memory_trace(monkeypatch) -> None:
     )
 
     assert result["ok"] is True
-    assert captured["body"] == {
-        "method": "experience.record_memory_trace",
-        "params": {
-            "payload": {
-                "trace_id": "trace-vision-12",
-                "task_type": "brain.respond",
-                "memory_reads": [{"query": "where is user", "selected_count": 2}],
-                "writebacks": [{"memory_type": "world_observation", "record_id": "mem_world"}],
-                "closure": {"status": "closed", "reason": "writeback_confirmed"},
-            },
-            "scope": {
-                "tenant_id": "default",
-                "agent_id": "honxin",
-                "workspace_id": "honjia",
-                "user_id": "user-1",
-            },
-            "meta": {"session_id": "vision-session"},
-        },
+    assert captured["body"]["method"] == "experience.record_memory_trace"
+    params = captured["body"]["params"]
+    assert params["payload"] == {
+        "schema": "eibrain.memory.visual_trace.v1",
+        "trace_id": "trace-vision-12",
+        "task_type": "brain.respond",
+        "memory_reads": [{"query": "where is user", "selected_count": 2}],
+        "writebacks": [{"memory_type": "world_observation", "record_id": "mem_world"}],
+        "closure": {"status": "closed", "reason": "writeback_confirmed"},
     }
+    assert params["scope"] == {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    assert params["meta"]["session_id"] == "vision-session"
+    assert params["meta"]["memory_layer"] == "trace"
+    assert params["meta"]["source_channel"] == "vision"
+    assert params["meta"]["subject_context"]["canonical_user_id"] == "darrow"
+    assert params["meta"]["subject_context"]["channel_id"] == "vision"
 
 
 def test_eimemory_rpc_adapter_record_memory_trace_degrades_without_endpoint() -> None:

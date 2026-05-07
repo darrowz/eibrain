@@ -956,9 +956,21 @@ class MonitoringWebServer:
       const sourceSummary = Object.entries(bySource).map(([source, count]) => `${{source}}:${{count}}`).join(' · ') || 'No sources selected yet';
       const writeback = memory.last_writeback || {{}};
       const personaGuardrail = memory.persona_guardrail || {{}};
+      const subjectContext = memory.subject_context || {{}};
+      const subjectId = memory.subject_id || subjectContext.subject_id || '—';
+      const channelId = memory.channel_id || subjectContext.channel_id || '—';
+      const canonicalUser = memory.canonical_user_id || subjectContext.canonical_user_id || '—';
+      const aliases = Array.isArray(memory.user_aliases)
+        ? memory.user_aliases
+        : (Array.isArray(subjectContext.user_aliases) ? subjectContext.user_aliases : []);
+      const memoryLayer = memory.memory_layer || subjectContext.memory_layer || '—';
       document.getElementById('memory-summary').innerHTML = [
         ['Task', memory.task_type || '—'],
         ['Profile', memory.recall_profile || '—'],
+        ['Subject', subjectId],
+        ['Channel', channelId],
+        ['User', canonicalUser],
+        ['Layer', memoryLayer],
         ['Selected', String(memory.selected_count ?? selected.length ?? 0)],
         ['Traces', String(memory.memory_trace_count ?? 0)],
         ['Writeback', writeback.status || '—'],
@@ -967,6 +979,7 @@ class MonitoringWebServer:
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
       const items = [];
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Subject context</strong><span class="health-tag ${{subjectId !== '—' ? 'healthy' : 'waiting'}}">${{subjectId}}</span></div><div class="metric-label">channel=${{channelId}} · user=${{canonicalUser}} · layer=${{memoryLayer}} · aliases=${{aliases.join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Recall filters</strong><span class="health-tag ${{memory.recall_profile ? 'healthy' : 'waiting'}}">${{memory.recall_profile || 'waiting'}}</span></div><div class="metric-label">allowed=${{(memory.allowed_sources || []).join(', ') || '—'}} · blocked=${{(memory.blocked_sources || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Modalities / organs</strong><span class="health-tag healthy">policy</span></div><div class="metric-label">types=${{(memory.allowed_memory_types || []).join(', ') || '—'}} · modalities=${{(memory.preferred_modalities || []).join(', ') || '—'}} · organs=${{(memory.organs || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Source composition</strong><span class="health-tag ${{memory.selected_count ? 'healthy' : 'waiting'}}">${{memory.selected_count ?? 0}}</span></div><div class="metric-label">${{sourceSummary}}</div></div>`);

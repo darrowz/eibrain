@@ -414,6 +414,17 @@ def test_operator_console_exposes_memory_ownership_diagnostics() -> None:
                     "recall_profile": "precision",
                     "allowed_sources": ["eibrain.audio_dialogue"],
                     "blocked_sources": ["eimemory.knowledge.claims"],
+                    "subject_context": {
+                        "subject_id": "hongtu",
+                        "channel_id": "feishu",
+                        "canonical_user_id": "darrow",
+                        "user_aliases": ["darrow", "ou_644f810515d8ae7789de6a932d4de854"],
+                        "memory_layer": "episodic",
+                    },
+                    "source_memory_layers": {
+                        "openclaw.agent_end": "episodic",
+                        "openclaw.before_prompt_build": "trace",
+                    },
                 },
                 "last_recall": {"selected_count": 1},
             }
@@ -425,6 +436,12 @@ def test_operator_console_exposes_memory_ownership_diagnostics() -> None:
     assert memory["provider"] == "eimemory_rpc"
     assert memory["memory_owner"] == "eimemory"
     assert memory["last_query"] == "介绍下你自己"
+    assert memory["subject_id"] == "hongtu"
+    assert memory["channel_id"] == "feishu"
+    assert memory["canonical_user_id"] == "darrow"
+    assert "ou_644f810515d8ae7789de6a932d4de854" in memory["user_aliases"]
+    assert memory["memory_layer"] == "episodic"
+    assert memory["source_memory_layers"]["openclaw.agent_end"] == "episodic"
 
 
 def test_operator_console_exposes_realtime_memory_traces_for_monitoring() -> None:
@@ -483,6 +500,40 @@ def test_operator_console_exposes_realtime_memory_traces_for_monitoring() -> Non
     assert panel["latest"]["error_count"] == 0
     assert panel["items"][0]["recall_items"][0]["query"] == "用户偏好简短回复"
     assert panel["items"][0]["writeback_items"][0]["record_id"] == "mem_2"
+
+
+def test_operator_console_preserves_subject_context_from_trace_only_snapshot() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    trace = {
+        "schema": "eibrain.memory.visual_trace.v1",
+        "round_id": "round-vision",
+        "session_id": "vision-session",
+        "actor_id": "vision-runtime",
+        "subject_context": {
+            "subject_id": "hongtu",
+            "channel_id": "vision",
+            "canonical_user_id": "darrow",
+            "user_aliases": ["darrow"],
+            "memory_layer": "trace",
+        },
+        "memory_layer": "trace",
+        "recall": {"count": 0, "items": []},
+        "writeback": {"count": 0, "items": []},
+    }
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={"current": {"memory_traces": [trace]}, "scheduler": {"memory_trace_count": 1}},
+        traces=[],
+    )
+
+    memory = report["memory_diagnostics"]
+    assert memory["latest_trace_round_id"] == "round-vision"
+    assert memory["subject_id"] == "hongtu"
+    assert memory["channel_id"] == "vision"
+    assert memory["canonical_user_id"] == "darrow"
+    assert memory["memory_layer"] == "trace"
 
 
 def test_operator_console_uses_live_voice_scheduler_memory_traces() -> None:
@@ -1303,6 +1354,9 @@ def test_monitoring_web_keeps_visual_tracking_diagnostics_visible() -> None:
     assert "Track decision" in html
     assert "Suppress" in html
     assert "Pan proof" in html
+    assert "Subject context" in html
+    assert "Channel" in html
+    assert "Layer" in html
 
 
 def test_operator_console_exposes_audio_diagnostics() -> None:

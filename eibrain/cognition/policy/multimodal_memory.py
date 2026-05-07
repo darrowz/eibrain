@@ -15,6 +15,39 @@ class MultimodalMemoryPolicy:
     channel_id: str = "voice.honjia"
     agent_id: str = "eibrain.voice"
     contract_version: str = "multimodal-memory.v1"
+    shared_dialogue_sources: list[str] = field(
+        default_factory=lambda: [
+            "openclaw.agent_end",
+            "openclaw.message_received",
+        ]
+    )
+    audit_trace_sources: list[str] = field(
+        default_factory=lambda: [
+            "openclaw.before_prompt_build",
+            "ei_bridge.openclaw_feishu",
+        ]
+    )
+    source_memory_layers: dict[str, str] = field(
+        default_factory=lambda: {
+            "eibrain.identity": "identity_core",
+            "eibrain.preference": "preference",
+            "eibrain.dialogue": "episodic",
+            "eibrain.audio_dialogue": "episodic",
+            "eibrain.visual_world": "episodic",
+            "eibrain.visual_frame": "trace",
+            "eibrain.head_feedback": "operational_feedback",
+            "eibrain.action_trace": "trace",
+            "eibrain.outcome_feedback": "operational_feedback",
+            "eibrain.procedural_feedback": "operational_feedback",
+            "eibrain.training_candidate": "training",
+            "eibrain.policy": "policy",
+            "eibrain.system": "diagnostic",
+            "openclaw.agent_end": "episodic",
+            "openclaw.message_received": "episodic",
+            "openclaw.before_prompt_build": "trace",
+            "ei_bridge.openclaw_feishu": "channel_audit",
+        }
+    )
     identity_sources: list[str] = field(
         default_factory=lambda: [
             "eibrain.identity",
@@ -22,6 +55,7 @@ class MultimodalMemoryPolicy:
             "eibrain.dialogue",
             "eibrain.audio_dialogue",
             "openclaw.agent_end",
+            "openclaw.message_received",
         ]
     )
     blocked_general_sources: list[str] = field(
@@ -78,6 +112,9 @@ class MultimodalMemoryPolicy:
             "salience_score": round(float(salience_score), 3),
             "body_capabilities": dict(body_capabilities),
             "recall_profile": "precision",
+            "shared_dialogue_sources": list(self.shared_dialogue_sources),
+            "audit_trace_sources": list(self.audit_trace_sources),
+            "source_memory_layers": dict(self.source_memory_layers),
         }
         if active_policy:
             context["active_policy"] = dict(active_policy)
@@ -89,6 +126,14 @@ class MultimodalMemoryPolicy:
             context["source_event_id"] = source_event_id
 
         lower_query = query.lower()
+        explicit_diagnostic_recall = self._is_explicit_diagnostic_recall(task_type)
+        query_diagnostic_recall = self._is_query_diagnostic_recall(lower_query=lower_query, raw_query=query)
+        action_feedback_recall = self._is_action_feedback_recall(
+            task_type=task_type,
+            modality=modality,
+            organ=organ,
+            query=lower_query,
+        )
         if task_type == "brain.orient" or modality == "vision" or organ == "eye":
             context.update(
                 {
@@ -98,7 +143,7 @@ class MultimodalMemoryPolicy:
                         "eibrain.identity",
                         "eibrain.policy",
                     ],
-                    "blocked_sources": list(self.blocked_general_sources),
+                    "blocked_sources": [*self.blocked_general_sources, *self.audit_trace_sources],
                     "allowed_memory_types": ["world_observation", "identity", "fact", "policy", "semantic"],
                     "preferred_modalities": ["vision", "multimodal"],
                     "organs": ["eye", "cognition"],
@@ -130,7 +175,65 @@ class MultimodalMemoryPolicy:
             )
             return context
 
-        if self._is_action_feedback_recall(task_type=task_type, modality=modality, organ=organ, query=lower_query):
+        if explicit_diagnostic_recall or (query_diagnostic_recall and not action_feedback_recall):
+            allowed_sources = [
+                "eibrain.audio_dialogue",
+                "eibrain.visual_frame",
+                "eibrain.policy",
+                "eibrain.system",
+            ]
+            memory_types = ["conversation", "fact", "policy", "semantic"]
+            audit_allowed = explicit_diagnostic_recall
+            if audit_allowed:
+                allowed_sources.extend(self.audit_trace_sources)
+                memory_types.extend(["working_event", "trace", "audit"])
+            context.update(
+                {
+                    "allowed_sources": allowed_sources,
+                    "blocked_sources": list(self.blocked_general_sources)
+                    if audit_allowed
+                    else [*self.blocked_general_sources, *self.audit_trace_sources],
+                    "allowed_memory_types": memory_types,
+                    "preferred_modalities": ["audio_text", "vision", "multimodal", "system"],
+                    "organs": ["ear", "eye", "mouth", "neck", "cognition"],
+                    "recall_profile": "diagnostic_policy",
+                    "privacy": self._privacy_context(scope="diagnostic", sensitivity="operational"),
+                    "writeback_eligibility": {
+                        "eligible": False,
+                        "requires_explicit_memory_request": True,
+                        "default_memory_type": "training_candidate",
+                    },
+                    "decision_trace": {
+                        "decision": "diagnostic_policy_recall",
+                        "why": [
+                            "retrieve policy and system diagnostics",
+                            "allow audit/trace sources only for explicit diagnostic task types"
+                            if audit_allowed
+                            else "keep audit/trace sources blocked for non-explicit diagnostics",
+                            "avoid knowledge/news/paper sources",
+                        ],
+                    },
+                    "source_weights": {
+                        "eibrain.policy": 1.6,
+                        "eibrain.system": 1.35,
+                        "eibrain.audio_dialogue": 1.25,
+                        "openclaw.before_prompt_build": 1.0 if audit_allowed else 0.0,
+                        "ei_bridge.openclaw_feishu": 1.0 if audit_allowed else 0.0,
+                    },
+                    "diagnostics": {
+                        "audit_trace_sources_allowed": audit_allowed,
+                        "memory_layers": self._source_layers_for(allowed_sources),
+                    },
+                    "recall_filters": self._recall_filters(
+                        channel_id=self.channel_id,
+                        agent_id=self.agent_id,
+                        memory_types=memory_types,
+                    ),
+                }
+            )
+            return context
+
+        if action_feedback_recall:
             memory_types = [
                 "head_execution_feedback",
                 "action_outcome",
@@ -149,7 +252,7 @@ class MultimodalMemoryPolicy:
                         "eibrain.training_candidate",
                         "eibrain.policy",
                     ],
-                    "blocked_sources": [*self.identity_sources, *self.blocked_general_sources],
+                    "blocked_sources": [*self.identity_sources, *self.audit_trace_sources, *self.blocked_general_sources],
                     "allowed_memory_types": memory_types,
                     "preferred_modalities": ["multimodal_action", "audio_text", "vision", "system"],
                     "organs": ["neck", "mouth", "eye", "ear", "cognition"],
@@ -183,43 +286,17 @@ class MultimodalMemoryPolicy:
             )
             return context
 
-        if any(token in lower_query or token in query for token in ("asr", "tts", "语音", "麦克风", "摄像头", "视觉", "检测", "云台")):
-            context.update(
-                {
-                    "allowed_sources": ["eibrain.audio_dialogue", "eibrain.visual_frame", "eibrain.policy", "eibrain.system"],
-                    "blocked_sources": list(self.blocked_general_sources),
-                    "allowed_memory_types": ["conversation", "fact", "policy", "semantic"],
-                    "preferred_modalities": ["audio_text", "vision", "multimodal", "system"],
-                    "organs": ["ear", "eye", "mouth", "neck", "cognition"],
-                    "recall_profile": "diagnostic_policy",
-                    "privacy": self._privacy_context(scope="diagnostic", sensitivity="operational"),
-                    "writeback_eligibility": {
-                        "eligible": False,
-                        "requires_explicit_memory_request": True,
-                        "default_memory_type": "training_candidate",
-                    },
-                    "decision_trace": {
-                        "decision": "diagnostic_policy_recall",
-                        "why": [
-                            "retrieve policy and system diagnostics",
-                            "avoid knowledge/news/paper sources",
-                        ],
-                    },
-                    "source_weights": {"eibrain.policy": 1.6, "eibrain.audio_dialogue": 1.25},
-                    "recall_filters": self._recall_filters(
-                        channel_id=self.channel_id,
-                        agent_id=self.agent_id,
-                        memory_types=["conversation", "fact", "policy", "semantic"],
-                    ),
-                }
-            )
-            return context
-
         context.update(
             {
                 "allowed_sources": list(self.identity_sources),
-                "blocked_sources": list(self.blocked_general_sources),
+                "blocked_sources": [*self.blocked_general_sources, *self.audit_trace_sources],
                 "allowed_memory_types": ["identity", "preference", "conversation", "semantic", "fact"],
+                "preferred_sources": [
+                    "eibrain.identity",
+                    "eibrain.preference",
+                    "eibrain.audio_dialogue",
+                    *self.shared_dialogue_sources,
+                ],
                 "preferred_modalities": ["audio_text", "multimodal", "text"],
                 "organs": ["ear", "cognition"],
                 "recall_profile": "subject_dialogue" if self._is_subject_memory_query(lower_query) else "precision",
@@ -241,6 +318,7 @@ class MultimodalMemoryPolicy:
                     "eibrain.preference": 1.5,
                     "eibrain.audio_dialogue": 1.25,
                     "openclaw.agent_end": 1.15,
+                    "openclaw.message_received": 1.12,
                 },
                 "recall_filters": self._recall_filters(
                     channel_id=self.channel_id,
@@ -538,8 +616,12 @@ class MultimodalMemoryPolicy:
             event_type = self._clean_text(assessed.get("event_type")).lower()
             confidence = self._bounded_float(assessed.get("confidence"), default=0.5)
             source = self._clean_text(assessed.get("source"))
+            memory_layer = self.source_memory_layer(source, memory_type=self._clean_text(assessed.get("memory_type")))
+            assessed["memory_layer"] = memory_layer
             if source in self.blocked_general_sources:
                 reason_codes.append("blocked_source")
+            if source in self.audit_trace_sources:
+                reason_codes.append("audit_trace_source")
             if confidence < 0.45:
                 reason_codes.append("low_confidence")
             if event_type in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
@@ -563,7 +645,11 @@ class MultimodalMemoryPolicy:
             )
             self._extend_unique(diagnostics_reason_codes, assessed["reason_codes"])
 
-            if "persona_style_guardrail" in reason_codes or "blocked_source" in reason_codes:
+            if (
+                "persona_style_guardrail" in reason_codes
+                or "blocked_source" in reason_codes
+                or "audit_trace_source" in reason_codes
+            ):
                 rejected.append(assessed)
             elif "low_confidence" in reason_codes or "high_frequency_visual_frame" in reason_codes or "low_score" in reason_codes:
                 rejected.append(assessed)
@@ -594,6 +680,40 @@ class MultimodalMemoryPolicy:
             "memory_types": list(memory_types),
         }
 
+    def source_memory_layer(self, source: str, *, memory_type: str = "") -> str:
+        cleaned_source = self._clean_text(source)
+        if cleaned_source in self.source_memory_layers:
+            return self.source_memory_layers[cleaned_source]
+        cleaned_memory_type = self._clean_text(memory_type).lower()
+        if cleaned_memory_type in {"identity", "profile"}:
+            return "identity_core"
+        if cleaned_memory_type == "preference":
+            return "preference"
+        if cleaned_memory_type in {"conversation", "semantic", "fact"}:
+            return "episodic"
+        if cleaned_memory_type in {"audit", "channel_audit"}:
+            return "channel_audit"
+        if cleaned_memory_type in {"trace", "working_event"}:
+            return "trace"
+        return "working"
+
+    def _source_layers_for(self, sources: list[str]) -> dict[str, str]:
+        return {source: self.source_memory_layer(source) for source in sources}
+
+    @staticmethod
+    def _is_explicit_diagnostic_recall(task_type: str) -> bool:
+        cleaned = str(task_type or "").strip().lower()
+        if cleaned in {"brain.diagnose", "brain.diagnostic", "memory.diagnostic", "memory.task_trace", "memory.trace"}:
+            return True
+        return any(token in cleaned for token in ("diagnostic", "diagnose", "task_trace", "trace"))
+
+    @staticmethod
+    def _is_query_diagnostic_recall(*, lower_query: str, raw_query: str) -> bool:
+        return any(
+            token in lower_query or token in raw_query
+            for token in ("asr", "tts", "语音", "麦克风", "摄像头", "视觉", "检测", "云台")
+        )
+
     def _is_action_feedback_recall(self, *, task_type: str, modality: str, organ: str, query: str) -> bool:
         if task_type in {"head.execute", "brain.act", "brain.feedback", "brain.outcome"}:
             return True
@@ -614,6 +734,18 @@ class MultimodalMemoryPolicy:
                 "失败",
                 "调整",
                 "反馈",
+                "云台",
+                "转头",
+                "没跟上",
+                "跟不上",
+                "追不上",
+                "追丢",
+                "抖动",
+                "晃动",
+                "怎么改",
+                "怎么调",
+                "如何改",
+                "如何调",
             )
         )
 

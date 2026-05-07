@@ -1245,6 +1245,17 @@ class OperatorConsoleApp:
             keys=("task_context", "memory_task_context", "last_task_context"),
             default={},
         )
+        if not isinstance(task_context, dict):
+            task_context = {}
+        subject_context = cls._first_dict(
+            diagnostics,
+            task_context,
+            recall,
+            cognitive_snapshot,
+            keys=("subject_context", "memory_subject_context", "subject"),
+        )
+        if not subject_context and isinstance(latest_trace.get("subject_context"), dict):
+            subject_context = dict(latest_trace.get("subject_context", {}))
         recall_profile = cls._first_present(
             diagnostics,
             recall,
@@ -1315,6 +1326,33 @@ class OperatorConsoleApp:
         )
         if not last_writeback and isinstance(latest_trace.get("latest_writeback"), dict):
             last_writeback = cls._normalize_writeback(latest_trace.get("latest_writeback"))
+        writeback_subject_context = {}
+        if isinstance(last_writeback.get("subject_context"), dict):
+            writeback_subject_context = dict(last_writeback["subject_context"])
+        if not subject_context and writeback_subject_context:
+            subject_context = dict(writeback_subject_context)
+        memory_layer = str(
+            cls._first_present(
+                diagnostics,
+                task_context,
+                subject_context,
+                last_writeback,
+                recall,
+                cognitive_snapshot,
+                keys=("memory_layer", "source_memory_layer", "layer"),
+                default="",
+            )
+        )
+        source_memory_layers = cls._first_present(
+            diagnostics,
+            task_context,
+            recall,
+            cognitive_snapshot,
+            keys=("source_memory_layers", "memory_layers"),
+            default={},
+        )
+        if not isinstance(source_memory_layers, dict):
+            source_memory_layers = {}
         memory_trace_count = int(memory_trace_panel.get("count", 0)) if isinstance(memory_trace_panel, dict) else 0
         conflicts = cls._as_diagnostic_list(
             cls._first_present(
@@ -1393,7 +1431,14 @@ class OperatorConsoleApp:
             ),
             "last_query": query,
             "last_memory_query": query,
-            "task_context": task_context if isinstance(task_context, dict) else {},
+            "task_context": task_context,
+            "subject_context": subject_context,
+            "subject_id": subject_context.get("subject_id", ""),
+            "channel_id": subject_context.get("channel_id", ""),
+            "canonical_user_id": subject_context.get("canonical_user_id", ""),
+            "user_aliases": cls._as_list(subject_context.get("user_aliases", [])),
+            "memory_layer": memory_layer,
+            "source_memory_layers": dict(source_memory_layers),
             "recall_profile": recall_profile,
             "allowed_sources": allowed_sources,
             "blocked_sources": blocked_sources,
@@ -1562,11 +1607,29 @@ class OperatorConsoleApp:
         writeback_count = cls._trace_count(writeback, fallback=sum(1 for item in writeback_items if item.get("status") != "skipped"))
         error_count = len(errors)
         latest_writeback = writeback_items[0] if writeback_items else {}
+        subject_context = cls._first_dict(
+            trace,
+            recall,
+            writeback,
+            latest_writeback,
+            keys=("subject_context", "memory_subject_context", "subject"),
+        )
+        memory_layer = cls._first_present(
+            trace,
+            subject_context,
+            latest_writeback,
+            recall,
+            writeback,
+            keys=("memory_layer", "source_memory_layer", "layer"),
+            default="",
+        )
         return {
             "schema": trace.get("schema", ""),
             "round_id": trace.get("round_id", ""),
             "session_id": trace.get("session_id", ""),
             "actor_id": trace.get("actor_id", ""),
+            "subject_context": subject_context,
+            "memory_layer": memory_layer,
             "status": "error" if error_count else ("ok" if recall_count or writeback_count else "waiting"),
             "recall_count": recall_count,
             "writeback_count": writeback_count,

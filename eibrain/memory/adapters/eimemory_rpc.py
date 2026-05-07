@@ -8,6 +8,7 @@ from urllib.error import URLError
 
 from eibrain.infra.config import OpenClawConfig
 from eibrain.memory.contracts import MemoryQuery, MemoryResult
+from eibrain.memory.subject import classify_memory_layer, normalize_hongtu_scope, subject_context
 
 
 class EIMemoryRPCAdapter:
@@ -26,6 +27,13 @@ class EIMemoryRPCAdapter:
         task_context.update(dict(query.task_context or {}))
         if query.session_id:
             task_context["session_id"] = query.session_id
+        self._attach_subject_context(
+            task_context,
+            actor_id=query.actor_id,
+            session_id=query.session_id,
+            source=self._clean_text(task_context.get("source")),
+            memory_type=self._clean_text(task_context.get("memory_type")),
+        )
         payload = {
             "method": "memory.recall",
             "params": {
@@ -76,7 +84,13 @@ class EIMemoryRPCAdapter:
             conflict=conflict,
             persona_snapshot=persona_snapshot,
         )
-        request_meta = self._meta_with_session(meta=meta, session_id=session_id)
+        request_meta = self._meta_with_session(
+            meta=meta,
+            session_id=session_id,
+            actor_id=actor_id,
+            source=source,
+            memory_type=memory_type,
+        )
         status_meta = dict(request_meta)
         status_meta.update(governance)
         if not self.config.endpoint:
@@ -208,6 +222,13 @@ class EIMemoryRPCAdapter:
         )
         if not profile_summary:
             return
+        request_meta = self._meta_with_session(
+            meta=None,
+            session_id=None,
+            actor_id=actor_id,
+            source=source,
+            memory_type="preference",
+        )
         payload = {
             "method": "memory.ingest",
             "params": {
@@ -218,6 +239,7 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(actor_id=actor_id),
                 "organ": organ,
                 "modality": modality,
+                "meta": request_meta,
             },
         }
         try:
@@ -254,7 +276,13 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
-        meta = self._meta_with_session(meta=None, session_id=session_id)
+        meta = self._meta_with_session(
+            meta=None,
+            session_id=session_id,
+            actor_id=actor_id,
+            source=self._clean_text((payload or {}).get("source")),
+            memory_type=self._clean_text((payload or {}).get("memory_type")),
+        )
         if meta:
             body["params"]["meta"] = meta
         try:
@@ -280,7 +308,13 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
-        meta = self._meta_with_session(meta=None, session_id=session_id)
+        meta = self._meta_with_session(
+            meta=None,
+            session_id=session_id,
+            actor_id=actor_id,
+            source=self._clean_text((payload or {}).get("source")),
+            memory_type=self._clean_text((payload or {}).get("memory_type")),
+        )
         if meta:
             body["params"]["meta"] = meta
         try:
@@ -304,7 +338,13 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
-        meta = self._meta_with_session(meta=None, session_id=session_id)
+        meta = self._meta_with_session(
+            meta=None,
+            session_id=session_id,
+            actor_id=actor_id,
+            source=self._clean_text((payload or {}).get("source")) or "eibrain.skill_trace",
+            memory_type="trace",
+        )
         if meta:
             body["params"]["meta"] = meta
         try:
@@ -321,14 +361,26 @@ class EIMemoryRPCAdapter:
     ) -> dict[str, object]:
         if not self.config.endpoint:
             return {}
+        trace_payload = dict(payload or {})
         body = {
             "method": "experience.record_memory_trace",
             "params": {
-                "payload": dict(payload or {}),
+                "payload": trace_payload,
                 "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
-        meta = self._meta_with_session(meta=None, session_id=session_id)
+        trace_meta = {
+            key: trace_payload[key]
+            for key in ("source", "source_channel", "channel_id", "subject_context", "memory_layer", "memory_type")
+            if key in trace_payload
+        }
+        meta = self._meta_with_session(
+            meta=trace_meta,
+            session_id=session_id,
+            actor_id=actor_id,
+            source=self._clean_text(trace_payload.get("source")) or self._clean_text(trace_payload.get("schema")) or "eibrain.memory_trace",
+            memory_type=self._clean_text(trace_payload.get("memory_type")) or "trace",
+        )
         if meta:
             body["params"]["meta"] = meta
         try:
@@ -352,7 +404,7 @@ class EIMemoryRPCAdapter:
                 "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
-        meta = self._meta_with_session(meta=None, session_id=session_id)
+        meta = self._meta_with_session(meta=None, session_id=session_id, actor_id=actor_id)
         if meta:
             body["params"]["meta"] = meta
         try:
@@ -426,6 +478,11 @@ class EIMemoryRPCAdapter:
             "retention",
             "promotion_status",
             "training_candidate",
+            "subject_context",
+            "memory_layer",
+            "source_channel",
+            "raw_actor_id",
+            "actor_alias",
         ):
             if key in metadata:
                 payload[key] = metadata[key]
@@ -461,20 +518,147 @@ class EIMemoryRPCAdapter:
 
     def _scope_from_ids(self, *, session_id: str | None = None, actor_id: str | None = None) -> dict[str, str]:
         del session_id
-        scope: dict[str, str] = {"tenant_id": self.config.tenant_id or "default"}
-        if self.config.agent_id:
-            scope["agent_id"] = self.config.agent_id
-        if self.config.workspace_id:
-            scope["workspace_id"] = self.config.workspace_id
-        if actor_id:
-            scope["user_id"] = actor_id
-        return scope
+        return normalize_hongtu_scope(
+            {
+                "tenant_id": self.config.tenant_id or "default",
+                "agent_id": self.config.agent_id,
+                "workspace_id": self.config.workspace_id,
+                "user_id": actor_id or "",
+            }
+        )
 
-    def _meta_with_session(self, *, meta: dict[str, object] | None, session_id: str | None) -> dict[str, object]:
+    def _meta_with_session(
+        self,
+        *,
+        meta: dict[str, object] | None,
+        session_id: str | None,
+        actor_id: str | None = None,
+        source: str | None = None,
+        memory_type: str | None = None,
+    ) -> dict[str, object]:
         request_meta = dict(meta or {})
         if session_id:
             request_meta["session_id"] = session_id
+        resolved_source = self._clean_text(source or request_meta.get("source"))
+        resolved_memory_type = self._clean_text(memory_type or request_meta.get("memory_type"))
+        channel_id = self._channel_id(context=request_meta, source=resolved_source)
+        memory_layer = self._memory_layer(
+            source=resolved_source,
+            memory_type=resolved_memory_type,
+            context=request_meta,
+        )
+        request_meta["subject_context"] = self._subject_context(
+            context=request_meta,
+            channel_id=channel_id,
+            actor_id=actor_id,
+            session_id=session_id,
+            source=resolved_source,
+            memory_type=resolved_memory_type,
+        )
+        request_meta["source_channel"] = channel_id
+        if memory_layer:
+            request_meta["memory_layer"] = memory_layer
+        if actor_alias := self._clean_text(actor_id):
+            request_meta["raw_actor_id"] = actor_alias
+            request_meta["actor_alias"] = actor_alias
         return request_meta
+
+    def _attach_subject_context(
+        self,
+        task_context: dict[str, object],
+        *,
+        actor_id: str | None,
+        session_id: str | None,
+        source: str | None,
+        memory_type: str | None,
+    ) -> None:
+        channel_id = self._channel_id(context=task_context, source=source)
+        memory_layer = self._memory_layer(source=source, memory_type=memory_type, context=task_context)
+        task_context.setdefault("channel_id", channel_id)
+        task_context["subject_context"] = self._subject_context(
+            context=task_context,
+            channel_id=channel_id,
+            actor_id=actor_id,
+            session_id=session_id,
+            source=source,
+            memory_type=memory_type,
+        )
+        if memory_layer:
+            task_context["memory_layer"] = memory_layer
+
+    def _subject_context(
+        self,
+        *,
+        context: dict[str, object] | None,
+        channel_id: str,
+        actor_id: str | None,
+        session_id: str | None,
+        source: str | None,
+        memory_type: str | None,
+    ) -> dict[str, object]:
+        existing = (context or {}).get("subject_context")
+        merged = dict(existing) if isinstance(existing, dict) else {}
+        resolved_source = self._clean_text(source)
+        merged.update(
+            subject_context(
+                channel_id=channel_id,
+                actor_id=actor_id,
+                session_id=session_id,
+                source=resolved_source or None,
+            )
+        )
+        memory_layer = self._memory_layer(
+            source=resolved_source,
+            memory_type=memory_type,
+            context=context,
+        )
+        if memory_layer:
+            merged["memory_layer"] = memory_layer
+        return merged
+
+    def _memory_layer(
+        self,
+        *,
+        source: str | None,
+        memory_type: str | None,
+        context: dict[str, object] | None = None,
+    ) -> str:
+        existing = self._clean_text((context or {}).get("memory_layer"))
+        if existing:
+            return existing
+        resolved_source = self._clean_text(source)
+        resolved_memory_type = self._clean_text(memory_type)
+        if not resolved_source and not resolved_memory_type:
+            return ""
+        return classify_memory_layer(resolved_source or None, resolved_memory_type or None)
+
+    def _channel_id(self, *, context: dict[str, object] | None = None, source: str | None = None) -> str:
+        payload = dict(context or {})
+        for key in ("channel_id", "source_channel"):
+            channel_id = self._clean_text(payload.get(key))
+            if channel_id:
+                return channel_id
+        subject = payload.get("subject_context")
+        if isinstance(subject, dict):
+            channel_id = self._clean_text(subject.get("channel_id"))
+            if channel_id:
+                return channel_id
+        source_id = self._clean_text(source or payload.get("source")).lower()
+        if "feishu" in source_id:
+            return "feishu"
+        if "visual" in source_id or "vision" in source_id:
+            return "vision"
+        if source_id.startswith("openclaw."):
+            return "openclaw"
+        if self._clean_text(self.config.workspace_id) == "honjia":
+            return "voice.honjia"
+        return "voice"
+
+    @staticmethod
+    def _clean_text(value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
 
     def _merge_tags(self, tags: list[str] | None, required_tags: list[str]) -> list[str]:
         merged: list[str] = []

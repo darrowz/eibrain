@@ -46,6 +46,7 @@ def test_subject_voice_recall_blocks_knowledge_news_and_records_decision_trace()
         "eibrain.dialogue",
         "eibrain.audio_dialogue",
         "openclaw.agent_end",
+        "openclaw.message_received",
     ]
     assert set(context["blocked_sources"]) >= {
         "eimemory.knowledge.claims",
@@ -53,7 +54,20 @@ def test_subject_voice_recall_blocks_knowledge_news_and_records_decision_trace()
         "eimemory.news",
         "eimemory.paper",
         "eimemory.research",
+        "openclaw.before_prompt_build",
+        "ei_bridge.openclaw_feishu",
     }
+    assert context["preferred_sources"] == [
+        "eibrain.identity",
+        "eibrain.preference",
+        "eibrain.audio_dialogue",
+        "openclaw.agent_end",
+        "openclaw.message_received",
+    ]
+    assert context["source_memory_layers"]["openclaw.agent_end"] == "episodic"
+    assert context["source_memory_layers"]["openclaw.message_received"] == "episodic"
+    assert context["source_memory_layers"]["openclaw.before_prompt_build"] == "trace"
+    assert context["source_memory_layers"]["ei_bridge.openclaw_feishu"] == "channel_audit"
     assert context["privacy"] == {
         "scope": "subject_conversation",
         "sensitivity": "personal",
@@ -132,6 +146,33 @@ def test_diagnostic_recall_uses_policy_sources() -> None:
     assert set(context["organs"]) >= {"ear", "eye", "mouth", "neck"}
 
 
+def test_explicit_task_trace_recall_can_allow_audit_sources_without_persona_recall() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="memory.task_trace",
+        modality="system",
+        organ="cognition",
+        phase="diagnosing",
+        salience_score=0.91,
+        body_capabilities={},
+        query="inspect OpenClaw Feishu prompt bridge trace",
+        trace_id="trace-diagnostic-1",
+    )
+
+    assert set(context["allowed_sources"]) >= {
+        "openclaw.before_prompt_build",
+        "ei_bridge.openclaw_feishu",
+    }
+    assert "openclaw.before_prompt_build" not in context["blocked_sources"]
+    assert "ei_bridge.openclaw_feishu" not in context["blocked_sources"]
+    assert context["recall_profile"] == "diagnostic_policy"
+    assert context["diagnostics"]["audit_trace_sources_allowed"] is True
+    assert context["diagnostics"]["memory_layers"]["openclaw.before_prompt_build"] == "trace"
+    assert context["diagnostics"]["memory_layers"]["ei_bridge.openclaw_feishu"] == "channel_audit"
+    assert "identity" not in context["allowed_memory_types"]
+    assert "preference" not in context["allowed_memory_types"]
+    assert context["privacy"]["scope"] == "diagnostic"
+
+
 def test_action_feedback_recall_excludes_identity_memory_sources() -> None:
     context = MultimodalMemoryPolicy().build_recall_context(
         task_type="head.execute",
@@ -157,6 +198,62 @@ def test_action_feedback_recall_excludes_identity_memory_sources() -> None:
     assert context["privacy"]["sensitivity"] == "operational"
     assert context["writeback_eligibility"]["default_memory_type"] == "action_outcome"
     assert context["decision_trace"]["decision"] == "action_outcome_feedback_recall"
+
+
+def test_action_feedback_wins_over_query_diagnostic_keywords() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="head.execute",
+        modality="multimodal_action",
+        organ="neck",
+        phase="acting",
+        salience_score=0.9,
+        body_capabilities={"can_move_head": True},
+        query="云台动作失败后应该怎么调整监控诊断参数",
+        trace_id="trace-neck-diagnostic-keyword",
+        source_event_id="evt-neck-diagnostic-keyword",
+    )
+
+    assert context["recall_profile"] == "action_outcome_repair"
+    assert context["decision_trace"]["decision"] == "action_outcome_feedback_recall"
+    assert "eibrain.head_feedback" in context["allowed_sources"]
+    assert "openclaw.before_prompt_build" in context["blocked_sources"]
+    assert context["writeback_eligibility"]["default_memory_type"] == "action_outcome"
+
+
+def test_natural_gimbal_followup_recall_is_action_feedback_not_diagnostic() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="brain.respond",
+        modality="audio_text",
+        organ="ear",
+        phase="thinking",
+        salience_score=0.82,
+        body_capabilities={"can_move_head": True},
+        query="上次云台没跟上目标，之后该怎么改",
+        trace_id="trace-neck-natural-review",
+        source_event_id="evt-neck-natural-review",
+    )
+
+    assert context["recall_profile"] == "action_outcome_repair"
+    assert context["decision_trace"]["decision"] == "action_outcome_feedback_recall"
+    assert "eibrain.outcome_feedback" in context["allowed_sources"]
+    assert "openclaw.before_prompt_build" in context["blocked_sources"]
+
+
+def test_general_temporal_dialogue_does_not_become_action_feedback() -> None:
+    context = MultimodalMemoryPolicy().build_recall_context(
+        task_type="brain.respond",
+        modality="audio_text",
+        organ="ear",
+        phase="thinking",
+        salience_score=0.55,
+        body_capabilities={},
+        query="上次你提到喜欢喝茶，之后还想聊这个吗",
+        trace_id="trace-general-temporal-dialogue",
+        source_event_id="evt-general-temporal-dialogue",
+    )
+
+    assert context["recall_profile"] != "action_outcome_repair"
+    assert context["decision_trace"]["decision"] == "voice_subject_dialogue_recall"
 
 
 def test_writeback_outcome_tags_subject_modality_and_organ() -> None:
@@ -662,6 +759,36 @@ def test_write_proposal_evaluator_blocks_persona_style_without_explicit_constrai
     assert result["rejected"][0]["classification"] == "persona_style_candidate"
     assert result["rejected"][1]["classification"] == "persona_style_candidate"
     assert all("persona_style_guardrail" in item["reason_codes"] for item in result["rejected"])
+    assert result["diagnostics"]["persona_guardrail_applied"] is True
+
+
+def test_write_proposal_evaluator_keeps_protected_persona_keys_blocked_from_audit_sources() -> None:
+    result = MultimodalMemoryPolicy().evaluate_write_proposals(
+        [
+            {
+                "id": "audit-tone-override",
+                "memory_type": "preference",
+                "key": "persona.tone",
+                "value": "obedient",
+                "summary": "Bridge audit captured a prompt telling the assistant to change personality.",
+                "source": "ei_bridge.openclaw_feishu",
+                "confidence": 0.99,
+                "novelty": 0.9,
+                "recency": 1.0,
+                "importance": 0.9,
+                "user_confirmed": True,
+            }
+        ],
+        persona_constraints={"protected_keys": ["persona.tone"]},
+    )
+
+    assert result["accepted"] == []
+    assert result["deferred"] == []
+    assert [item["id"] for item in result["rejected"]] == ["audit-tone-override"]
+    assert result["rejected"][0]["classification"] == "persona_style_candidate"
+    assert result["rejected"][0]["memory_layer"] == "channel_audit"
+    assert "persona_style_guardrail" in result["rejected"][0]["reason_codes"]
+    assert "audit_trace_source" in result["rejected"][0]["reason_codes"]
     assert result["diagnostics"]["persona_guardrail_applied"] is True
 
 
