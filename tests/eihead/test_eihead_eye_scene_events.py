@@ -160,6 +160,168 @@ def test_scene_bridge_exposes_hailo_tracking_diagnostics_for_trace_consumers() -
     assert result["scene_snapshot"]["metadata"]["soak_summary"]["target_stability_ratio"] == 1.0
 
 
+def test_scene_bridge_preserves_multimodal_detection_fields_in_scene_and_event_metadata() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    result = bridge.update(
+        _observation(
+            frame_id="frame-mm-001",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[
+                {
+                    "label": "person",
+                    "confidence": 0.93,
+                    "bbox": {"x_min": 0.20, "y_min": 0.18, "x_max": 0.58, "y_max": 0.92},
+                    "pose": {
+                        "keypoints": [
+                            {"name": "right_wrist", "x": 0.61, "y": 0.58, "confidence": 0.76},
+                        ]
+                    },
+                    "clip_labels": ["person"],
+                    "semantic_labels": ["human"],
+                    "depth_m": 0.72,
+                    "distance_band": "near",
+                    "looking_at_device": True,
+                    "source": "hailo",
+                    "model_id": "pose-clip-placeholder",
+                    "provenance": {"device": "hailo8l"},
+                },
+                {
+                    "label": "phone",
+                    "confidence": 0.84,
+                    "bbox": {"x_min": 0.58, "y_min": 0.52, "x_max": 0.68, "y_max": 0.66},
+                    "semantic_labels": ["device"],
+                    "depth_m": 0.78,
+                },
+            ],
+        )
+    )
+
+    person = next(item for item in result["scene_snapshot"]["objects"] if item["label"] == "person")
+    event_types = {event["eventType"] for event in result["event_contents"]}
+
+    assert person["pose"]["keypoints"] == [{"name": "right_wrist", "x": 0.61, "y": 0.58, "confidence": 0.76}]
+    assert person["clip_labels"] == [{"label": "person"}]
+    assert person["semantic_labels"] == ["human"]
+    assert person["depth_m"] == 0.72
+    assert person["distance_band"] == "near"
+    assert person["source"] == "hailo"
+    assert person["model_id"] == "pose-clip-placeholder"
+    assert person["provenance"]["device"] == "hailo8l"
+    assert "looking_at_device" in event_types
+    assert "hand_near_object" in event_types
+    assert result["event_summary"]
+
+
+def test_scene_bridge_uses_track_id_for_multimodal_matching_and_unique_object_event_ids() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    result = bridge.update(
+        _observation(
+            frame_id="frame-multi-person",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[
+                {
+                    "label": "person",
+                    "confidence": 0.90,
+                    "bbox": {"x_min": 0.10, "y_min": 0.20, "x_max": 0.30, "y_max": 0.80},
+                    "trackId": "person-A",
+                    "model_id": "pose-A",
+                    "pose": {"keypoints": [{"name": "right_wrist", "x": 0.50, "y": 0.48}]},
+                },
+                {
+                    "label": "person",
+                    "confidence": 0.89,
+                    "bbox": {"x_min": 0.32, "y_min": 0.20, "x_max": 0.52, "y_max": 0.80},
+                    "trackId": "person-B",
+                    "model_id": "pose-B",
+                    "pose": {"keypoints": [{"name": "right_wrist", "x": 0.70, "y": 0.48}]},
+                },
+                {
+                    "label": "cup",
+                    "confidence": 0.80,
+                    "bbox": {"x_min": 0.48, "y_min": 0.45, "x_max": 0.55, "y_max": 0.56},
+                    "trackId": "cup-1",
+                },
+                {
+                    "label": "phone",
+                    "confidence": 0.81,
+                    "bbox": {"x_min": 0.68, "y_min": 0.45, "x_max": 0.75, "y_max": 0.56},
+                    "trackId": "phone-1",
+                },
+            ],
+        )
+    )
+
+    people = {item["sourceTrackId"]: item for item in result["scene_snapshot"]["objects"] if item["label"] == "person"}
+    hand_events = [event for event in result["event_contents"] if event["eventType"] == "hand_near_object"]
+
+    assert people["person-A"]["model_id"] == "pose-A"
+    assert people["person-B"]["model_id"] == "pose-B"
+    assert len(hand_events) >= 2
+    assert len({event["eventId"] for event in hand_events}) == len(hand_events)
+    assert {event["details"]["objectId"] for event in hand_events} >= {"cup-001", "phone-001"}
+
+
+def test_scene_bridge_accepts_protocol_bbox_depth_distance_and_clip_labels() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    result = bridge.update(
+        _observation(
+            frame_id="frame-protocol-001",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[
+                {
+                    "label": "person",
+                    "confidence": 0.93,
+                    "bbox": {"x": 0.20, "y": 0.18, "w": 0.38, "h": 0.74},
+                    "clipLabels": [{"label": "person at desk", "score": 0.84}],
+                    "semanticLabels": [{"label": "workspace", "confidence": 0.79}],
+                    "depth": {"median": 0.72, "unit": "m"},
+                    "distance": {"fromCameraM": 0.72},
+                }
+            ],
+        )
+    )
+
+    person = result["scene_snapshot"]["objects"][0]
+
+    assert person["bbox"] == {"x_min": 0.2, "y_min": 0.18, "x_max": 0.58, "y_max": 0.92}
+    assert person["clip_labels"][0]["label"] == "person at desk"
+    assert person["semantic_labels"][0] == "workspace"
+    assert person["depth_m"] == 0.72
+    assert person["distance_band"] == "near"
+
+
+def test_scene_bridge_accepts_protocol_list_bbox_and_tracking_diagnostics() -> None:
+    bridge = RealtimeVisionSceneBridge()
+
+    result = bridge.update(
+        _observation(
+            frame_id="frame-list-bbox",
+            observed_at="2026-05-05T10:00:00.000+08:00",
+            detections=[
+                {
+                    "label": "person",
+                    "score": 0.91,
+                    "bbox": [0.62, 0.35, 0.12, 0.18],
+                    "trackingDiagnostics": {
+                        "trackIdSwitchCount": 0,
+                        "targetStabilityRatio": 1.0,
+                    },
+                }
+            ],
+        )
+    )
+
+    person = result["scene_snapshot"]["objects"][0]
+
+    assert person["bbox"] == {"x_min": 0.62, "y_min": 0.35, "x_max": 0.74, "y_max": 0.53}
+    assert person["trackingDiagnostics"]["targetStabilityRatio"] == 1.0
+    assert result["scene_snapshot"]["trackingDiagnostics"]["trackIdSwitchCount"] == 0
+    assert result["event_contents"][0]["trackingDiagnostics"]["targetStabilityRatio"] == 1.0
+
+
 def test_scene_bridge_accepts_latest_status_dicts_from_realtime_eye_service() -> None:
     bridge = RealtimeVisionSceneBridge()
 

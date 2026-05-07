@@ -42,6 +42,42 @@
           "h": 0.6
         },
         "trackId": "track_person_1",
+        "pose": {
+          "keypoints": [
+            {
+              "name": "nose",
+              "x": 0.41,
+              "y": 0.22,
+              "score": 0.88
+            }
+          ],
+          "state": "seated"
+        },
+        "clipLabels": [
+          {
+            "label": "person seated near desk",
+            "score": 0.84
+          }
+        ],
+        "semanticLabels": [
+          {
+            "label": "person",
+            "confidence": 0.94
+          }
+        ],
+        "depth": {
+          "unit": "m",
+          "median": 1.75
+        },
+        "distance": {
+          "fromCameraM": 1.75,
+          "fromTrackedTargetM": 0.0
+        },
+        "trackingDiagnostics": {
+          "ageFrames": 18,
+          "lostFrames": 0,
+          "associationScore": 0.96
+        },
         "metadata": {}
       },
       {
@@ -54,6 +90,31 @@
           0.18
         ],
         "trackId": "track_cup_1",
+        "clipLabels": [
+          {
+            "label": "blue cup on desk",
+            "score": 0.79
+          }
+        ],
+        "semanticLabels": [
+          {
+            "label": "drinkware",
+            "confidence": 0.87
+          }
+        ],
+        "depth": {
+          "unit": "m",
+          "median": 1.25
+        },
+        "distance": {
+          "fromCameraM": 1.25,
+          "fromTrackedTargetM": 0.62
+        },
+        "trackingDiagnostics": {
+          "ageFrames": 11,
+          "lostFrames": 0,
+          "associationScore": 0.9
+        },
         "metadata": {
           "color": "blue"
         }
@@ -81,6 +142,42 @@
       "capture": 8.0,
       "detect": 15.0,
       "publish": 3.5
+    },
+    "trackingDiagnostics": {
+      "tracker": "bytetrack",
+      "activeTracks": 2,
+      "droppedTracks": 0,
+      "associationBackend": "iou_reid"
+    },
+    "pose": {
+      "camera": {
+        "roll": 0.0,
+        "pitch": -2.5,
+        "yaw": 1.0
+      }
+    },
+    "clipLabels": [
+      {
+        "label": "person sitting near cup indoors",
+        "score": 0.82
+      }
+    ],
+    "semanticLabels": [
+      {
+        "label": "workspace_scene",
+        "confidence": 0.8
+      }
+    ],
+    "depth": {
+      "backend": "mono_depth",
+      "unit": "m",
+      "min": 0.8,
+      "max": 4.2,
+      "median": 1.9
+    },
+    "distance": {
+      "trackedTargetM": 1.75,
+      "nearestObjectM": 1.25
     },
     "imageUrl": "file:///var/lib/eihead/frames/frame_000042.jpg",
     "status": "ok",

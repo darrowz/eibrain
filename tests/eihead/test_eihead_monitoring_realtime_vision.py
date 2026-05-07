@@ -85,6 +85,111 @@ def test_realtime_vision_payload_exposes_visual_overlay_for_box_diagnostics() ->
     }
 
 
+def test_realtime_vision_payload_overlay_accepts_protocol_normalized_list_xywh_bbox() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-list-box",
+            "width": 640,
+            "height": 480,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.91,
+                    "bbox": [0.62, 0.35, 0.12, 0.18],
+                },
+            ],
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["overlay"]["normalized_boxes"] == [
+        {
+            "label": "person",
+            "score": 0.91,
+            "score_label": "person 0.91",
+            "x_min": 0.62,
+            "y_min": 0.35,
+            "x_max": 0.74,
+            "y_max": 0.53,
+        }
+    ]
+    assert payload["overlay"]["top_target"]["center"] == {"x": 0.68, "y": 0.44}
+
+
+def test_realtime_vision_payload_overlay_honors_explicit_normalized_list_xyxy_bbox() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "frame_id": "frame-list-box-xyxy",
+            "width": 640,
+            "height": 480,
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.91,
+                    "bbox": [0.62, 0.35, 0.74, 0.53],
+                    "bboxFormat": "xyxy",
+                },
+            ],
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["overlay"]["normalized_boxes"][0] == {
+        "label": "person",
+        "score": 0.91,
+        "score_label": "person 0.91",
+        "x_min": 0.62,
+        "y_min": 0.35,
+        "x_max": 0.74,
+        "y_max": 0.53,
+    }
+    assert payload["overlay"]["top_target"]["center"] == {"x": 0.68, "y": 0.44}
+
+
+def test_realtime_vision_payload_surfaces_detection_level_multimodal_availability() -> None:
+    payload = build_realtime_vision_payload(
+        {
+            "kind": "realtime_vision_observation",
+            "mode": "realtime_stream",
+            "status": "tracking",
+            "detections": [
+                {
+                    "label": "person",
+                    "confidence": 0.91,
+                    "bbox": {"x_min": 0.2, "y_min": 0.2, "x_max": 0.4, "y_max": 0.8},
+                    "attributes": {
+                        "pose": {"available": True, "summary": "standing"},
+                        "clipLabels": [{"label": "person at desk"}],
+                        "semanticLabels": [{"label": "workspace"}],
+                        "depth": {"status": "waiting", "reason": "depth sensor offline"},
+                        "distance": {"status": "present", "summary": "target 0.8m"},
+                        "trackingDiagnostics": {"status": "present", "summary": "stable 94%"},
+                    },
+                }
+            ],
+        },
+        timestamp=1000.0,
+        source="eye_realtime",
+    )
+
+    assert payload["multimodal_availability"] == {
+        "pose": {"status": "present", "summary": "standing"},
+        "clip": {"status": "present", "summary": "1 label(s)"},
+        "semantic": {"status": "present", "summary": "1 label(s)"},
+        "depth": {"status": "waiting", "summary": "depth sensor offline"},
+        "distance": {"status": "present", "summary": "target 0.8m"},
+        "tracking": {"status": "present", "summary": "stable 94%"},
+    }
+
+
 def test_realtime_vision_payload_promotes_scene_event_track_and_target_summaries() -> None:
     payload = build_realtime_vision_payload(
         {

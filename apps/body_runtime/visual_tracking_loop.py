@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Mapping
+from typing import Any
 
 from apps.body_runtime.app import BodyRuntimeApp
 
@@ -71,6 +73,7 @@ class VisualTrackingLoop:
                 self._sleeping_paused = False
                 if hasattr(self.body_runtime, "update_voice_dialogue_state"):
                     self.body_runtime.update_voice_dialogue_state(running=True)
+                tracking_payload: object | None = None
                 for kwargs in (
                     {
                         "recenter_after_misses": self.recenter_after_misses,
@@ -94,14 +97,16 @@ class VisualTrackingLoop:
                     },
                 ):
                     try:
-                        self.body_runtime.track_visual_target_once(**kwargs)
+                        tracking_payload = self.body_runtime.track_visual_target_once(**kwargs)
                         break
                     except TypeError:
                         continue
                 if hasattr(self.body_runtime, "_update_visual_tracking_state"):
+                    diagnostics = self._tracking_diagnostic_updates(tracking_payload)
                     self.body_runtime._update_visual_tracking_state(
                         source=self.source,
                         running=True,
+                        **diagnostics,
                     )
             except Exception as exc:  # pragma: no cover - hardware boundary
                 if hasattr(self.body_runtime, "record_runtime_event"):
@@ -113,3 +118,27 @@ class VisualTrackingLoop:
                     )
             elapsed = time.monotonic() - started
             self._stop.wait(max(0.0, self.interval_s - elapsed))
+
+    @staticmethod
+    def _tracking_diagnostic_updates(payload: object | None) -> dict[str, Any]:
+        if not isinstance(payload, Mapping):
+            return {}
+        raw_diagnostics = payload.get("tracking_diagnostics")
+        if not isinstance(raw_diagnostics, Mapping):
+            return {}
+        allowed_keys = {
+            "track_count",
+            "active_track_id",
+            "switch_count",
+            "reacquired_count",
+            "lost_count",
+            "stability_ratio",
+            "suppressed_reason",
+        }
+        diagnostics = {key: raw_diagnostics[key] for key in allowed_keys if key in raw_diagnostics}
+        if not diagnostics:
+            return {}
+        return {
+            "tracking_diagnostics": dict(diagnostics),
+            **diagnostics,
+        }

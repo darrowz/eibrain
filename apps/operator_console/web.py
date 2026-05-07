@@ -12,7 +12,7 @@ from apps.operator_console.app import OperatorConsoleApp
 
 
 class MonitoringWebServer:
-    def __init__(self, *, runtime, cognitive_runtime=None, host: str = "0.0.0.0", port: int = 8080) -> None:
+    def __init__(self, *, runtime, cognitive_runtime=None, host: str = "0.0.0.0", port: int = 18081) -> None:
         self.runtime = runtime
         self.cognitive_runtime = cognitive_runtime
         self.host = host
@@ -57,8 +57,22 @@ class MonitoringWebServer:
                     else:
                         self.send_error(404, "vision frame not available")
                     return
-                if request_path in {"/status.json", "/healthz", "/metrics.json"}:
+                if request_path in {"/status.json", "/metrics.json"}:
                     self._send_json(200, report)
+                    return
+                if request_path == "/livez":
+                    self._send_json(
+                        200,
+                        {
+                            "status": "alive",
+                            "system_health": report.get("system_health", "unknown"),
+                            "degraded_reasons": report.get("degraded_reasons", []),
+                        },
+                    )
+                    return
+                if request_path == "/healthz":
+                    status_code = 200 if report.get("system_health") == "healthy" else 503
+                    self._send_json(status_code, report)
                     return
                 body = outer._render_html(report).encode("utf-8")
                 self.send_response(200)
@@ -664,6 +678,8 @@ class MonitoringWebServer:
       const followScore = visual.follow_score || {{}};
       const followTuning = visual.follow_tuning || {{}};
       const sceneGraph = visual.scene_graph || {{}};
+      const trackingStability = visual.tracking_stability || {{}};
+      const multimodal = visual.multimodal_availability || {{}};
       const voiceContext = visual.voice_context || {{}};
       const memoryCandidate = visual.memory_candidate || {{}};
       const trainingFeedback = visual.training_feedback || {{}};
@@ -686,6 +702,12 @@ class MonitoringWebServer:
       const panProofSummary = panProof.verified ? 'verified' : (panProof.status || 'missing');
       const suppressProofSummary = `${{visual.tracking_suppressed_reason || 'none'}} / ${{panProofSummary}}`;
       const identityName = recognizedIdentity.display_name || registeredIdentity.display_name || '';
+      const stabilityScore = typeof visual.tracking_stability_score === 'number' ? visual.tracking_stability_score.toFixed(2) : '—';
+      const multimodalSummary = `pose ${{visual.pose_availability || 'unknown'}} / clip ${{visual.clip_availability || 'unknown'}} / semantic ${{visual.semantic_availability || 'unknown'}} / depth ${{visual.depth_availability || 'unknown'}} / distance ${{visual.distance_availability || 'unknown'}} / tracking ${{visual.tracking_diagnostics_availability || 'unknown'}}`;
+      const multimodalStates = [visual.pose_availability, visual.clip_availability, visual.semantic_availability, visual.depth_availability, visual.distance_availability, visual.tracking_diagnostics_availability];
+      const multimodalPresentCount = multimodalStates.filter((item) => item === 'present').length;
+      const multimodalHealth = multimodalPresentCount === multimodalStates.length ? 'healthy' : (multimodalPresentCount > 0 ? 'degraded' : 'waiting');
+      const switchLostReacquired = `${{visual.tracking_switch_count ?? 0}} / ${{visual.tracking_lost_count ?? 0}} / ${{visual.tracking_reacquired_count ?? 0}}`;
       document.getElementById('identity-action-status').textContent = registeredIdentity.registered
         ? `Registered: ${{identityName || 'known person'}}`
         : 'Session identity not registered';
@@ -703,6 +725,10 @@ class MonitoringWebServer:
         ['Track error', trackingError],
         ['Track angle', trackingAngle],
         ['Track decision', trackingDecisionSummary],
+        ['Tracking stability', `${{trackingStability.state || 'unknown'}} / ${{stabilityScore}}`],
+        ['Switch/Lost/Reacquired', switchLostReacquired],
+        ['Scene graph', visual.scene_graph_summary || 'waiting'],
+        ['Pose/CLIP/Semantic/Depth/Distance/Tracking', multimodalSummary],
         ['Follow score', followScore.score !== undefined ? `${{Number(followScore.score || 0).toFixed(2)}} / ${{followScore.reason || '-'}}` : 'waiting'],
         ['Target lock', targetLock.lock_state ? `${{targetLock.lock_state}} / ${{targetLock.track_id || '-'}}` : 'waiting'],
         ['Soak', soakSummary.bottleneck_reason || 'waiting'],
@@ -791,6 +817,8 @@ class MonitoringWebServer:
         ].filter(Boolean).join(' · ');
         listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Vision cognition</strong><span class="health-tag healthy">ready</span></div><div class="metric-label">${{cognitionDetails}}</div></div>`);
       }}
+      listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Long tracking soak</strong><span class="health-tag ${{healthClass(trackingStability.state === 'stable' ? 'healthy' : (trackingStability.state || 'unknown'))}}">${{trackingStability.state || 'unknown'}}</span></div><div class="metric-label">stability=${{stabilityScore}} · switch/lost/reacquired=${{switchLostReacquired}} · soak=${{soakSummary.bottleneck_reason || soakSummary.status || 'waiting'}}</div></div>`);
+      listItems.push(`<div class="subfunction-item"><div class="sub-top"><strong>Multimodal features</strong><span class="health-tag ${{healthClass(multimodalHealth)}}">${{multimodalSummary}}</span></div><div class="metric-label">pose=${{(multimodal.pose || {{}}).summary || 'unknown'}} · clip=${{(multimodal.clip || {{}}).summary || 'unknown'}} · semantic=${{(multimodal.semantic || {{}}).summary || 'unknown'}} · depth=${{(multimodal.depth || {{}}).summary || 'unknown'}} · distance=${{(multimodal.distance || {{}}).summary || 'unknown'}} · tracking=${{(multimodal.tracking || {{}}).summary || 'unknown'}} · scene=${{visual.scene_graph_summary || 'waiting'}}</div></div>`);
       if (memoryCandidate.event_type || trainingFeedback.feedback_type) {{
         const memoryDetails = [
           memoryCandidate.event_type ? `memory ${{memoryCandidate.event_type}} importance=${{Number(memoryCandidate.importance || 0).toFixed(2)}}` : '',
@@ -927,18 +955,23 @@ class MonitoringWebServer:
       const bySource = composition.by_source || composition || {{}};
       const sourceSummary = Object.entries(bySource).map(([source, count]) => `${{source}}:${{count}}`).join(' · ') || 'No sources selected yet';
       const writeback = memory.last_writeback || {{}};
+      const personaGuardrail = memory.persona_guardrail || {{}};
       document.getElementById('memory-summary').innerHTML = [
         ['Task', memory.task_type || '—'],
         ['Profile', memory.recall_profile || '—'],
         ['Selected', String(memory.selected_count ?? selected.length ?? 0)],
         ['Traces', String(memory.memory_trace_count ?? 0)],
         ['Writeback', writeback.status || '—'],
+        ['Memory conflict', memory.memory_conflict_summary || 'unknown'],
+        ['Persona guardrail', memory.persona_guardrail_status || 'unknown'],
       ].map(([label, value]) => `<div class="mini-card"><div class="muted">${{label}}</div><div class="metric-value" style="font-size:20px;">${{value}}</div></div>`).join('');
 
       const items = [];
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Recall filters</strong><span class="health-tag ${{memory.recall_profile ? 'healthy' : 'waiting'}}">${{memory.recall_profile || 'waiting'}}</span></div><div class="metric-label">allowed=${{(memory.allowed_sources || []).join(', ') || '—'}} · blocked=${{(memory.blocked_sources || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Modalities / organs</strong><span class="health-tag healthy">policy</span></div><div class="metric-label">types=${{(memory.allowed_memory_types || []).join(', ') || '—'}} · modalities=${{(memory.preferred_modalities || []).join(', ') || '—'}} · organs=${{(memory.organs || []).join(', ') || '—'}}</div></div>`);
       items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Source composition</strong><span class="health-tag ${{memory.selected_count ? 'healthy' : 'waiting'}}">${{memory.selected_count ?? 0}}</span></div><div class="metric-label">${{sourceSummary}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Memory conflict</strong><span class="health-tag ${{healthClass(memory.memory_conflict_count ? 'degraded' : 'waiting')}}">${{memory.memory_conflict_count ?? 0}}</span></div><div class="metric-label">${{memory.memory_conflict_summary || 'unknown'}}</div></div>`);
+      items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Persona guardrail</strong><span class="health-tag ${{healthClass(memory.persona_guardrail_status || 'unknown')}}">${{memory.persona_guardrail_status || 'unknown'}}</span></div><div class="metric-label">${{memory.persona_guardrail_summary || personaGuardrail.reason || 'unknown'}}</div></div>`);
       if (memory.latest_trace_round_id) {{
         items.push(`<div class="subfunction-item"><div class="sub-top"><strong>Latest closed-loop trace</strong><span class="health-tag ${{healthClass(memory.latest_trace_status || 'waiting')}}">${{memory.latest_trace_status || 'waiting'}}</span></div><div class="metric-label">round=${{memory.latest_trace_round_id}} · traces=${{memory.memory_trace_count ?? 0}}</div></div>`);
       }}

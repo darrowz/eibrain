@@ -33,6 +33,19 @@ class MultimodalMemoryPolicy:
             "eimemory.research",
         ]
     )
+    protected_persona_keys: list[str] = field(
+        default_factory=lambda: [
+            "persona.tone",
+            "persona.language",
+            "persona.style",
+            "speaking_style.tone",
+            "speaking_style.language",
+            "speaking_style.brevity",
+            "response_policy.max_chars",
+            "response_policy.sentence_limit",
+            "memory_policy.writeback",
+        ]
+    )
 
     def build_recall_context(
         self,
@@ -301,6 +314,7 @@ class MultimodalMemoryPolicy:
         feedback = self._clean_text(user_feedback)
         adjustment = self._clean_text(suggested_adjustment)
         status_lower = self._clean_text(status).lower()
+        persona_style_key = self._persona_style_key_from_summary(cleaned_summary)
 
         if adjustment:
             candidate_types = ["procedural", "training"]
@@ -359,6 +373,13 @@ class MultimodalMemoryPolicy:
             retention = "short_lived"
             promotion_status = "not_promoted"
 
+        if persona_style_key:
+            candidate_types = ["working"]
+            memory_type = "working_event"
+            resolved_source = self._non_identity_write_source(source) or "eibrain.persona_guardrail"
+            retention = "short_lived"
+            promotion_status = "not_promoted"
+
         training_candidate = "training" in candidate_types
         privacy = self._candidate_privacy(memory_type=memory_type, modality=modality, organ=organ)
         dedupe_key = self._dedupe_key(
@@ -374,6 +395,7 @@ class MultimodalMemoryPolicy:
             explicit_memory_request=explicit_memory_request,
             training_candidate=training_candidate,
             adjustment=adjustment,
+            persona_style_key=persona_style_key,
         )
         decision_trace = self._candidate_decision_trace(
             event_type=event,
@@ -381,6 +403,7 @@ class MultimodalMemoryPolicy:
             candidate_types=candidate_types,
             explicit_memory_request=explicit_memory_request,
             adjustment=adjustment,
+            persona_style_key=persona_style_key,
         )
         content: dict[str, object] = {
             "event_type": event,
@@ -399,6 +422,9 @@ class MultimodalMemoryPolicy:
             content["suggested_adjustment"] = adjustment
         if visual_context:
             content["visual_context"] = dict(visual_context)
+        if persona_style_key:
+            content["key"] = persona_style_key
+            content["value"] = cleaned_summary
 
         meta = {
             "source_system": self.source_system,
@@ -422,6 +448,9 @@ class MultimodalMemoryPolicy:
             "sensitivity": privacy["sensitivity"],
             "decision_trace": decision_trace,
         }
+        if persona_style_key:
+            meta["key"] = persona_style_key
+            meta["persona_guardrail_hint"] = "style_override_request"
         outcome = self.writeback_outcome(
             modality=modality,
             organ=organ,
@@ -456,6 +485,105 @@ class MultimodalMemoryPolicy:
                 candidate_types=candidate_types,
                 training_candidate=training_candidate,
             ),
+        }
+
+    def evaluate_write_proposals(
+        self,
+        proposals: list[dict[str, object]],
+        *,
+        existing_memories: list[dict[str, object]] | None = None,
+        persona_constraints: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Score and bucket write proposals before durable memory writeback."""
+
+        existing = list(existing_memories or [])
+        protected_keys = set(self.protected_persona_keys)
+        protected_keys.update(self._string_list((persona_constraints or {}).get("protected_keys")))
+        accepted: list[dict[str, object]] = []
+        rejected: list[dict[str, object]] = []
+        deferred: list[dict[str, object]] = []
+        diagnostics_reason_codes: list[str] = []
+        conflict_count = 0
+        persona_guardrail_applied = False
+
+        for index, proposal in enumerate(proposals):
+            assessed = dict(proposal)
+            assessed.setdefault("id", f"proposal-{index + 1}")
+            score = self._proposal_score(assessed)
+            classification = self._proposal_classification(assessed)
+            persona_style_key = self._proposal_persona_style_key(assessed)
+            if persona_style_key:
+                classification = "persona_style_candidate"
+            conflicts = self._preference_conflicts(assessed, existing)
+            reason_codes: list[str] = []
+            requires_confirmation = False
+            supersedes: list[str] = []
+
+            if conflicts:
+                conflict_count += len(conflicts)
+                assessed["conflicts_with"] = [str(item["id"]) for item in conflicts if item.get("id")]
+                if self._proposal_user_confirmed(assessed):
+                    supersedes = [str(item["id"]) for item in conflicts if item.get("id")]
+                    reason_codes.append("supersedes_confirmed_preference")
+                else:
+                    requires_confirmation = True
+                    reason_codes.append("conflict_requires_confirmation")
+            else:
+                assessed["conflicts_with"] = []
+
+            if persona_style_key or self._proposal_key(assessed) in protected_keys:
+                persona_guardrail_applied = True
+                reason_codes.append("persona_style_guardrail")
+
+            event_type = self._clean_text(assessed.get("event_type")).lower()
+            confidence = self._bounded_float(assessed.get("confidence"), default=0.5)
+            source = self._clean_text(assessed.get("source"))
+            if source in self.blocked_general_sources:
+                reason_codes.append("blocked_source")
+            if confidence < 0.45:
+                reason_codes.append("low_confidence")
+            if event_type in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
+                reason_codes.append("high_frequency_visual_frame")
+            if score < 0.5:
+                reason_codes.append("low_score")
+
+            if not reason_codes:
+                reason_codes.append("accepted")
+            elif supersedes and "accepted" not in reason_codes:
+                reason_codes.append("accepted")
+
+            assessed.update(
+                {
+                    "score": score,
+                    "classification": classification,
+                    "supersedes": supersedes,
+                    "requires_confirmation": requires_confirmation,
+                    "reason_codes": self._unique_tags(reason_codes),
+                }
+            )
+            self._extend_unique(diagnostics_reason_codes, assessed["reason_codes"])
+
+            if "persona_style_guardrail" in reason_codes or "blocked_source" in reason_codes:
+                rejected.append(assessed)
+            elif "low_confidence" in reason_codes or "high_frequency_visual_frame" in reason_codes or "low_score" in reason_codes:
+                rejected.append(assessed)
+            elif requires_confirmation:
+                deferred.append(assessed)
+            else:
+                accepted.append(assessed)
+
+        return {
+            "accepted": accepted,
+            "rejected": rejected,
+            "deferred": deferred,
+            "diagnostics": {
+                "accepted": len(accepted),
+                "rejected": len(rejected),
+                "deferred": len(deferred),
+                "conflict_count": conflict_count,
+                "persona_guardrail_applied": persona_guardrail_applied,
+                "reason_codes": diagnostics_reason_codes,
+            },
         }
 
     def _recall_filters(self, *, channel_id: str, agent_id: str, memory_types: list[str]) -> dict[str, object]:
@@ -533,6 +661,43 @@ class MultimodalMemoryPolicy:
         )
 
     @staticmethod
+    def _persona_style_key_from_summary(summary: str) -> str:
+        lowered = summary.lower()
+        tone_markers = (
+            "语气",
+            "口吻",
+            "说话风格",
+            "表达风格",
+            "人设",
+            "人格",
+            "音色",
+            "冷嘲热讽",
+            "阴阳怪气",
+            "毒舌",
+            "讽刺",
+            "sarcastic",
+            "tone",
+            "speaking style",
+            "persona",
+        )
+        if any(marker in lowered for marker in tone_markers):
+            return "speaking_style.tone"
+        language_markers = (
+            "语言",
+            "language",
+            "英文回复",
+            "中文回复",
+            "用英文",
+            "用中文",
+            "reply in english",
+            "answer in english",
+            "english from now on",
+        )
+        if any(marker in lowered for marker in language_markers):
+            return "speaking_style.language"
+        return ""
+
+    @staticmethod
     def _privacy_context(*, scope: str, sensitivity: str) -> dict[str, str]:
         return {
             "scope": scope,
@@ -565,7 +730,14 @@ class MultimodalMemoryPolicy:
         explicit_memory_request: bool,
         training_candidate: bool,
         adjustment: str,
+        persona_style_key: str = "",
     ) -> dict[str, object]:
+        if persona_style_key:
+            return {
+                "eligible": False,
+                "reason": "persona_style_guardrail",
+                "target_memory_type": memory_type,
+            }
         if adjustment:
             return {
                 "eligible": True,
@@ -616,7 +788,13 @@ class MultimodalMemoryPolicy:
         candidate_types: list[str],
         explicit_memory_request: bool,
         adjustment: str,
+        persona_style_key: str = "",
     ) -> dict[str, object]:
+        if persona_style_key:
+            return {
+                "decision": "writeback_persona_style_guardrail",
+                "why": "persona style/language/tone instructions are trace-only unless promoted by persona governance",
+            }
         if adjustment:
             return {
                 "decision": "writeback_procedural_training_candidate",
@@ -680,6 +858,139 @@ class MultimodalMemoryPolicy:
             if cleaned and cleaned not in unique:
                 unique.append(cleaned)
         return unique
+
+    @staticmethod
+    def _extend_unique(target: list[str], values: object) -> None:
+        for value in values if isinstance(values, list) else []:
+            cleaned = str(value or "").strip()
+            if cleaned and cleaned not in target:
+                target.append(cleaned)
+
+    def _proposal_score(self, proposal: dict[str, object]) -> float:
+        modality = self._clean_text(proposal.get("modality"))
+        source = self._clean_text(proposal.get("source"))
+        score = (
+            self._bounded_float(proposal.get("confidence"), default=0.5) * 0.3
+            + self._bounded_float(proposal.get("novelty"), default=0.5) * 0.2
+            + self._bounded_float(proposal.get("recency"), default=0.5) * 0.15
+            + self._bounded_float(proposal.get("importance"), default=0.5) * 0.2
+            + self._modality_write_weight(modality)
+            + self._source_write_weight(source)
+        )
+        if self._proposal_user_confirmed(proposal):
+            score += 0.1
+        return round(min(max(score, 0.0), 1.0), 3)
+
+    @staticmethod
+    def _modality_write_weight(modality: str) -> float:
+        return {
+            "audio_text": 0.05,
+            "text": 0.045,
+            "vision": 0.06,
+            "multimodal": 0.065,
+            "multimodal_action": 0.055,
+            "system": 0.025,
+        }.get(modality, 0.02)
+
+    @staticmethod
+    def _source_write_weight(source: str) -> float:
+        return {
+            "eibrain.preference": 0.08,
+            "eibrain.identity": 0.06,
+            "eibrain.audio_dialogue": 0.055,
+            "eibrain.visual_world": 0.08,
+            "eibrain.outcome_feedback": 0.07,
+            "eibrain.procedural_feedback": 0.075,
+            "eibrain.training_candidate": 0.045,
+        }.get(source, 0.025)
+
+    @staticmethod
+    def _proposal_classification(proposal: dict[str, object]) -> str:
+        memory_type = MultimodalMemoryPolicy._clean_text(proposal.get("memory_type")).lower()
+        event_type = MultimodalMemoryPolicy._clean_text(proposal.get("event_type")).lower()
+        if memory_type == "preference":
+            return "durable_preference"
+        if memory_type == "identity":
+            return "durable_identity_candidate"
+        if memory_type == "world_observation":
+            return "episodic_world_observation"
+        if memory_type in {"action_outcome", "procedural_adjustment_candidate"}:
+            return "operational_feedback"
+        if event_type in {"frame", "visual_frame", "video_frame", "detection", "detections", "object_detected"}:
+            return "trace_only"
+        if memory_type in {"semantic_candidate", "training_candidate"}:
+            return memory_type
+        return "working_candidate"
+
+    def _preference_conflicts(
+        self,
+        proposal: dict[str, object],
+        existing_memories: list[dict[str, object]],
+    ) -> list[dict[str, object]]:
+        if self._clean_text(proposal.get("memory_type")).lower() != "preference":
+            return []
+        subject = self._clean_text(proposal.get("subject"))
+        key = self._proposal_key(proposal)
+        value = self._clean_text(proposal.get("value")).lower()
+        if not key:
+            return []
+        conflicts: list[dict[str, object]] = []
+        for memory in existing_memories:
+            existing_type = self._clean_text(memory.get("memory_type")).lower()
+            if existing_type and existing_type != "preference":
+                continue
+            existing_subject = self._clean_text(memory.get("subject"))
+            if subject and existing_subject and existing_subject != subject:
+                continue
+            if self._proposal_key(memory) != key:
+                continue
+            existing_value = self._clean_text(memory.get("value")).lower()
+            if existing_value and existing_value != value:
+                conflicts.append(memory)
+        return conflicts
+
+    @staticmethod
+    def _proposal_key(proposal: dict[str, object]) -> str:
+        return MultimodalMemoryPolicy._clean_text(proposal.get("key") or proposal.get("preference_key"))
+
+    def _proposal_persona_style_key(self, proposal: dict[str, object]) -> str:
+        key = self._proposal_key(proposal)
+        if key in set(self.protected_persona_keys):
+            return key
+        summary = " ".join(
+            self._clean_text(part)
+            for part in (
+                proposal.get("summary"),
+                proposal.get("value"),
+                proposal.get("query"),
+            )
+            if self._clean_text(part)
+        )
+        return self._persona_style_key_from_summary(summary)
+
+    @staticmethod
+    def _proposal_user_confirmed(proposal: dict[str, object]) -> bool:
+        value = proposal.get("user_confirmed", proposal.get("user_confirmation"))
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"true", "yes", "confirmed", "explicit", "user_confirmed"}
+
+    @staticmethod
+    def _bounded_float(value: object, *, default: float) -> float:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = default
+        return min(max(number, 0.0), 1.0)
+
+    @staticmethod
+    def _string_list(value: object) -> list[str]:
+        if isinstance(value, list):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        if isinstance(value, tuple):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        cleaned = str(value or "").strip()
+        return [cleaned] if cleaned else []
 
     @staticmethod
     def _non_identity_write_source(source: str) -> str:

@@ -92,6 +92,15 @@ def test_v011_dataclasses_are_json_friendly_content_contracts() -> None:
         objects=[{"label": "person", "confidence": 0.91}],
         relationships=[{"subject": "person", "relation": "near", "object": "desk"}],
         environment={"lighting": "indoor"},
+        clip_labels=[{"label": "person at desk", "score": 0.84}],
+        semantic_labels=[{"label": "workspace", "confidence": 0.79}],
+        depth={"unit": "m", "median": 1.8},
+        distance={"nearestObjectId": "track_person_1", "meters": 1.7},
+        scene_graph={
+            "nodes": [{"id": "track_person_1", "label": "person"}],
+            "edges": [{"subjectId": "track_person_1", "relation": "near", "objectId": "desk_1"}],
+        },
+        scene_graph_provenance={"sourceFrameIds": ["frame_000042"], "builder": "scene_graph_v2"},
         metadata={"camera": "front"},
     )
     vision_event = VisionEventObservation(
@@ -101,6 +110,12 @@ def test_v011_dataclasses_are_json_friendly_content_contracts() -> None:
         scene_id="scene_front_001",
         subject={"trackId": "track_person_1"},
         confidence=0.88,
+        pose={"standing": 0.82},
+        clip_labels=[{"label": "person entering room", "score": 0.86}],
+        semantic_labels=[{"label": "arrival", "confidence": 0.81}],
+        depth={"unit": "m", "subjectMedian": 1.9},
+        distance={"fromCameraM": 1.9, "fromZone": "desk"},
+        scene_graph_provenance={"sceneId": "scene_front_001", "edgeIds": ["edge_person_near_desk"]},
         metadata={"source": "vision"},
     )
     memory_policy = MemoryPolicyReport(
@@ -108,6 +123,9 @@ def test_v011_dataclasses_are_json_friendly_content_contracts() -> None:
         scope={"roundId": "rnd_voice_001", "memoryTypes": ["preference"]},
         decision="allow",
         reason="round context allows recall",
+        filters=[{"field": "memoryType", "op": "in", "values": ["preference"]}],
+        conflict_resolution={"strategy": "prefer_recent_confirmed", "winnerMemoryId": "mem_pref_001"},
+        persona_consistency_signals=[{"signal": "tone_match", "score": 0.92}],
         metadata={"policyVersion": "2026-05-05"},
     )
 
@@ -126,6 +144,12 @@ def test_v011_builders_create_strictly_valid_routable_events() -> None:
         scene_id="scene_front_001",
         observed_at="2026-05-05T09:42:00.100+08:00",
         objects=[{"label": "person"}],
+        clip_labels=[{"label": "person at desk", "score": 0.84}],
+        semantic_labels=[{"label": "workspace", "confidence": 0.79}],
+        depth={"unit": "m", "median": 1.8},
+        distance={"nearestObjectId": "track_person_1", "meters": 1.7},
+        scene_graph={"nodes": [{"id": "track_person_1", "label": "person"}]},
+        scene_graph_provenance={"sourceFrameIds": ["frame_000042"], "builder": "scene_graph_v2"},
         event_id="evt_vision_scene_001",
         request_id="req_vision_scene_001",
         time="2026-05-05T09:42:00.110+08:00",
@@ -137,6 +161,12 @@ def test_v011_builders_create_strictly_valid_routable_events() -> None:
         event_type="person_entered",
         observed_at="2026-05-05T09:42:01.000+08:00",
         scene_id="scene_front_001",
+        pose={"standing": 0.82},
+        clip_labels=[{"label": "person entering room", "score": 0.86}],
+        semantic_labels=[{"label": "arrival", "confidence": 0.81}],
+        depth={"unit": "m", "subjectMedian": 1.9},
+        distance={"fromCameraM": 1.9, "fromZone": "desk"},
+        scene_graph_provenance={"sceneId": "scene_front_001", "edgeIds": ["edge_person_near_desk"]},
         protocol_event_id="evt_vision_event_001",
         request_id="req_vision_event_001",
         time="2026-05-05T09:42:01.010+08:00",
@@ -147,6 +177,9 @@ def test_v011_builders_create_strictly_valid_routable_events() -> None:
         policy_id="mpol_recall_privacy_001",
         scope={"roundId": "rnd_voice_001", "memoryTypes": ["preference"]},
         decision="allow",
+        filters=[{"field": "memoryType", "op": "in", "values": ["preference"]}],
+        conflict_resolution={"strategy": "prefer_recent_confirmed", "winnerMemoryId": "mem_pref_001"},
+        persona_consistency_signals=[{"signal": "tone_match", "score": 0.92}],
         event_id="evt_memory_policy_report_001",
         request_id="req_memory_policy_report_001",
         round_id="rnd_voice_001",
@@ -156,6 +189,9 @@ def test_v011_builders_create_strictly_valid_routable_events() -> None:
     assert scene_event.round_id == ""
     assert vision_event.round_id == ""
     assert policy_event.round_id == "rnd_voice_001"
+    assert scene_event.content["sceneGraphProvenance"]["builder"] == "scene_graph_v2"
+    assert vision_event.content["clipLabels"][0]["label"] == "person entering room"
+    assert policy_event.content["conflictResolution"]["strategy"] == "prefer_recent_confirmed"
 
     expected_routes = [
         (scene_event, "vision_scene"),
@@ -166,6 +202,130 @@ def test_v011_builders_create_strictly_valid_routable_events() -> None:
         assert validate_event_strict(event, known_event_required=True) == []
         assert loads_event(dumps_event(event)).to_dict() == event.to_dict()
         assert classify_event(event)["route"] == expected_route
+
+
+def test_v011_memory_policy_report_preserves_writes_across_model_builder_and_catalog() -> None:
+    writes = [{"memoryId": "mem_pref_001", "status": "proposed", "operation": "upsert"}]
+    report = MemoryPolicyReport(
+        policy_id="mpol_write_001",
+        scope={"roundId": "rnd_voice_001"},
+        decision="allow",
+        reason="user confirmed preference",
+        writes=writes,
+    )
+
+    content = report.to_content()
+    restored = MemoryPolicyReport.from_content(content)
+    event = build_memory_policy_report_event(
+        source=_source("eibrain"),
+        target=_target("eimemory"),
+        policy_id="mpol_write_001",
+        scope={"roundId": "rnd_voice_001"},
+        decision="allow",
+        writes=writes,
+        event_id="evt_memory_policy_writes_001",
+        request_id="req_memory_policy_writes_001",
+        round_id="rnd_voice_001",
+        time="2026-05-05T09:42:02.100+08:00",
+    )
+    definition = require_event_definition("ei.memory.policy.report")
+
+    assert content["writes"] == writes
+    assert restored == report
+    assert event.content["writes"] == writes
+    assert "writes" in definition.optional_content_fields
+    assert validate_event_strict(event, known_event_required=True) == []
+    assert loads_event(dumps_event(event)).content["writes"] == writes
+
+
+def test_v011_vision_observation_to_event_matches_non_round_scoped_catalog_semantics() -> None:
+    scene = VisionSceneObservation(
+        scene_id="scene_direct_001",
+        observed_at="2026-05-05T09:42:00.100+08:00",
+    )
+    vision_event = VisionEventObservation(
+        event_id="vevt_direct_001",
+        event_type="object_entered",
+        observed_at="2026-05-05T09:42:01.000+08:00",
+        scene_id="scene_direct_001",
+    )
+
+    scene_envelope = scene.to_event(
+        event_id="evt_scene_direct_001",
+        request_id="req_scene_direct_001",
+        sequence=1,
+        source=_source(),
+        target=_target("eibrain"),
+        time="2026-05-05T09:42:00.110+08:00",
+        session_id="session_vision_001",
+    )
+    event_envelope = vision_event.to_event(
+        event_id="evt_vision_direct_001",
+        request_id="req_vision_direct_001",
+        sequence=2,
+        source=_source(),
+        target=_target("eibrain"),
+        time="2026-05-05T09:42:01.010+08:00",
+        session_id="session_vision_001",
+    )
+
+    assert require_event_definition(scene_envelope.name).round_scoped is False
+    assert require_event_definition(event_envelope.name).round_scoped is False
+    assert scene_envelope.session_id == "session_vision_001"
+    assert event_envelope.session_id == "session_vision_001"
+    assert scene_envelope.round_id == ""
+    assert event_envelope.round_id == ""
+    assert validate_event_strict(scene_envelope, known_event_required=True) == []
+    assert validate_event_strict(event_envelope, known_event_required=True) == []
+
+
+def test_v011_models_accept_legacy_snake_case_optional_fields() -> None:
+    scene = VisionSceneObservation.from_content(
+        {
+            "scene_id": "scene_snake_001",
+            "observed_at": "2026-05-05T09:42:00.100+08:00",
+            "summary": "person at desk",
+            "objects": [{"label": "person"}],
+            "relationships": [{"subject": "person", "relation": "near", "object": "desk"}],
+            "clip_labels": [{"label": "person at desk", "score": 0.84}],
+            "semantic_labels": [{"label": "workspace", "confidence": 0.79}],
+            "depth": {"median": 1.8},
+            "distance": {"meters": 1.7},
+            "scene_graph": {"nodes": [{"id": "track_person_1"}]},
+            "scene_graph_provenance": {"builder": "scene_graph_v2"},
+        }
+    )
+    event = VisionEventObservation.from_content(
+        {
+            "event_id": "vevt_snake_001",
+            "event_type": "looking_at_device",
+            "observed_at": "2026-05-05T09:42:01.000+08:00",
+            "scene_id": "scene_snake_001",
+            "subject": {"trackId": "track_person_1"},
+            "pose": {"lookingAtDevice": True},
+            "clip_labels": [{"label": "person looking at device", "score": 0.86}],
+            "semantic_labels": [{"label": "attention", "confidence": 0.81}],
+            "depth": {"subjectMedian": 1.9},
+            "distance": {"fromCameraM": 1.9},
+            "scene_graph_provenance": {"edgeIds": ["edge_person_near_screen"]},
+        }
+    )
+    policy = MemoryPolicyReport.from_content(
+        {
+            "policy_id": "mpol_snake_001",
+            "scope": {"roundId": "rnd_voice_001"},
+            "decision": "defer",
+            "conflict_resolution": {"strategy": "ask_user"},
+            "persona_consistency_signals": [{"signal": "tone_match", "score": 0.92}],
+        }
+    )
+
+    assert scene.to_content()["sceneGraph"]["nodes"][0]["id"] == "track_person_1"
+    assert scene.to_content()["sceneGraphProvenance"]["builder"] == "scene_graph_v2"
+    assert event.to_content()["sceneGraphProvenance"]["edgeIds"] == ["edge_person_near_screen"]
+    assert event.to_content()["clipLabels"][0]["label"] == "person looking at device"
+    assert policy.to_content()["conflictResolution"]["strategy"] == "ask_user"
+    assert policy.to_content()["personaConsistencySignals"][0]["signal"] == "tone_match"
 
 
 @pytest.mark.parametrize(
@@ -281,3 +441,58 @@ def test_v011_accepts_realtime_vision_simulator_observation_content() -> None:
     assert loads_event(dumps_event(scene_event)).to_dict() == scene_event.to_dict()
     assert classify_event(scene_event)["route"] == "vision_scene"
     assert classify_event(vision_event)["route"] == "vision_event"
+
+
+def test_v011_vision_scene_and_event_builders_preserve_realtime_tracking_fields() -> None:
+    scene_event = build_vision_scene_event(
+        source=_source(),
+        target=_target("eibrain"),
+        scene={
+            "sceneId": "scene-rich-001",
+            "observedAt": "2026-05-06T10:00:00.000+08:00",
+            "summary": "person near cup",
+            "objects": [{"trackId": "person-1", "label": "person"}],
+            "attention": {"trackId": "person-1"},
+            "stableTarget": {"trackId": "person-1", "stableFrames": 12},
+            "eventSummary": "hand_near_object",
+            "trackingDiagnostics": {"activeTracks": 2, "stabilityRatio": 0.96},
+            "temporal": {"windowMs": 1500},
+            "events": [{"eventId": "scene-rich-001:hand_near_object:person-1:cup-1"}],
+            "clipLabels": ["person at desk"],
+            "semanticLabels": ["attention"],
+        },
+        event_id="evt_scene_rich",
+        request_id="req_scene_rich",
+    )
+    vision_event = build_vision_event_event(
+        source=_source(),
+        target=_target("eibrain"),
+        event_id="vevt-rich-001",
+        event_type="hand_near_object",
+        observed_at="2026-05-06T10:00:00.010+08:00",
+        event={
+            "eventId": "vevt-rich-001",
+            "eventType": "hand_near_object",
+            "observedAt": "2026-05-06T10:00:00.010+08:00",
+            "sceneId": "scene-rich-001",
+            "subject": {"trackId": "person-1"},
+            "trackingDiagnostics": {"targetStable": True},
+            "clipLabels": ["hand near cup"],
+            "semanticLabels": ["interaction"],
+        },
+        protocol_event_id="evt_vision_rich",
+        request_id="req_vision_rich",
+    )
+
+    scene_content = scene_event.content
+    event_content = vision_event.content
+    assert scene_content["stableTarget"]["trackId"] == "person-1"
+    assert scene_content["trackingDiagnostics"]["activeTracks"] == 2
+    assert scene_content["clipLabels"] == [{"label": "person at desk"}]
+    assert scene_content["semanticLabels"] == [{"label": "attention"}]
+    assert scene_content["events"][0]["eventId"].endswith(":cup-1")
+    assert event_content["trackingDiagnostics"]["targetStable"] is True
+    assert event_content["clipLabels"] == [{"label": "hand near cup"}]
+    assert event_content["semanticLabels"] == [{"label": "interaction"}]
+    assert loads_event(dumps_event(scene_event)).to_dict() == scene_event.to_dict()
+    assert loads_event(dumps_event(vision_event)).to_dict() == vision_event.to_dict()

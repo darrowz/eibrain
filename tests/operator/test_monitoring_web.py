@@ -159,6 +159,8 @@ def test_monitoring_web_surfaces_audio_live_trace_readiness_without_secret_leaks
     try:
         with urlopen(f"http://127.0.0.1:{server.port}/status.json") as response:
             payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}/livez") as response:
+            live_payload = json.loads(response.read().decode("utf-8"))
         with urlopen(f"http://127.0.0.1:{server.port}") as response:
             html = response.read().decode("utf-8")
     finally:
@@ -180,6 +182,90 @@ def test_monitoring_web_surfaces_audio_live_trace_readiness_without_secret_leaks
     assert "audio.live_trace_summary || 'waiting'" in html
     assert "audio.provider_readiness || 'unknown'" in html
     assert "audio.aec_readiness || 'unknown'" in html
+
+
+def test_monitoring_web_surfaces_visual_long_tracking_and_memory_guardrails() -> None:
+    from apps.operator_console.web import MonitoringWebServer
+
+    class _Runtime:
+        def snapshot(self):
+            return {
+                "node_id": "honjia",
+                "degradation_mode": "normal",
+                "capabilities": {"can_see_people": True},
+                "visual_tracking": {
+                    "running": True,
+                    "status": "tracking",
+                    "tracking_stability": {"state": "stable", "score": 0.9},
+                    "switch_count": 1,
+                    "lost_count": 0,
+                    "reacquired_count": 1,
+                    "scene_graph": {"summary": "person beside desk"},
+                    "pose": {"available": True, "summary": "seated"},
+                    "clipLabels": [{"label": "person beside desk", "score": 0.84}],
+                    "depth": {"status": "waiting"},
+                    "soak_summary": {"stable_ratio": 0.96, "switch_count": 1},
+                },
+                "organs": {
+                    "eye": {
+                        "health": "healthy",
+                        "subfunctions": {
+                            "camera": {"health": "healthy", "details": {"frame_path": "/tmp/latest.jpg"}},
+                            "detection": {"health": "healthy", "details": {"status": "live", "detections": []}},
+                        },
+                    }
+                },
+            }
+
+        def recent_events(self):
+            return []
+
+        def latest_visual_frame_path(self):
+            return None
+
+    class _CognitiveRuntime:
+        def snapshot(self):
+            return {
+                "memory_diagnostics": {
+                    "conflict_summary": "identity conflict blocked",
+                    "persona_guardrail": {"status": "blocked", "summary": "persona guardrail active"},
+                }
+            }
+
+    server = MonitoringWebServer(runtime=_Runtime(), cognitive_runtime=_CognitiveRuntime(), host="127.0.0.1", port=0)
+    server.start()
+    try:
+        with urlopen(f"http://127.0.0.1:{server.port}/status.json") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}/livez") as response:
+            live_payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}") as response:
+            html = response.read().decode("utf-8")
+    finally:
+        server.stop()
+
+    visual = payload["visual_diagnostics"]
+    memory = payload["memory_diagnostics"]
+    assert visual["tracking_stability"]["state"] == "stable"
+    assert visual["scene_graph_summary"] == "person beside desk"
+    assert visual["pose_availability"] == "present"
+    assert visual["clip_availability"] == "present"
+    assert memory["memory_conflict_summary"] == "identity conflict blocked"
+    assert memory["persona_guardrail_status"] == "blocked"
+    assert payload["system_health"] == "degraded"
+    assert "persona.guardrail=blocked" in payload["degraded_reasons"]
+    assert live_payload["system_health"] == "degraded"
+    assert live_payload["degraded_reasons"] == payload["degraded_reasons"]
+    assert "Tracking stability" in html
+    assert "Switch/Lost/Reacquired" in html
+    assert "Scene graph" in html
+    assert "Pose/CLIP/Semantic/Depth/Distance/Tracking" in html
+    assert "Memory conflict" in html
+    assert "Persona guardrail" in html
+    assert "const multimodalHealth" in html
+    assert "multimodalPresentCount > 0 ? 'degraded' : 'waiting'" in html
+    assert "visual.scene_graph_summary || 'waiting'" in html
+    assert "memory.memory_conflict_summary || 'unknown'" in html
 
 
 def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
@@ -212,7 +298,7 @@ def test_monitoring_web_serves_latest_vision_frame(tmp_path) -> None:
 
 
 
-def test_monitoring_web_healthz_stays_200_when_report_is_degraded() -> None:
+def test_monitoring_web_healthz_returns_503_when_report_is_degraded_while_status_stays_200() -> None:
     from apps.operator_console.web import MonitoringWebServer
 
     class _Runtime:
@@ -233,11 +319,32 @@ def test_monitoring_web_healthz_stays_200_when_report_is_degraded() -> None:
     server = MonitoringWebServer(runtime=_Runtime(), host="127.0.0.1", port=0)
     server.start()
     try:
-        with urlopen(f"http://127.0.0.1:{server.port}/healthz") as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        with urlopen(f"http://127.0.0.1:{server.port}/status.json") as response:
+            status_payload = json.loads(response.read().decode("utf-8"))
             status_code = response.status
+        with urlopen(f"http://127.0.0.1:{server.port}/metrics.json") as response:
+            metrics_payload = json.loads(response.read().decode("utf-8"))
+            metrics_code = response.status
+        with urlopen(f"http://127.0.0.1:{server.port}/livez") as response:
+            live_payload = json.loads(response.read().decode("utf-8"))
+            live_code = response.status
+        try:
+            with urlopen(f"http://127.0.0.1:{server.port}/healthz") as response:
+                health_payload = json.loads(response.read().decode("utf-8"))
+                health_code = response.status
+        except HTTPError as exc:
+            health_payload = json.loads(exc.read().decode("utf-8"))
+            health_code = exc.code
     finally:
         server.stop()
 
     assert status_code == 200
-    assert payload["system_health"] == "degraded"
+    assert metrics_code == 200
+    assert live_code == 200
+    assert health_code == 503
+    assert status_payload["system_health"] == "degraded"
+    assert metrics_payload["system_health"] == "degraded"
+    assert live_payload["status"] == "alive"
+    assert live_payload["system_health"] == "degraded"
+    assert "degradation_mode=low_confidence_body" in live_payload["degraded_reasons"]
+    assert health_payload["system_health"] == "degraded"

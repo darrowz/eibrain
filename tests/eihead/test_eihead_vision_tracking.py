@@ -52,6 +52,60 @@ def test_select_tracking_target_accepts_realtime_bbox_variants() -> None:
     assert target.horizontal_error == pytest.approx(0.0)
 
 
+def test_select_tracking_target_accepts_protocol_normalized_list_xywh_bbox() -> None:
+    from eihead.eye.tracking import select_tracking_target
+
+    target = select_tracking_target(
+        [{"label": "person", "confidence": 0.91, "bbox": [0.62, 0.35, 0.12, 0.18], "trackId": "person-list"}],
+        frame_width=640,
+        frame_height=480,
+    )
+
+    assert target is not None
+    assert target.track_id == "person-list"
+    assert target.score == pytest.approx(0.91)
+    assert target.bbox == pytest.approx((396.8, 168.0, 473.6, 254.4))
+    assert target.center_x == pytest.approx(435.2)
+
+
+def test_select_tracking_target_accepts_protocol_pixel_list_xywh_bbox() -> None:
+    from eihead.eye.tracking import select_tracking_target
+
+    detections = [
+        {"label": "person", "score": 0.91, "bbox": [320, 120, 160, 120], "track_id": "person-pixel-list"}
+    ]
+
+    target = select_tracking_target(detections, frame_width=640, frame_height=480, frame_id="frame-pixel-list")
+
+    assert target is not None
+    assert target.track_id == "person-pixel-list"
+    assert target.bbox == pytest.approx((320.0, 120.0, 480.0, 240.0))
+    assert target.center_x == pytest.approx(400.0)
+
+
+def test_select_tracking_target_honors_explicit_normalized_list_xyxy_bbox() -> None:
+    from eihead.eye.tracking import select_tracking_target
+
+    target = select_tracking_target(
+        [
+            {
+                "label": "person",
+                "score": 0.91,
+                "bbox": [0.62, 0.35, 0.74, 0.53],
+                "bboxFormat": "xyxy",
+                "trackId": "person-normalized-xyxy",
+            }
+        ],
+        frame_width=640,
+        frame_height=480,
+    )
+
+    assert target is not None
+    assert target.track_id == "person-normalized-xyxy"
+    assert target.bbox == pytest.approx((396.8, 168.0, 473.6, 254.4))
+    assert target.center_x == pytest.approx(435.2)
+
+
 def test_select_tracking_target_uses_score_area_and_center_for_stable_ranking() -> None:
     from eihead.eye.tracking import select_tracking_target
 
@@ -73,10 +127,157 @@ def test_select_tracking_target_returns_none_for_empty_or_invalid_detections() -
 
     assert select_tracking_target([], frame_width=640, frame_height=480) is None
     assert select_tracking_target(
-        [{"label": "person", "score": 0.9, "bbox": [10, 10, 10, 40]}],
+        [{"label": "person", "score": 0.9, "bbox": [10, 10, 0, 40]}],
         frame_width=640,
         frame_height=480,
     ) is None
+
+
+def test_long_term_tracker_keeps_active_id_through_short_score_spikes() -> None:
+    from eihead.eye.tracking import LongTermVisualTracker
+
+    tracker = LongTermVisualTracker(switch_score_margin=0.15, switch_hold_frames=2)
+
+    first = tracker.update(
+        [{"label": "person", "score": 0.80, "bbox": [100, 80, 220, 360], "track_id": "stable"}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f1",
+    )
+    spike = tracker.update(
+        [
+            {"label": "person", "score": 0.81, "bbox": [100, 80, 220, 360], "track_id": "stable"},
+            {"label": "person", "score": 0.93, "bbox": [420, 80, 540, 360], "track_id": "spike"},
+        ],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f2",
+    )
+
+    assert first is not None
+    assert spike is not None
+    assert first.track_id == "stable"
+    assert spike.track_id == "stable"
+    assert spike.age == 2
+    assert spike.frame_count == 2
+    assert spike.last_seen == "f2"
+    assert spike.miss_count == 0
+    assert spike.lost is False
+    assert spike.reacquired is False
+    assert tracker.diagnostics() == {
+        "track_count": 2,
+        "active_track_id": "stable",
+        "switch_count": 0,
+        "reacquired_count": 0,
+        "lost_count": 0,
+        "stability_ratio": pytest.approx(1.0),
+        "suppressed_reason": "switch_margin",
+    }
+
+
+def test_long_term_tracker_switches_after_margin_and_hold_frames() -> None:
+    from eihead.eye.tracking import LongTermVisualTracker
+
+    tracker = LongTermVisualTracker(switch_score_margin=0.10, switch_hold_frames=2)
+
+    tracker.update(
+        [{"label": "person", "score": 0.70, "bbox": [100, 80, 220, 360], "track_id": "a"}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f1",
+    )
+    held = tracker.update(
+        [
+            {"label": "person", "score": 0.70, "bbox": [100, 80, 220, 360], "track_id": "a"},
+            {"label": "person", "score": 0.86, "bbox": [420, 80, 540, 360], "track_id": "b"},
+        ],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f2",
+    )
+    switched = tracker.update(
+        [
+            {"label": "person", "score": 0.70, "bbox": [100, 80, 220, 360], "track_id": "a"},
+            {"label": "person", "score": 0.87, "bbox": [420, 80, 540, 360], "track_id": "b"},
+        ],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f3",
+    )
+
+    assert held is not None
+    assert switched is not None
+    assert held.track_id == "a"
+    assert switched.track_id == "b"
+    assert switched.frame_count == 2
+    assert tracker.diagnostics()["switch_count"] == 1
+    assert tracker.diagnostics()["suppressed_reason"] is None
+
+
+def test_long_term_tracker_marks_lost_and_reacquired_tracks() -> None:
+    from eihead.eye.tracking import LongTermVisualTracker
+
+    tracker = LongTermVisualTracker(max_misses=2)
+
+    tracker.update(
+        [{"label": "face", "score": 0.90, "bbox": [250, 120, 390, 300], "track_id": "face-1"}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f1",
+    )
+    missing = tracker.update([], frame_width=640, frame_height=480, frame_id="f2")
+    reacquired = tracker.update(
+        [{"label": "face", "score": 0.91, "bbox": [252, 121, 392, 301], "track_id": "face-1"}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f3",
+    )
+
+    assert missing is None
+    assert reacquired is not None
+    assert reacquired.track_id == "face-1"
+    assert reacquired.age == 2
+    assert reacquired.frame_count == 2
+    assert reacquired.last_seen == "f3"
+    assert reacquired.miss_count == 0
+    assert reacquired.lost is False
+    assert reacquired.reacquired is True
+    assert tracker.diagnostics()["lost_count"] == 1
+    assert tracker.diagnostics()["reacquired_count"] == 1
+    assert tracker.diagnostics()["active_track_id"] == "face-1"
+
+
+def test_long_term_tracker_keeps_synthetic_id_when_detector_omits_track_id() -> None:
+    from eihead.eye.tracking import LongTermVisualTracker
+
+    tracker = LongTermVisualTracker(max_misses=2)
+
+    first = tracker.update(
+        [{"label": "person", "score": 0.90, "bbox": [250, 120, 140, 180]}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f1",
+    )
+    second = tracker.update(
+        [{"label": "person", "score": 0.91, "bbox": [258, 122, 140, 180]}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f2",
+    )
+    third = tracker.update(
+        [{"label": "person", "score": 0.92, "bbox": [266, 124, 140, 180]}],
+        frame_width=640,
+        frame_height=480,
+        frame_id="f3",
+    )
+
+    assert first is not None
+    assert second is not None
+    assert third is not None
+    assert second.track_id == first.track_id
+    assert third.track_id == first.track_id
+    assert third.frame_count == 3
+    assert tracker.diagnostics()["lost_count"] == 0
 
 
 def test_plan_pan_follow_action_outputs_smoothed_pan_only_command() -> None:

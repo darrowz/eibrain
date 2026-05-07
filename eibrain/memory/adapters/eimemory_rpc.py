@@ -24,6 +24,8 @@ class EIMemoryRPCAdapter:
             "goal": "retrieve memory for embodied response",
         }
         task_context.update(dict(query.task_context or {}))
+        if query.session_id:
+            task_context["session_id"] = query.session_id
         payload = {
             "method": "memory.recall",
             "params": {
@@ -58,11 +60,25 @@ class EIMemoryRPCAdapter:
         tags: list[str] | None = None,
         evidence: list[dict[str, object]] | None = None,
         links: list[dict[str, object]] | None = None,
+        idempotency_key: str | None = None,
+        source_event_id: str | None = None,
+        conflict: dict[str, object] | None = None,
+        persona_snapshot: dict[str, object] | None = None,
     ) -> None:
         cleaned_summary = str(summary or "").strip()
         if not cleaned_summary:
             return
         self._sessions[session_id] = cleaned_summary
+        governance = self._governance_fields(
+            meta=meta,
+            idempotency_key=idempotency_key,
+            source_event_id=source_event_id,
+            conflict=conflict,
+            persona_snapshot=persona_snapshot,
+        )
+        request_meta = self._meta_with_session(meta=meta, session_id=session_id)
+        status_meta = dict(request_meta)
+        status_meta.update(governance)
         if not self.config.endpoint:
             self.last_writeback_status = self._writeback_status(
                 status="error",
@@ -71,7 +87,7 @@ class EIMemoryRPCAdapter:
                 modality=modality,
                 organ=organ,
                 title=title or "Embodied episode",
-                meta=meta,
+                meta=status_meta,
                 error="eimemory RPC endpoint is not configured",
             )
             return
@@ -82,7 +98,7 @@ class EIMemoryRPCAdapter:
                 "title": title or "Embodied episode",
                 "memory_type": memory_type,
                 "source": source,
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
                 "organ": organ,
                 "modality": modality,
                 "outcome": dict(outcome or {}),
@@ -91,8 +107,9 @@ class EIMemoryRPCAdapter:
         params = payload["params"]
         if content is not None:
             params["content"] = dict(content)
-        if meta is not None:
-            params["meta"] = dict(meta)
+        if request_meta:
+            params["meta"] = dict(request_meta)
+        params.update(governance)
         if tags is not None:
             params["tags"] = [str(tag) for tag in tags]
         if evidence is not None:
@@ -108,7 +125,7 @@ class EIMemoryRPCAdapter:
                 modality=modality,
                 organ=organ,
                 title=title or "Embodied episode",
-                meta=meta,
+                meta=status_meta,
                 response=response,
             )
             self._observe_failed_outcome(
@@ -127,7 +144,7 @@ class EIMemoryRPCAdapter:
                 modality=modality,
                 organ=organ,
                 title=title or "Embodied episode",
-                meta=meta,
+                meta=status_meta,
                 error=f"{type(exc).__name__}: {exc}",
             )
             return
@@ -144,6 +161,10 @@ class EIMemoryRPCAdapter:
         evidence: list[dict[str, object]] | None = None,
         links: list[dict[str, object]] | None = None,
         title: str = "Visual world observation",
+        idempotency_key: str | None = None,
+        source_event_id: str | None = None,
+        conflict: dict[str, object] | None = None,
+        persona_snapshot: dict[str, object] | None = None,
     ) -> None:
         observation_tags = self._merge_tags(tags, ["world_observation", "vision"])
         self.remember_episode(
@@ -160,6 +181,10 @@ class EIMemoryRPCAdapter:
             tags=observation_tags,
             evidence=evidence,
             links=links,
+            idempotency_key=idempotency_key,
+            source_event_id=source_event_id,
+            conflict=conflict,
+            persona_snapshot=persona_snapshot,
         )
 
     def remember_preference(
@@ -226,9 +251,12 @@ class EIMemoryRPCAdapter:
             "params": {
                 "signal_type": signal_type,
                 "payload": dict(payload or {}),
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
+        meta = self._meta_with_session(meta=None, session_id=session_id)
+        if meta:
+            body["params"]["meta"] = meta
         try:
             self._post_json(body)
         except (URLError, OSError, ValueError, TypeError, KeyError):
@@ -249,9 +277,12 @@ class EIMemoryRPCAdapter:
             "params": {
                 "signal_type": signal_type,
                 "payload": dict(payload or {}),
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
+        meta = self._meta_with_session(meta=None, session_id=session_id)
+        if meta:
+            body["params"]["meta"] = meta
         try:
             return self._post_json(body)
         except (URLError, OSError, ValueError, TypeError, KeyError):
@@ -270,9 +301,12 @@ class EIMemoryRPCAdapter:
             "method": "experience.record_skill_trace",
             "params": {
                 "payload": dict(payload or {}),
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
+        meta = self._meta_with_session(meta=None, session_id=session_id)
+        if meta:
+            body["params"]["meta"] = meta
         try:
             return self._post_json(body)
         except (URLError, OSError, ValueError, TypeError, KeyError):
@@ -291,9 +325,12 @@ class EIMemoryRPCAdapter:
             "method": "experience.record_memory_trace",
             "params": {
                 "payload": dict(payload or {}),
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
+        meta = self._meta_with_session(meta=None, session_id=session_id)
+        if meta:
+            body["params"]["meta"] = meta
         try:
             return self._post_json(body)
         except (URLError, OSError, ValueError, TypeError, KeyError):
@@ -312,9 +349,12 @@ class EIMemoryRPCAdapter:
             "method": "evolution.get_active_policy",
             "params": {
                 "task_type": task_type,
-                "scope": self._scope_from_ids(session_id=session_id, actor_id=actor_id),
+                "scope": self._scope_from_ids(actor_id=actor_id),
             },
         }
+        meta = self._meta_with_session(meta=None, session_id=session_id)
+        if meta:
+            body["params"]["meta"] = meta
         try:
             result = self._post_json(body)
         except (URLError, OSError, ValueError, TypeError, KeyError):
@@ -376,6 +416,10 @@ class EIMemoryRPCAdapter:
         for key in (
             "trace_id",
             "source_event_id",
+            "idempotency_key",
+            "conflict",
+            "conflict_resolution",
+            "persona_snapshot",
             "candidate_types",
             "identity_memory",
             "persona_memory",
@@ -387,20 +431,50 @@ class EIMemoryRPCAdapter:
                 payload[key] = metadata[key]
         return payload
 
+    def _governance_fields(
+        self,
+        *,
+        meta: dict[str, object] | None,
+        idempotency_key: str | None,
+        source_event_id: str | None,
+        conflict: dict[str, object] | None,
+        persona_snapshot: dict[str, object] | None,
+    ) -> dict[str, object]:
+        metadata = dict(meta or {})
+        fields: dict[str, object] = {}
+        resolved_idempotency_key = idempotency_key or metadata.get("idempotency_key")
+        if resolved_idempotency_key:
+            fields["idempotency_key"] = str(resolved_idempotency_key)
+        resolved_source_event_id = source_event_id or metadata.get("source_event_id")
+        if resolved_source_event_id:
+            fields["source_event_id"] = str(resolved_source_event_id)
+        resolved_conflict = conflict or metadata.get("conflict") or metadata.get("conflict_resolution")
+        if isinstance(resolved_conflict, dict):
+            fields["conflict"] = dict(resolved_conflict)
+        resolved_persona_snapshot = persona_snapshot or metadata.get("persona_snapshot")
+        if isinstance(resolved_persona_snapshot, dict):
+            fields["persona_snapshot"] = dict(resolved_persona_snapshot)
+        return fields
+
     def _scope(self, query: MemoryQuery) -> dict[str, str]:
-        return self._scope_from_ids(session_id=query.session_id, actor_id=query.actor_id)
+        return self._scope_from_ids(actor_id=query.actor_id)
 
     def _scope_from_ids(self, *, session_id: str | None = None, actor_id: str | None = None) -> dict[str, str]:
-        scope: dict[str, str] = {}
+        del session_id
+        scope: dict[str, str] = {"tenant_id": self.config.tenant_id or "default"}
         if self.config.agent_id:
             scope["agent_id"] = self.config.agent_id
         if self.config.workspace_id:
             scope["workspace_id"] = self.config.workspace_id
-        if session_id:
-            scope["session_id"] = session_id
         if actor_id:
-            scope["actor_id"] = actor_id
+            scope["user_id"] = actor_id
         return scope
+
+    def _meta_with_session(self, *, meta: dict[str, object] | None, session_id: str | None) -> dict[str, object]:
+        request_meta = dict(meta or {})
+        if session_id:
+            request_meta["session_id"] = session_id
+        return request_meta
 
     def _merge_tags(self, tags: list[str] | None, required_tags: list[str]) -> list[str]:
         merged: list[str] = []

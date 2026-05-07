@@ -68,6 +68,7 @@ def test_catalog_lists_core_v01_events_and_serializes_definitions() -> None:
             "round_scoped": definition.round_scoped,
             "side_effecting": definition.side_effecting,
             "required_content_fields": list(definition.required_content_fields),
+            "optional_content_fields": list(definition.optional_content_fields),
             "description": definition.description,
         }
         json.dumps(payload)
@@ -158,6 +159,46 @@ def test_required_content_fields_and_routing_metadata_are_documented() -> None:
     assert head_status.required_content_fields == ("status", "components", "reportedAt")
     assert head_status.round_scoped is False
     assert head_status.direction == "head_to_brain"
+
+
+def test_visual_memory_optional_content_fields_are_documented_in_catalog() -> None:
+    frame = require_event_definition("ei.observation.vision.frame")
+    assert set(frame.optional_content_fields) >= {
+        "trackingDiagnostics",
+        "pose",
+        "clipLabels",
+        "semanticLabels",
+        "depth",
+        "distance",
+    }
+
+    scene = require_event_definition("ei.observation.vision.scene")
+    assert set(scene.optional_content_fields) >= {
+        "clipLabels",
+        "semanticLabels",
+        "depth",
+        "distance",
+        "sceneGraph",
+        "sceneGraphProvenance",
+    }
+
+    event = require_event_definition("ei.observation.vision.event")
+    assert set(event.optional_content_fields) >= {
+        "pose",
+        "clipLabels",
+        "semanticLabels",
+        "depth",
+        "distance",
+        "sceneGraphProvenance",
+    }
+
+    memory_policy = require_event_definition("ei.memory.policy.report")
+    assert set(memory_policy.optional_content_fields) >= {
+        "filters",
+        "conflictResolution",
+        "personaConsistencySignals",
+        "writes",
+    }
 
 
 def test_unknown_lookup_is_optional_until_required() -> None:

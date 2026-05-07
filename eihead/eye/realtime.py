@@ -15,6 +15,19 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Protocol
 
 REALTIME_STREAM_MODE = "realtime_stream"
 COMPAT_STATIC_FRAME_MODE = "compat_static_frame"
+_MULTIMODAL_ATTRIBUTE_ALIASES = (
+    ("pose", "pose"),
+    ("clipLabels", "clipLabels"),
+    ("clip_labels", "clipLabels"),
+    ("semanticLabels", "semanticLabels"),
+    ("semantic_labels", "semanticLabels"),
+    ("depth", "depth"),
+    ("distance", "distance"),
+    ("trackingDiagnostics", "trackingDiagnostics"),
+    ("tracking_diagnostics", "trackingDiagnostics"),
+    ("bboxFormat", "bboxFormat"),
+    ("bbox_format", "bboxFormat"),
+)
 
 
 class FrameSource(Protocol):
@@ -113,7 +126,7 @@ class RealtimeDetection:
         label: str,
         confidence: float | None = None,
         score: float | None = None,
-        bbox: tuple[float, float, float, float] | Mapping[str, float] | None = None,
+        bbox: tuple[float, float, float, float] | list[Any] | Mapping[str, float] | None = None,
         class_id: int | None = None,
         track_id: str | int | None = None,
         source: str = "detector",
@@ -152,6 +165,9 @@ class RealtimeDetection:
             payload["model_id"] = self.model_id
         if self.attributes:
             payload["attributes"] = dict(self.attributes)
+            for source_key, target_key in _MULTIMODAL_ATTRIBUTE_ALIASES:
+                if source_key in self.attributes and self.attributes[source_key] not in (None, "", [], {}):
+                    payload.setdefault(target_key, self.attributes[source_key])
         return payload
 
 
@@ -586,17 +602,15 @@ def _coerce_detection(raw: RealtimeDetection | Mapping[str, Any]) -> RealtimeDet
     if isinstance(raw, RealtimeDetection):
         return raw
     bbox = raw.get("bbox", {}) if isinstance(raw, Mapping) else {}
-    if not isinstance(bbox, Mapping):
-        bbox = {}
     return RealtimeDetection(
         label=str(raw.get("label", "unknown") if isinstance(raw, Mapping) else "unknown"),
         confidence=float(raw.get("confidence", raw.get("score", 0.0)) if isinstance(raw, Mapping) else 0.0),
         bbox=bbox,
         class_id=raw.get("class_id") if isinstance(raw, Mapping) and raw.get("class_id") is not None else None,
-        track_id=raw.get("track_id") if isinstance(raw, Mapping) else None,
+        track_id=_first_raw_value(raw, "track_id", "trackId", "id", "stable_id") if isinstance(raw, Mapping) else None,
         source=str(raw.get("source", "detector") if isinstance(raw, Mapping) else "detector"),
-        model_id=str(raw.get("model_id", "") if isinstance(raw, Mapping) else ""),
-        attributes=dict(raw.get("attributes", {}) if isinstance(raw, Mapping) and isinstance(raw.get("attributes"), Mapping) else {}),
+        model_id=str((_first_raw_value(raw, "model_id", "modelId", "model") if isinstance(raw, Mapping) else None) or ""),
+        attributes=_detection_attributes(raw) if isinstance(raw, Mapping) else {},
     )
 
 
@@ -608,13 +622,30 @@ def _safe_int(value: Any) -> int | None:
 
 
 def _normalize_bbox(
-    bbox: tuple[float, float, float, float] | Mapping[str, float] | None,
+    bbox: tuple[float, float, float, float] | list[Any] | Mapping[str, float] | None,
 ) -> tuple[float, float, float, float] | dict[str, float] | None:
     if bbox is None:
         return None
     if isinstance(bbox, Mapping):
         return {str(key): float(value) for key, value in bbox.items()}
     return tuple(float(value) for value in bbox)  # type: ignore[return-value]
+
+
+def _detection_attributes(raw: Mapping[str, Any]) -> dict[str, Any]:
+    attributes = dict(raw.get("attributes", {}) if isinstance(raw.get("attributes"), Mapping) else {})
+    for source_key, target_key in _MULTIMODAL_ATTRIBUTE_ALIASES:
+        value = raw.get(source_key)
+        if value not in (None, "", [], {}):
+            attributes.setdefault(target_key, value)
+    return attributes
+
+
+def _first_raw_value(raw: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = raw.get(key)
+        if value not in (None, ""):
+            return value
+    return None
 
 
 def _bbox_to_dict(bbox: tuple[float, float, float, float] | dict[str, float] | None) -> dict[str, float] | None:

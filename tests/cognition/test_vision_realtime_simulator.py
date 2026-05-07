@@ -115,6 +115,99 @@ def test_realtime_simulator_maps_snapshots_to_eiprotocol_friendly_content() -> N
     assert event_contents[0]["subject"]["trackId"]
 
 
+def test_realtime_simulator_accepts_protocol_bbox_and_exports_multimodal_fields() -> None:
+    simulator = RealtimeVisionSimulator()
+
+    snapshot = simulator.update(
+        frame_id="frame-protocol",
+        observed_at="2026-05-05T10:00:00.000+08:00",
+        detections=[
+            {
+                "label": "person",
+                "confidence": 0.91,
+                "bbox": {"x": 0.10, "y": 0.10, "w": 0.20, "h": 0.45},
+                "clipLabels": [{"label": "person at desk", "score": 0.84}],
+                "semanticLabels": [{"label": "workspace", "confidence": 0.79}],
+                "depth": {"median": 0.72, "unit": "m"},
+                "distance": {"fromCameraM": 0.72},
+                "pose": {"lookingAtDevice": True},
+            }
+        ],
+    )
+
+    scene_content = to_eiprotocol_scene_content(snapshot)
+    event_content = to_eiprotocol_event_contents(snapshot)[0]
+
+    assert snapshot["sceneSnapshot"]["objects"][0]["bbox"] == {
+        "x_min": 0.1,
+        "y_min": 0.1,
+        "x_max": 0.3,
+        "y_max": 0.55,
+    }
+    assert scene_content["clipLabels"][0]["label"] == "person at desk"
+    assert scene_content["depth"]["median"] == 0.72
+    assert scene_content["distance"]["fromCameraM"] == 0.72
+    assert event_content["pose"]["lookingAtDevice"] is True
+
+
+def test_realtime_simulator_accepts_protocol_list_bbox_and_tracking_diagnostics() -> None:
+    simulator = RealtimeVisionSimulator()
+
+    snapshot = simulator.update(
+        frame_id="frame-list-bbox",
+        observed_at="2026-05-05T10:00:00.000+08:00",
+        detections=[
+            {
+                "label": "person",
+                "score": 0.91,
+                "bbox": [0.62, 0.35, 0.12, 0.18],
+                "trackingDiagnostics": {
+                    "trackIdSwitchCount": 0,
+                    "targetStabilityRatio": 1.0,
+                },
+            }
+        ],
+    )
+
+    scene_content = to_eiprotocol_scene_content(snapshot)
+    event_content = to_eiprotocol_event_contents(snapshot)[0]
+
+    assert snapshot["sceneSnapshot"]["objects"][0]["bbox"] == {
+        "x_min": 0.62,
+        "y_min": 0.35,
+        "x_max": 0.74,
+        "y_max": 0.53,
+    }
+    assert snapshot["sceneSnapshot"]["objects"][0]["trackingDiagnostics"]["trackIdSwitchCount"] == 0
+    assert scene_content["trackingDiagnostics"]["targetStabilityRatio"] == 1.0
+    assert event_content["trackingDiagnostics"]["trackIdSwitchCount"] == 0
+
+
+def test_realtime_simulator_honors_explicit_normalized_list_xyxy_bbox() -> None:
+    simulator = RealtimeVisionSimulator()
+
+    snapshot = simulator.update(
+        frame_id="frame-list-xyxy",
+        observed_at="2026-05-05T10:00:00.000+08:00",
+        detections=[
+            {
+                "label": "person",
+                "score": 0.91,
+                "bbox": [0.62, 0.35, 0.74, 0.53],
+                "bboxFormat": "xyxy",
+            }
+        ],
+    )
+
+    assert snapshot["sceneSnapshot"]["objects"][0]["bbox"] == {
+        "x_min": 0.62,
+        "y_min": 0.35,
+        "x_max": 0.74,
+        "y_max": 0.53,
+    }
+    assert snapshot["sceneSnapshot"]["objects"][0]["center"] == {"x": 0.68, "y": 0.44}
+
+
 def test_realtime_simulator_replays_detection_frames_without_raw_frame_dump() -> None:
     simulator = RealtimeVisionSimulator(move_threshold=0.05, max_missing_frames=0)
 

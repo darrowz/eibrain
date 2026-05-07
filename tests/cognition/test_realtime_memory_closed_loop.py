@@ -260,3 +260,271 @@ def test_memory_orchestrator_records_recalled_items_used_in_reply() -> None:
     assert trace["memory_trace_summary"]["reply_used"] == 1
     assert trace["memory_trace_summary"]["used_memory_ids"] == ["mem_reply_1"]
     assert memory.memory_traces[-1]["payload"]["reply"]["used_recall_items"][0]["record_id"] == "mem_reply_1"
+
+
+def test_memory_trace_records_closed_loop_lifecycle_policy_conflict_and_reply_filters() -> None:
+    turn = _turn()
+    memory = FakeEIMemoryRPCAdapter(
+        recall_result=MemoryResult(
+            summary="Preference and blocked persona memory.",
+            relevant_memories=[
+                "Reply Style: Prefer concise spoken replies.",
+                "Blocked Persona: unrelated persona note.",
+            ],
+            recall_diagnostics={
+                "selected_count": 2,
+                "selected_records": [
+                    {
+                        "record_id": "mem_allowed",
+                        "title": "Reply Style",
+                        "source": "eibrain.preference",
+                        "memory_type": "preference",
+                        "policy_decision": {"decision": "allow", "reason": "reply_context"},
+                    },
+                    {
+                        "record_id": "mem_filtered",
+                        "title": "Blocked Persona",
+                        "source": "eibrain.persona",
+                        "memory_type": "persona",
+                        "policy_decision": {"decision": "filter", "reason": "persona_policy"},
+                    },
+                ],
+                "recall_filters": {
+                    "filtered_records": [
+                        {
+                            "record_id": "mem_filtered",
+                            "reason": "persona_policy",
+                            "source": "eibrain.persona",
+                        }
+                    ]
+                },
+            },
+        )
+    )
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    orchestrator.build_recall_request(
+        turn,
+        query="用户回复风格偏好",
+        reason="prefetch_context_for_reply",
+        metadata={"task_type": "brain.respond"},
+    )
+    orchestrator.build_writeback_proposal(
+        turn,
+        query="用户要求回答短一点",
+        reason="explicit_memory_request",
+        summary="用户偏好更短的回复。",
+        metadata={
+            "memory_type": "preference",
+            "source": "eibrain.preference",
+            "policy_decision": {"decision": "commit", "reason": "explicit_user_request"},
+            "conflict_resolution": {
+                "status": "resolved",
+                "strategy": "merge",
+                "conflict_record_ids": ["pref_old"],
+            },
+            "meta": {
+                "idempotency_key": "memtrace:s1:evt-1",
+                "source_event_id": "evt-1",
+                "conflict": {"strategy": "merge", "conflict_record_ids": ["pref_old"]},
+            },
+        },
+    )
+
+    trace = orchestrator.commit_candidates(turn, session_id="s1", actor_id="user-1")
+    trace = orchestrator.record_reply_memory_usage(
+        turn,
+        reply_text="我会尽量短一点。",
+        used_items=[{"record_id": "mem_allowed"}],
+        filtered_items=[{"record_id": "mem_filtered", "reason": "persona_policy"}],
+        session_id="s1",
+        actor_id="user-1",
+    )
+
+    assert [event["stage"] for event in trace["lifecycle"]] == [
+        "prefetch",
+        "candidates",
+        "policy_decision",
+        "prefetch_result",
+        "policy_decision",
+        "conflict_resolution",
+        "write_committed",
+        "recall_used",
+    ]
+    assert trace["policy_decision"]["write"][0]["decision"] == "commit"
+    filtered_policy_rows = [
+        item
+        for item in trace["policy_decision"]["recall"]
+        if item["record_id"] == "mem_filtered" and item["decision"] == "filter"
+    ]
+    assert len(filtered_policy_rows) == 1
+    assert trace["conflict_resolution"]["write"][0]["strategy"] == "merge"
+    assert trace["reply_context"]["used"][0]["record_id"] == "mem_allowed"
+    assert trace["reply_context"]["filtered"][0]["record_id"] == "mem_filtered"
+    assert trace["reply_context"]["filtered"][0]["reason"] == "persona_policy"
+
+
+def test_reply_memory_usage_does_not_mark_all_recall_items_used_without_explicit_ids() -> None:
+    turn = _turn()
+    turn.memory_candidates = [
+        {
+            "kind": "recall",
+            "record_id": "mem_unknown_1",
+            "text": "A potentially useful memory",
+            "memory_type": "preference",
+        },
+        {
+            "kind": "recall",
+            "record_id": "mem_unknown_2",
+            "text": "Another potentially useful memory",
+            "memory_type": "fact",
+        },
+    ]
+
+    trace = MemoryOrchestrator().record_reply_memory_usage(turn, reply_text="收到。")
+
+    assert trace["reply"]["used_recall_items"] == []
+    assert trace["reply"]["used_count"] == 0
+    assert [item["reply_context_status"] for item in turn.memory_candidates] == ["available", "available"]
+
+
+def test_reply_memory_usage_auto_records_policy_filtered_recall_items() -> None:
+    turn = _turn()
+    turn.memory_candidates = [
+        {
+            "kind": "recall",
+            "record_id": "mem_allowed",
+            "text": "A usable preference memory",
+            "memory_type": "preference",
+            "policy_decision": {"decision": "allow", "reason": "reply_context"},
+        },
+        {
+            "kind": "recall",
+            "record_id": "mem_filtered",
+            "text": "A persona-drifting memory",
+            "memory_type": "persona",
+            "policy_decision": {"decision": "filter", "reason": "persona_policy"},
+        },
+    ]
+
+    trace = MemoryOrchestrator().record_reply_memory_usage(turn, reply_text="收到。")
+
+    assert trace["reply_context"]["used"] == []
+    assert trace["reply_context"]["filtered"] == [
+        {
+            "record_id": "mem_filtered",
+            "text": "A persona-drifting memory",
+            "title": "",
+            "memory_type": "persona",
+            "memory_source": "",
+            "reason": "persona_policy",
+        }
+    ]
+    assert turn.memory_candidates[0]["reply_context_status"] == "available"
+    assert turn.memory_candidates[1]["reply_context_status"] == "filtered"
+
+
+def test_memory_policy_filters_visual_frame_writeback_before_rpc_commit() -> None:
+    turn = _turn()
+    memory = FakeEIMemoryRPCAdapter()
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    orchestrator.build_writeback_proposal(
+        turn,
+        query="raw frame",
+        reason="visual_noise",
+        summary="Transient low confidence visual frame.",
+        metadata={
+            "memory_type": "working_event",
+            "event_type": "visual_frame",
+            "modality": "vision",
+            "source": "eibrain.visual_frame",
+            "confidence": 0.2,
+        },
+    )
+
+    trace = orchestrator.commit_candidates(turn, session_id="s1", actor_id="user-1")
+
+    assert trace["writeback"]["items"][0]["status"] == "skipped"
+    assert trace["writeback"]["items"][0]["reason"] == "memory_policy_rejected"
+    assert trace["policy_decision"]["write"][0]["decision"] == "reject"
+    assert memory.memory_traces[-1]["payload"]["writeback"]["items"][0]["status"] == "skipped"
+
+
+def test_memory_policy_deferred_writeback_stays_retryable() -> None:
+    turn = _turn()
+    memory = FakeEIMemoryRPCAdapter()
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    candidate = orchestrator.build_writeback_proposal(
+        turn,
+        query="记住我以后回复长一点",
+        reason="explicit_memory_request",
+        summary="用户偏好更长的回复。",
+        metadata={
+            "memory_type": "preference",
+            "source": "eibrain.preference",
+            "subject": "user-1",
+            "key": "response.length",
+            "value": "long",
+            "existing_memories": [
+                {
+                    "id": "pref-short",
+                    "subject": "user-1",
+                    "key": "response.length",
+                    "value": "short",
+                    "summary": "用户偏好短回复。",
+                }
+            ],
+        },
+    )
+
+    trace = orchestrator.commit_candidates(turn, session_id="s1", actor_id="user-1")
+
+    assert trace["writeback"]["items"][0]["status"] == "skipped"
+    assert trace["writeback"]["items"][0]["reason"] == "memory_policy_deferred"
+    assert trace["policy_decision"]["write"][0]["decision"] == "defer"
+    assert candidate["committed"] is False
+    assert candidate["commit_status"] == "deferred"
+
+
+def test_memory_trace_preserves_recall_and_write_source_event_ids() -> None:
+    turn = _turn()
+    memory = FakeEIMemoryRPCAdapter(
+        recall_result=MemoryResult(
+            summary="Recall result",
+            relevant_memories=["Known preference."],
+            recall_diagnostics={
+                "selected_count": 1,
+                "selected_records": [{"record_id": "mem-trace-1", "memory_type": "preference"}],
+            },
+        )
+    )
+    orchestrator = MemoryOrchestrator(memory_service=memory)
+    orchestrator.build_recall_request(
+        turn,
+        query="trace recall",
+        reason="prefetch_context_for_reply",
+        metadata={"trace_id": "trace-recall-1", "source_event_id": "evt-recall-1"},
+    )
+    orchestrator.build_writeback_proposal(
+        turn,
+        query="trace write",
+        reason="explicit_memory_request",
+        summary="User likes concise answers.",
+        metadata={
+            "memory_type": "preference",
+            "source": "eibrain.preference",
+            "key": "response.length",
+            "value": "short",
+            "meta": {"trace_id": "trace-write-1", "source_event_id": "evt-write-1"},
+        },
+    )
+
+    trace = orchestrator.commit_candidates(turn, session_id="s1", actor_id="user-1")
+
+    assert trace["prefetch"]["requested"][0]["trace_id"] == "trace-recall-1"
+    assert trace["prefetch"]["requested"][0]["source_event_id"] == "evt-recall-1"
+    assert trace["recall"]["items"][0]["trace_id"] == "trace-recall-1"
+    assert trace["recall"]["items"][0]["source_event_id"] == "evt-recall-1"
+    assert trace["write"]["proposed"][0]["trace_id"] == "trace-write-1"
+    assert trace["write"]["proposed"][0]["source_event_id"] == "evt-write-1"
+    assert trace["writeback"]["items"][0]["trace_id"] == "trace-write-1"
+    assert trace["writeback"]["items"][0]["source_event_id"] == "evt-write-1"

@@ -48,6 +48,16 @@ def test_dumps_and_loads_event_round_trip() -> None:
     assert restored.to_dict() == payload
 
 
+def test_event_envelope_from_dict_accepts_legacy_snake_case_ttl_ms() -> None:
+    payload = _event_payload(ttlMs=None, ttl_ms=2500)
+
+    restored = EventEnvelope.from_dict(payload)
+
+    assert restored.ttl_ms == 2500
+    assert restored.to_dict()["ttlMs"] == 2500
+    assert "ttl_ms" not in restored.to_dict()
+
+
 def test_loads_event_accepts_utf8_bytes() -> None:
     from eiprotocol.codec import dumps_event, loads_event
 

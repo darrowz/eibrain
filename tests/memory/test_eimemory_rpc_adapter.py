@@ -47,14 +47,15 @@ def test_eimemory_rpc_adapter_posts_recall_request(monkeypatch) -> None:
             "query": "where is the user",
             "limit": 8,
             "scope": {
+                "tenant_id": "default",
                 "agent_id": "honxin",
                 "workspace_id": "robot",
-                "session_id": "session-1",
-                "actor_id": "user-1",
+                "user_id": "user-1",
             },
             "task_context": {
                 "task_type": "brain.respond",
                 "goal": "retrieve memory for embodied response",
+                "session_id": "session-1",
             },
         },
     }
@@ -222,14 +223,15 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> No
             "memory_type": "conversation",
             "source": "eibrain.audio_dialogue",
             "scope": {
+                "tenant_id": "default",
                 "agent_id": "honxin",
                 "workspace_id": "honjia",
-                "session_id": "voice-session",
-                "actor_id": "user-1",
+                "user_id": "user-1",
             },
             "organ": "ear",
             "modality": "audio_text",
             "outcome": {"success": True, "status": "planned", "action_count": 1},
+            "meta": {"session_id": "voice-session"},
         },
     }
 
@@ -276,10 +278,74 @@ def test_eimemory_rpc_adapter_passes_structured_episode_fields(monkeypatch) -> N
 
     params = captured["body"]["params"]
     assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
-    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91}
+    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91, "session_id": "vision:user-1"}
     assert params["tags"] == ["vision", "world_observation"]
     assert params["evidence"] == [{"type": "frame", "url": "https://example.com/frame.jpg"}]
     assert params["links"] == [{"rel": "actor", "id": "user-1"}]
+
+
+def test_eimemory_rpc_adapter_passes_closed_loop_writeback_governance_fields(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+
+    captured: dict[str, object] = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps({"ok": True, "result": {"record_id": "mem_governed"}}).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=0):
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _Response()
+
+    monkeypatch.setattr("eibrain.memory.adapters.eimemory_rpc.request.urlopen", _fake_urlopen)
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    adapter.remember_episode(
+        session_id="voice-session",
+        actor_id="user-1",
+        summary="user prefers shorter replies",
+        memory_type="preference",
+        source="eibrain.preference",
+        idempotency_key="voice-session:evt-1:preference",
+        source_event_id="evt-1",
+        conflict={
+            "status": "resolved",
+            "strategy": "merge",
+            "conflict_record_ids": ["pref-old"],
+        },
+        persona_snapshot={
+            "actor_id": "user-1",
+            "profile_version": "persona-v3",
+            "allowed_traits": ["reply_style"],
+        },
+    )
+
+    params = captured["body"]["params"]
+    assert params["idempotency_key"] == "voice-session:evt-1:preference"
+    assert params["source_event_id"] == "evt-1"
+    assert params["conflict"] == {
+        "status": "resolved",
+        "strategy": "merge",
+        "conflict_record_ids": ["pref-old"],
+    }
+    assert params["persona_snapshot"] == {
+        "actor_id": "user-1",
+        "profile_version": "persona-v3",
+        "allowed_traits": ["reply_style"],
+    }
+    assert adapter.last_writeback_status["idempotency_key"] == "voice-session:evt-1:preference"
+    assert adapter.last_writeback_status["source_event_id"] == "evt-1"
+    assert adapter.last_writeback_status["conflict"]["strategy"] == "merge"
+    assert adapter.last_writeback_status["persona_snapshot"]["profile_version"] == "persona-v3"
 
 
 def test_eimemory_rpc_adapter_posts_policy_candidate_trace_metadata(monkeypatch) -> None:
@@ -387,7 +453,7 @@ def test_eimemory_rpc_adapter_posts_world_observation(monkeypatch) -> None:
     assert params["modality"] == "vision"
     assert params["organ"] == "eye"
     assert params["content"] == {"objects": [{"label": "person", "confidence": 0.91}]}
-    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91}
+    assert params["meta"] == {"dedupe_key": "vision:person:desk", "confidence": 0.91, "session_id": "vision:user-1"}
     assert params["tags"] == ["person", "world_observation", "vision"]
 
 
@@ -576,9 +642,10 @@ def test_eimemory_rpc_adapter_posts_memory_ingest_for_preference(monkeypatch) ->
             "memory_type": "preference",
             "source": "eibrain.preference",
             "scope": {
+                "tenant_id": "default",
                 "agent_id": "honxin",
                 "workspace_id": "honjia",
-                "actor_id": "user-1",
+                "user_id": "user-1",
             },
             "organ": "cognition",
             "modality": "text",
@@ -669,11 +736,12 @@ def test_eimemory_rpc_adapter_records_skill_trace(monkeypatch) -> None:
                 "latency_ms": 12,
             },
             "scope": {
+                "tenant_id": "default",
                 "agent_id": "honxin",
                 "workspace_id": "honjia",
-                "session_id": "voice-session",
-                "actor_id": "user-1",
+                "user_id": "user-1",
             },
+            "meta": {"session_id": "voice-session"},
         },
     }
 
@@ -734,11 +802,12 @@ def test_eimemory_rpc_adapter_records_memory_trace(monkeypatch) -> None:
                 "closure": {"status": "closed", "reason": "writeback_confirmed"},
             },
             "scope": {
+                "tenant_id": "default",
                 "agent_id": "honxin",
                 "workspace_id": "honjia",
-                "session_id": "vision-session",
-                "actor_id": "user-1",
+                "user_id": "user-1",
             },
+            "meta": {"session_id": "vision-session"},
         },
     }
 

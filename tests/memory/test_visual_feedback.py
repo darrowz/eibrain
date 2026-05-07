@@ -124,8 +124,10 @@ def test_visual_feedback_builds_eimemory_and_training_payloads() -> None:
 
     record = build_visual_feedback_record(
         feedback_type="follow_result",
-        subject={"track_id": "person-1", "label": "person"},
+        subject={"track_id": "person-1", "label": "person", "confidence": 0.91},
         outcome={"success": True},
+        follow_score={"score": 0.93, "window_ms": 3_000},
+        frame={"scene_id": "scene-6", "frame_id": "frame-6"},
         round_id="rnd-6",
         session_id="sess-5",
         timestamp_ms=128000,
@@ -136,9 +138,41 @@ def test_visual_feedback_builds_eimemory_and_training_payloads() -> None:
 
     assert memory_params["memory_type"] == "visual_feedback"
     assert memory_params["source"] == "eibrain.vision_feedback"
+    assert memory_params["modality"] == "vision"
+    assert memory_params["confidence"] == 0.93
     assert memory_params["content"]["feedback_type"] == "follow_result"
+    assert memory_params["content"]["tracking_provenance"] == {
+        "track_id": "person-1",
+        "round_id": "rnd-6",
+        "session_id": "sess-5",
+        "follow_score": 0.93,
+        "window_ms": 3000,
+    }
+    assert memory_params["content"]["scene_provenance"] == {
+        "scene_id": "scene-6",
+        "frame_id": "frame-6",
+    }
     assert memory_params["meta"]["writeback"]["durable"] is True
     assert training_trace["signal_type"] == "visual_feedback"
     assert training_trace["round_id"] == "rnd-6"
     json.dumps(memory_params)
     json.dumps(training_trace)
+
+
+def test_visual_feedback_skips_low_confidence_observed_memory_params() -> None:
+    from eibrain.memory.visual_feedback import (
+        build_eimemory_visual_feedback_params,
+        build_visual_feedback_record,
+    )
+
+    record = build_visual_feedback_record(
+        feedback_type="observed",
+        subject={"track_id": "person-weak", "label": "person", "confidence": 0.2},
+        outcome={"success": True},
+        round_id="rnd-low",
+        session_id="sess-low",
+        frame={"source_event_id": "evt-low", "frame_id": "frame-low"},
+    )
+
+    assert record["writeback"]["eligible"] is False
+    assert build_eimemory_visual_feedback_params(record) is None

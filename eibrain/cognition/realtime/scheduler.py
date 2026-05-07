@@ -12,6 +12,7 @@ from .arbiter import ResponseArbiter
 from .fast import FastThinkEngine
 from .interruption import InterruptionController
 from .memory import MemoryOrchestrator
+from .persona import PersonaRuntime
 from .slow import SlowReasoner
 from .turn import (
     RealtimeTurnManager,
@@ -206,6 +207,7 @@ class RealtimeCognitiveScheduler:
         if memory_candidates:
             incoming = _normalize_memory_candidates(memory_candidates, source="caller_memory")
             turn.memory_candidates = _merge_memory_candidates(incoming, turn.memory_candidates)
+        self._apply_persona_memory_guardrails(turn)
 
         slow_started = time.perf_counter()
         decision = self.slow_reasoner.decide(
@@ -268,6 +270,14 @@ class RealtimeCognitiveScheduler:
             if auto_commit_memory
             else {}
         )
+        reply_memory_trace = self._record_reply_memory_usage(
+            turn,
+            committed=committed,
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        if reply_memory_trace:
+            memory_trace = reply_memory_trace
         result = {
             "round_id": turn.round_id,
             "cancellation_token": turn.cancellation_token,
@@ -645,6 +655,73 @@ class RealtimeCognitiveScheduler:
         turn.safety_state["memory_closed_loop_trace"] = trace
         return trace
 
+    def _record_reply_memory_usage(
+        self,
+        turn: TurnBlackboard,
+        *,
+        committed: Mapping[str, Any],
+        session_id: str | None,
+        actor_id: str | None,
+    ) -> dict[str, Any]:
+        if not any(isinstance(item, Mapping) and item.get("kind") == "recall" for item in turn.memory_candidates):
+            return {}
+        reply_text = str(committed.get("speech_text") or "").strip() or _speech_segment_text(committed)
+        trace = self.memory_orchestrator.record_reply_memory_usage(
+            turn,
+            reply_text=reply_text,
+            used_items=[dict(item) for item in list(committed.get("memory_refs") or []) if isinstance(item, Mapping)],
+            session_id=session_id,
+            actor_id=actor_id,
+        )
+        turn.safety_state["memory_closed_loop_trace"] = trace
+        return trace
+
+    def _apply_persona_memory_guardrails(self, turn: TurnBlackboard) -> dict[str, Any]:
+        if not turn.memory_candidates:
+            return {}
+        persona_runtime = PersonaRuntime.from_persona_code(_persona_code_from_state(turn.persona_state))
+        constraints = persona_runtime.stable_style_constraints()
+        protected_keys = {str(item) for item in constraints.get("protected_keys", [])}
+        filtered: list[dict[str, Any]] = []
+        for candidate in turn.memory_candidates:
+            if not isinstance(candidate, dict):
+                continue
+            key_path = _memory_candidate_key_path(candidate)
+            guardrail = persona_runtime.apply_memory_guardrails(_memory_candidate_context(candidate))
+            should_filter = bool(guardrail.get("persona_guardrail_applied")) or bool(key_path and key_path in protected_keys)
+            if not should_filter:
+                continue
+            reason = "persona_guardrail_applied"
+            candidate["reply_context_status"] = "filtered"
+            candidate["reply_context_filter_reason"] = reason
+            candidate["persona_guardrail_applied"] = True
+            candidate["persona_guardrail_reason"] = reason
+            if isinstance(candidate.get("policy_decision"), Mapping):
+                candidate["original_policy_decision"] = dict(candidate["policy_decision"])
+            candidate["policy_decision"] = {"decision": "filter", "reason": reason}
+            filtered.append(
+                _without_empty(
+                    {
+                        "id": candidate.get("id"),
+                        "record_id": candidate.get("record_id"),
+                        "key": key_path,
+                        "reason": reason,
+                        "guardrail": guardrail,
+                    }
+                )
+            )
+        if not filtered:
+            return {}
+        payload = {
+            "status": "blocked",
+            "summary": f"{len(filtered)} persona-drifting memory candidate(s) filtered",
+            "filtered_count": len(filtered),
+            "filtered": filtered,
+            "constraints": constraints,
+        }
+        turn.safety_state["persona_memory_guardrail"] = payload
+        return payload
+
     def _prefetch_memory(
         self,
         *,
@@ -790,6 +867,72 @@ def _merge_memory_candidates(
         seen.add(key)
         merged.append(item)
     return merged
+
+
+def _persona_code_from_state(persona_state: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(persona_state, Mapping):
+        return None
+    return str(
+        persona_state.get("personaCode")
+        or persona_state.get("persona_code")
+        or persona_state.get("persona_id")
+        or ""
+    ) or None
+
+
+def _memory_candidate_key_path(candidate: Mapping[str, Any]) -> str:
+    for key in ("key", "preference_key", "memory_key"):
+        value = candidate.get(key)
+        if value not in (None, ""):
+            return str(value)
+    selected_record = candidate.get("selected_record")
+    if isinstance(selected_record, Mapping):
+        for key in ("key", "preference_key", "memory_key"):
+            value = selected_record.get(key)
+            if value not in (None, ""):
+                return str(value)
+    return ""
+
+
+def _memory_candidate_context(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    context: dict[str, Any] = {}
+    for key in ("memory_context", "context", "content"):
+        value = candidate.get(key)
+        if isinstance(value, Mapping):
+            _deep_merge(context, value)
+    selected_record = candidate.get("selected_record")
+    if isinstance(selected_record, Mapping):
+        for key in ("memory_context", "context", "content"):
+            value = selected_record.get(key)
+            if isinstance(value, Mapping):
+                _deep_merge(context, value)
+    key_path = _memory_candidate_key_path(candidate)
+    if key_path:
+        _nested_set(context, key_path, candidate.get("value") or candidate.get("text") or True)
+    return context
+
+
+def _deep_merge(target: dict[str, Any], source: Mapping[str, Any]) -> None:
+    for key, value in source.items():
+        if isinstance(value, Mapping) and isinstance(target.get(str(key)), dict):
+            _deep_merge(target[str(key)], value)
+        elif isinstance(value, Mapping):
+            target[str(key)] = dict(value)
+        else:
+            target[str(key)] = value
+
+
+def _nested_set(payload: dict[str, Any], key_path: str, value: Any) -> None:
+    current = payload
+    parts = [part for part in key_path.split(".") if part]
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            current[part] = child
+        current = child
+    if parts:
+        current[parts[-1]] = value
 
 
 def _expand_emotion_context(emotion_context: Mapping[str, Any]) -> dict[str, Any]:

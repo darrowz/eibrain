@@ -33,12 +33,30 @@
       {
         "label": "person",
         "trackId": "track_person_1",
-        "confidence": 0.91
+        "confidence": 0.91,
+        "pose": {
+          "state": "seated"
+        },
+        "depth": {
+          "unit": "m",
+          "median": 1.75
+        },
+        "distance": {
+          "fromCameraM": 1.75
+        }
       },
       {
         "label": "cup",
         "trackId": "track_cup_1",
-        "confidence": 0.77
+        "confidence": 0.77,
+        "depth": {
+          "unit": "m",
+          "median": 1.25
+        },
+        "distance": {
+          "fromCameraM": 1.25,
+          "fromTrackedTargetM": 0.62
+        }
       }
     ],
     "relationships": [
@@ -51,6 +69,57 @@
     "environment": {
       "lighting": "indoor",
       "camera": "front"
+    },
+    "clipLabels": [
+      {
+        "label": "person seated near desk with cup",
+        "score": 0.84
+      }
+    ],
+    "semanticLabels": [
+      {
+        "label": "workspace_scene",
+        "confidence": 0.8
+      }
+    ],
+    "depth": {
+      "backend": "mono_depth",
+      "unit": "m",
+      "median": 1.9
+    },
+    "distance": {
+      "nearestObjectId": "track_cup_1",
+      "nearestObjectM": 1.25,
+      "trackedTargetM": 1.75
+    },
+    "sceneGraph": {
+      "nodes": [
+        {
+          "id": "track_person_1",
+          "label": "person"
+        },
+        {
+          "id": "track_cup_1",
+          "label": "cup"
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_person_near_cup",
+          "subjectId": "track_person_1",
+          "relation": "near",
+          "objectId": "track_cup_1"
+        }
+      ]
+    },
+    "sceneGraphProvenance": {
+      "sourceFrameIds": [
+        "frame_000042"
+      ],
+      "sourceEventIds": [
+        "evt_vision_frame_001"
+      ],
+      "builder": "scene_graph_v2"
     },
     "imageUrl": "file:///var/lib/eihead/frames/frame_000043.jpg",
     "metadata": {

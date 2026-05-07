@@ -323,6 +323,53 @@ def test_operator_console_exposes_audio_live_trace_and_readiness_summary(monkeyp
     assert fake_key not in json.dumps(report)
 
 
+def test_operator_console_degrades_system_health_for_voice_chain_readiness(monkeypatch) -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    monkeypatch.setenv("MINIMAX_API_KEY", "minimax-token")
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
+    monkeypatch.delenv("EIVOICE_DASHSCOPE_API_KEY", raising=False)
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {},
+            "organs": {},
+            "audio_frontend": {
+                "aec": {"enabled": True, "available": False},
+                "lastCapture": {
+                    "loopbackReference": {
+                        "ready": False,
+                        "state": "aec_unavailable",
+                    }
+                },
+            },
+            "voice_dialogue": {
+                "enabled": True,
+                "running": True,
+                "voice_chain_benchmark": {
+                    "turnCount": 2,
+                    "roundLeakCount": 1,
+                    "metrics": {
+                        "interruptStopMs": {"p95": 410.0, "threshold": 300.0, "pass": False},
+                    },
+                    "bottleneck": {"field": "interruptStopMs", "p95": 410.0, "threshold": 300.0},
+                },
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    assert report["system_health"] == "degraded"
+    assert "voice.live_trace=not_ready" in report["degraded_reasons"]
+    assert "voice.provider_readiness=degraded" in report["degraded_reasons"]
+    assert "audio.aec_readiness=unavailable" in report["degraded_reasons"]
+    assert "voice.interrupt_stop_ready=false" in report["degraded_reasons"]
+    assert "voice.round_leak_count=1" in report["degraded_reasons"]
+
+
 def test_operator_console_backfills_dialogue_stage_latency_from_seconds() -> None:
     from apps.operator_console.app import OperatorConsoleApp
 
@@ -719,6 +766,245 @@ def test_operator_console_exposes_visual_diagnostics() -> None:
     assert report["visual_diagnostics"]["state_age_s"] == 0.25
     assert report["visual_diagnostics"]["state_path"] == "/tmp/eibrain-vision/state.json"
     assert report["visual_diagnostics"]["top_detection_bbox"]["x_min"] == 0.2
+
+
+def test_operator_console_exposes_long_tracking_scene_and_multimodal_status() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True},
+            "visual_tracking": {
+                "running": True,
+                "status": "tracking",
+                "source": "state",
+                "tracking_stability": {"state": "stable", "score": 0.87},
+                "switch_count": 2,
+                "lost_count": 1,
+                "reacquired_count": 1,
+                "scene_graph": {"summary": "Darrow near desk, cup on table", "node_count": 3, "edge_count": 2},
+                "pose": {"available": True, "summary": "standing"},
+                "clip": {"available": False, "reason": "encoder_warming"},
+                "semanticLabels": [{"label": "desk_work", "score": 0.71}],
+                "depth": {"status": "waiting", "reason": "depth camera not wired"},
+                "distance": {"status": "present", "summary": "target 0.8m"},
+                "trackingDiagnostics": {"status": "present", "summary": "stable 94%"},
+                "soak_summary": {
+                    "duration_s": 7200,
+                    "stable_ratio": 0.94,
+                    "switch_count": 2,
+                    "lost_count": 1,
+                    "reacquired_count": 1,
+                    "bottleneck_reason": "identity_switch",
+                },
+            },
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {"health": "healthy", "details": {"frame_path": "/tmp/latest.jpg"}},
+                        "detection": {"health": "healthy", "details": {"status": "live", "detections": []}},
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    visual = report["visual_diagnostics"]
+    assert visual["tracking_stability"]["state"] == "stable"
+    assert visual["tracking_stability_score"] == 0.87
+    assert visual["tracking_switch_count"] == 2
+    assert visual["tracking_lost_count"] == 1
+    assert visual["tracking_reacquired_count"] == 1
+    assert visual["scene_graph_summary"] == "Darrow near desk, cup on table"
+    assert visual["multimodal_availability"] == {
+        "pose": {"status": "present", "summary": "standing"},
+        "clip": {"status": "waiting", "summary": "encoder_warming"},
+        "semantic": {"status": "present", "summary": "1 label(s)"},
+        "depth": {"status": "waiting", "summary": "depth camera not wired"},
+        "distance": {"status": "present", "summary": "target 0.8m"},
+        "tracking": {"status": "present", "summary": "stable 94%"},
+    }
+    assert visual["pose_availability"] == "present"
+    assert visual["clip_availability"] == "waiting"
+    assert visual["semantic_availability"] == "present"
+    assert visual["depth_availability"] == "waiting"
+    assert visual["distance_availability"] == "present"
+    assert visual["tracking_diagnostics_availability"] == "present"
+    assert visual["soak_summary"]["long_tracking_field_count"] >= 5
+
+
+def test_operator_console_reads_nested_multimodal_feature_payloads() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={
+            "degradation_mode": "normal",
+            "capabilities": {"can_see_people": True},
+            "visual_tracking": {
+                "running": True,
+                "status": "tracking",
+                "scene_graph": {
+                    "summary": "Darrow at workbench",
+                    "objects": [
+                        {
+                            "track_id": "person-1",
+                            "features": {
+                                "pose": {"available": True, "summary": "standing"},
+                                "multimodal": {
+                                    "clipLabels": [{"label": "person at workbench", "score": 0.83}],
+                                    "semanticLabels": [{"label": "focused_work", "score": 0.72}],
+                                    "depth": {"status": "present", "summary": "0.9m"},
+                                },
+                            },
+                        }
+                    ],
+                    "events": [
+                        {
+                            "eventType": "track_update",
+                            "payload": {
+                                "distance": {"status": "present", "summary": "near"},
+                                "trackingDiagnostics": {"status": "present", "summary": "stable"},
+                            },
+                        }
+                    ],
+                },
+            },
+            "organs": {
+                "eye": {
+                    "health": "healthy",
+                    "subfunctions": {
+                        "camera": {"health": "healthy", "details": {"frame_path": "/tmp/latest.jpg"}},
+                        "detection": {"health": "healthy", "details": {"status": "live"}},
+                    },
+                }
+            },
+        },
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    visual = report["visual_diagnostics"]
+    assert visual["pose_availability"] == "present"
+    assert visual["clip_availability"] == "present"
+    assert visual["semantic_availability"] == "present"
+    assert visual["depth_availability"] == "present"
+    assert visual["distance_availability"] == "present"
+    assert visual["tracking_diagnostics_availability"] == "present"
+    assert visual["multimodal_availability"]["distance"]["summary"] == "near"
+
+
+def test_operator_console_visual_diagnostics_default_to_unknown_or_waiting() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {"can_see_people": True}, "organs": {}},
+        cognitive_snapshot={},
+        traces=[],
+    )
+
+    visual = report["visual_diagnostics"]
+    assert visual["tracking_stability"]["state"] == "unknown"
+    assert visual["scene_graph_summary"] == "waiting"
+    assert visual["pose_availability"] == "unknown"
+    assert visual["clip_availability"] == "unknown"
+    assert visual["semantic_availability"] == "unknown"
+    assert visual["depth_availability"] == "unknown"
+    assert visual["distance_availability"] == "unknown"
+    assert visual["tracking_diagnostics_availability"] == "unknown"
+
+
+def test_operator_console_exposes_memory_conflict_and_persona_guardrail_summary() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={
+            "memory_diagnostics": {
+                "conflicts": [
+                    {"type": "identity", "status": "blocked", "summary": "speaker claimed to be Darrow and guest"}
+                ],
+                "persona_guardrail": {
+                    "status": "blocked",
+                    "summary": "persona self-claim blocked until identity confidence recovers",
+                    "violations": 1,
+                },
+            }
+        },
+        traces=[],
+    )
+
+    memory = report["memory_diagnostics"]
+    assert memory["memory_conflict_count"] == 1
+    assert memory["memory_conflict_summary"] == "speaker claimed to be Darrow and guest"
+    assert memory["persona_guardrail_status"] == "blocked"
+    assert memory["persona_guardrail_summary"] == "persona self-claim blocked until identity confidence recovers"
+    assert memory["persona_guardrail_violations"] == 1
+    assert report["system_health"] == "degraded"
+    assert "memory.conflict_detected" in report["degraded_reasons"]
+    assert "persona.guardrail=blocked" in report["degraded_reasons"]
+
+
+def test_operator_console_reads_nested_persona_guardrail_from_scheduler_snapshot() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={
+            "current": {
+                "safety_state": {
+                    "persona_memory_guardrail": {
+                        "status": "blocked",
+                        "summary": "blocked memory override for speaking_style.tone",
+                        "violation_count": 2,
+                    }
+                }
+            }
+        },
+        traces=[],
+    )
+
+    memory = report["memory_diagnostics"]
+    assert memory["persona_guardrail_status"] == "blocked"
+    assert memory["persona_guardrail_summary"] == "blocked memory override for speaking_style.tone"
+    assert memory["persona_guardrail_violations"] == 2
+    assert report["system_health"] == "degraded"
+
+
+def test_operator_console_degrades_system_health_for_memory_trace_errors() -> None:
+    from apps.operator_console.app import OperatorConsoleApp
+
+    console = OperatorConsoleApp()
+    report = console.build_status_report(
+        body_snapshot={"degradation_mode": "normal", "capabilities": {}, "organs": {}},
+        cognitive_snapshot={
+            "current": {
+                "memory_traces": [
+                    {
+                        "schema": "eibrain.memory.closed_loop_trace.v1",
+                        "round_id": "round-error",
+                        "recall": {"count": 0, "items": []},
+                        "writeback": {"count": 0, "items": []},
+                        "errors": [{"stage": "writeback", "summary": "eimemory writeback failed"}],
+                    }
+                ]
+            }
+        },
+        traces=[],
+    )
+
+    assert report["memory_trace_panel"]["latest"]["status"] == "error"
+    assert report["system_health"] == "degraded"
+    assert "memory.trace_status=error" in report["degraded_reasons"]
+    assert "memory.trace_error_count=1" in report["degraded_reasons"]
 
 
 def test_operator_console_distinguishes_health_from_live_data() -> None:

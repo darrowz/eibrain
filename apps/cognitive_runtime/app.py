@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Mapping
 from typing import Any
 
 from eibrain.cognition.attention.manager import AttentionManager
@@ -12,6 +13,7 @@ from eibrain.cognition.fusion.binder import ObservationBinder
 from eibrain.cognition.dialogue.llm_router import LLMRouter
 from eibrain.cognition.policy.engine import PolicyEngine
 from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
+from eibrain.cognition.realtime.persona import PersonaRuntime
 from eibrain.cognition.planner.intent_planner import IntentPlanner
 from eibrain.cognition.world import build_scene_graph, should_write_world_observation
 from eibrain.infra import TraceRecorder
@@ -212,21 +214,12 @@ class CognitiveRuntimeApp:
                 trace_id=state.session.active_session_id or "unknown-session",
                 source_event_id=f"{observation.kind}:{observation.ts}",
             )
-            self.memory.remember_episode(
+            self._remember_candidate_episode(
+                candidate,
                 session_id=state.session.active_session_id or "unknown-session",
                 actor_id=state.world.current_speaker_id,
-                summary=str(candidate["summary"]),
                 title="Audio dialogue turn",
-                memory_type=str(candidate["memory_type"]),
-                source=str(candidate["source"]),
-                modality=str(candidate["modality"]),
-                organ=str(candidate["organ"]),
-                outcome=dict(candidate["outcome"]),
-                content=dict(candidate["content"]),
-                meta=dict(candidate["meta"]),
-                tags=[str(tag) for tag in candidate["tags"]],
             )
-            self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         stage_latency_ms["compile_writeback"] = self._elapsed_ms(stage_started)
         stage_started = time.perf_counter()
         self._record_learning(
@@ -419,21 +412,12 @@ class CognitiveRuntimeApp:
                 trace_id=visual_session_id,
                 source_event_id=f"vision_frame:{image_url}",
             )
-            self.memory.remember_episode(
+            self._remember_candidate_episode(
+                candidate,
                 session_id=visual_session_id,
                 actor_id=actor_id or "visual-target",
-                summary=str(candidate["summary"]),
                 title="Visual frame understanding",
-                memory_type=str(candidate["memory_type"]),
-                source=str(candidate["source"]),
-                modality=str(candidate["modality"]),
-                organ=str(candidate["organ"]),
-                outcome=dict(candidate["outcome"]),
-                content=dict(candidate["content"]),
-                meta=dict(candidate["meta"]),
-                tags=[str(tag) for tag in candidate["tags"]],
             )
-            self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
         self.trace_recorder.record(
             trace_id=f"vision:{actor_id or 'visual-target'}",
             kind="vision_frame_captured",
@@ -553,6 +537,145 @@ class CognitiveRuntimeApp:
         if isinstance(scene, dict):
             self._last_world_scene = scene
         self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
+        return payload
+
+    def _remember_candidate_episode(
+        self,
+        candidate: dict[str, object],
+        *,
+        session_id: str,
+        actor_id: str | None,
+        title: str,
+    ) -> None:
+        bucket, assessment = self._assess_direct_writeback(candidate)
+        if bucket != "accepted":
+            decision = "reject" if bucket == "rejected" else "defer"
+            self.last_memory_diagnostics["last_writeback"] = {
+                "status": "skipped",
+                "reason": f"memory_policy_{bucket}",
+                "source": str(candidate.get("source") or ""),
+                "memory_type": str(candidate.get("memory_type") or ""),
+                "policy_decision": {
+                    "decision": decision,
+                    "reason": ",".join(str(item) for item in assessment.get("reason_codes", [])) or f"memory_policy_{bucket}",
+                    "score": assessment.get("score"),
+                    "reason_codes": list(assessment.get("reason_codes") or []),
+                },
+                "conflict_resolution": (
+                    {
+                        "status": "requires_confirmation",
+                        "conflicts_with": list(assessment.get("conflicts_with") or []),
+                    }
+                    if assessment.get("conflicts_with")
+                    else {}
+                ),
+            }
+            return
+        meta = dict(candidate.get("meta") or {})
+        meta.setdefault("policy_decision", {"decision": "commit", "reason": "memory_policy_accepted"})
+        if assessment.get("supersedes"):
+            meta.setdefault(
+                "conflict_resolution",
+                {
+                    "status": "resolved",
+                    "strategy": "supersede",
+                    "conflict_record_ids": list(assessment.get("supersedes") or []),
+                },
+            )
+        writer = getattr(self.memory, "remember_episode", None)
+        if not callable(writer):
+            self.last_memory_diagnostics["last_writeback"] = {
+                "status": "error",
+                "reason": "remember_episode_missing",
+                "source": str(candidate.get("source") or ""),
+                "memory_type": str(candidate.get("memory_type") or ""),
+            }
+            return
+        writer(
+            session_id=session_id,
+            actor_id=actor_id,
+            summary=str(candidate["summary"]),
+            title=title,
+            memory_type=str(candidate["memory_type"]),
+            source=str(candidate["source"]),
+            modality=str(candidate["modality"]),
+            organ=str(candidate["organ"]),
+            outcome=dict(candidate["outcome"]),
+            content=dict(candidate["content"]),
+            meta=meta,
+            tags=[str(tag) for tag in candidate["tags"]],
+        )
+        self.last_memory_diagnostics["last_writeback"] = dict(getattr(self.memory, "last_writeback_status", {}))
+
+    def _assess_direct_writeback(self, candidate: dict[str, object]) -> tuple[str, dict[str, object]]:
+        content = dict(candidate.get("content") or {}) if isinstance(candidate.get("content"), dict) else {}
+        meta = dict(candidate.get("meta") or {}) if isinstance(candidate.get("meta"), dict) else {}
+        writeback = dict(candidate.get("writeback") or {}) if isinstance(candidate.get("writeback"), dict) else {}
+        proposal = {
+            "id": meta.get("source_event_id") or meta.get("dedupe_key"),
+            "summary": candidate.get("summary"),
+            "source": candidate.get("source"),
+            "memory_type": candidate.get("memory_type"),
+            "modality": candidate.get("modality"),
+            "organ": candidate.get("organ"),
+            "event_type": content.get("event_type"),
+            "confidence": writeback.get("confidence", content.get("confidence", 0.75)),
+            "subject": content.get("subject") or meta.get("subject"),
+            "key": content.get("key") or meta.get("key"),
+            "value": content.get("value") or meta.get("value"),
+            "user_confirmed": content.get("user_confirmed", meta.get("user_confirmed", False)),
+        }
+        policy_context = self._direct_writeback_policy_context(candidate, meta=meta)
+        result = self.memory_policy.evaluate_write_proposals(
+            [proposal],
+            existing_memories=policy_context["existing_memories"],
+            persona_constraints=policy_context["persona_constraints"],
+        )
+        for bucket in ("accepted", "deferred", "rejected"):
+            items = result.get(bucket)
+            if isinstance(items, list) and items:
+                return bucket, dict(items[0])
+        return "accepted", {"reason_codes": ["accepted"]}
+
+    def _direct_writeback_policy_context(
+        self,
+        candidate: Mapping[str, object],
+        *,
+        meta: Mapping[str, object],
+    ) -> dict[str, object]:
+        existing_memories: list[dict[str, object]] = []
+        last_recall = self.last_memory_diagnostics.get("last_recall")
+        last_recall_records = last_recall.get("selected_records") if isinstance(last_recall, Mapping) else None
+        for source in (
+            candidate.get("existing_memories"),
+            meta.get("existing_memories"),
+            last_recall_records,
+        ):
+            if not isinstance(source, list):
+                continue
+            for item in source:
+                if isinstance(item, Mapping):
+                    existing_memories.append(self._normalise_memory_policy_record(item))
+
+        persona_constraints = meta.get("persona_constraints")
+        if not isinstance(persona_constraints, Mapping):
+            persona_code = str(meta.get("persona_code") or "gentle_companion")
+            persona_constraints = PersonaRuntime.from_persona_code(persona_code).stable_style_constraints()
+        return {
+            "existing_memories": existing_memories,
+            "persona_constraints": dict(persona_constraints),
+        }
+
+    @staticmethod
+    def _normalise_memory_policy_record(record: Mapping[str, object]) -> dict[str, object]:
+        payload = dict(record)
+        content = dict(payload.get("content") or {}) if isinstance(payload.get("content"), Mapping) else {}
+        meta = dict(payload.get("meta") or {}) if isinstance(payload.get("meta"), Mapping) else {}
+        payload.setdefault("id", payload.get("record_id") or payload.get("memory_id") or meta.get("record_id"))
+        payload.setdefault("memory_type", content.get("memory_type") or meta.get("memory_type"))
+        payload.setdefault("subject", content.get("subject") or meta.get("subject"))
+        payload.setdefault("key", content.get("key") or meta.get("key") or payload.get("preference_key"))
+        payload.setdefault("value", content.get("value") or meta.get("value"))
         return payload
 
     def _record_learning(self, *, event_type: str, transcript: str, reply: str, outcome: str) -> None:

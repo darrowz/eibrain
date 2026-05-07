@@ -133,6 +133,8 @@ def _emotion(emotion_context: Mapping[str, Any]) -> dict[str, Any]:
 def _memory_refs(memory_candidates: Sequence[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     ranked: list[tuple[int, float, Mapping[str, Any]]] = []
     for index, candidate in enumerate(memory_candidates or []):
+        if _memory_candidate_filtered(candidate):
+            continue
         score = _as_float(candidate.get("score", candidate.get("importance", 0.0)))
         ranked.append((index, score, candidate))
 
@@ -151,6 +153,17 @@ def _memory_refs(memory_candidates: Sequence[Mapping[str, Any]] | None) -> list[
         if ref:
             refs.append(ref)
     return refs
+
+
+def _memory_candidate_filtered(candidate: Mapping[str, Any]) -> bool:
+    if str(candidate.get("reply_context_status") or "").strip().lower() == "filtered":
+        return True
+    if bool(candidate.get("persona_guardrail_applied")):
+        return True
+    policy = candidate.get("policy_decision")
+    if isinstance(policy, Mapping):
+        return str(policy.get("decision") or "").strip().lower() in {"filter", "reject", "blocked"}
+    return False
 
 
 def _as_float(value: Any) -> float:

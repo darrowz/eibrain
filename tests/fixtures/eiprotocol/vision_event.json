@@ -35,6 +35,39 @@
       "trackId": "track_person_1"
     },
     "confidence": 0.88,
+    "pose": {
+      "state": "standing",
+      "transition": "entered"
+    },
+    "clipLabels": [
+      {
+        "label": "person entering room",
+        "score": 0.86
+      }
+    ],
+    "semanticLabels": [
+      {
+        "label": "arrival",
+        "confidence": 0.81
+      }
+    ],
+    "depth": {
+      "unit": "m",
+      "subjectMedian": 1.9
+    },
+    "distance": {
+      "fromCameraM": 1.9,
+      "fromZone": "desk"
+    },
+    "sceneGraphProvenance": {
+      "sceneId": "scene_front_001",
+      "sourceFrameIds": [
+        "frame_000042"
+      ],
+      "edgeIds": [
+        "edge_person_near_cup"
+      ]
+    },
     "details": {
       "zone": "desk"
     },

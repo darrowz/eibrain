@@ -16,11 +16,14 @@ class EventDefinition:
     round_scoped: bool
     side_effecting: bool
     required_content_fields: tuple[str, ...]
+    optional_content_fields: tuple[str, ...]
     description: str
 
     def __post_init__(self) -> None:
         fields = tuple(str(field_name) for field_name in self.required_content_fields)
         object.__setattr__(self, "required_content_fields", fields)
+        optional_fields = tuple(str(field_name) for field_name in self.optional_content_fields)
+        object.__setattr__(self, "optional_content_fields", optional_fields)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +35,7 @@ class EventDefinition:
             "round_scoped": self.round_scoped,
             "side_effecting": self.side_effecting,
             "required_content_fields": list(self.required_content_fields),
+            "optional_content_fields": list(self.optional_content_fields),
             "description": self.description,
         }
 
@@ -46,6 +50,7 @@ def _definition(
     round_scoped: bool = False,
     side_effecting: bool = False,
     required_content_fields: Iterable[str] = (),
+    optional_content_fields: Iterable[str] = (),
     description: str,
 ) -> EventDefinition:
     return EventDefinition(
@@ -57,6 +62,7 @@ def _definition(
         round_scoped=round_scoped,
         side_effecting=side_effecting,
         required_content_fields=tuple(required_content_fields),
+        optional_content_fields=tuple(optional_content_fields),
         description=description,
     )
 
@@ -157,6 +163,26 @@ _EVENT_DEFINITIONS: dict[str, EventDefinition] = {
             "head_to_brain",
             realtime=True,
             required_content_fields=("frameId",),
+            optional_content_fields=(
+                "width",
+                "height",
+                "frameAgeMs",
+                "backend",
+                "detections",
+                "boxes",
+                "scores",
+                "trackedTarget",
+                "latencyMs",
+                "trackingDiagnostics",
+                "pose",
+                "clipLabels",
+                "semanticLabels",
+                "depth",
+                "distance",
+                "imageUrl",
+                "status",
+                "metadata",
+            ),
             description="Reports a realtime vision frame or frame-derived detections.",
         ),
         _definition(
@@ -166,6 +192,20 @@ _EVENT_DEFINITIONS: dict[str, EventDefinition] = {
             "head_to_brain",
             realtime=True,
             required_content_fields=("sceneId", "observedAt"),
+            optional_content_fields=(
+                "summary",
+                "objects",
+                "relationships",
+                "environment",
+                "clipLabels",
+                "semanticLabels",
+                "depth",
+                "distance",
+                "sceneGraph",
+                "sceneGraphProvenance",
+                "imageUrl",
+                "metadata",
+            ),
             description="Reports a realtime scene-level vision observation derived from one or more frames.",
         ),
         _definition(
@@ -175,6 +215,19 @@ _EVENT_DEFINITIONS: dict[str, EventDefinition] = {
             "head_to_brain",
             realtime=True,
             required_content_fields=("eventId", "eventType", "observedAt"),
+            optional_content_fields=(
+                "sceneId",
+                "subject",
+                "confidence",
+                "pose",
+                "clipLabels",
+                "semanticLabels",
+                "depth",
+                "distance",
+                "sceneGraphProvenance",
+                "details",
+                "metadata",
+            ),
             description="Reports a realtime semantic vision event observed by the head.",
         ),
         _definition(
@@ -468,6 +521,15 @@ _EVENT_DEFINITIONS: dict[str, EventDefinition] = {
             "brain_internal",
             round_scoped=True,
             required_content_fields=("policyId", "scope", "decision"),
+            optional_content_fields=(
+                "reason",
+                "evidence",
+                "writes",
+                "filters",
+                "conflictResolution",
+                "personaConsistencySignals",
+                "metadata",
+            ),
             description="Records an internal memory policy decision report for a round-scoped memory operation.",
         ),
         _definition(

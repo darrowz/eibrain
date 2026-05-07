@@ -44,6 +44,23 @@ def _mapping_items(value: Any) -> list[dict[str, Any]]:
     return [dict(item) for item in value if isinstance(item, Mapping)]
 
 
+def _trace_link_fields(metadata: Mapping[str, Any]) -> dict[str, str]:
+    meta = _dict_if_mapping(metadata.get("meta"))
+    trace_id = _clean_text(metadata.get("trace_id") or metadata.get("traceId") or meta.get("trace_id") or meta.get("traceId"))
+    source_event_id = _clean_text(
+        metadata.get("source_event_id")
+        or metadata.get("sourceEventId")
+        or meta.get("source_event_id")
+        or meta.get("sourceEventId")
+    )
+    fields: dict[str, str] = {}
+    if trace_id:
+        fields["trace_id"] = trace_id
+    if source_event_id:
+        fields["source_event_id"] = source_event_id
+    return fields
+
+
 def _unique_texts(values: Iterable[Any]) -> list[str]:
     unique: list[str] = []
     for value in values:
@@ -55,6 +72,25 @@ def _unique_texts(values: Iterable[Any]) -> list[str]:
 
 def _candidate_key(candidate: Mapping[str, Any]) -> str:
     return _clean_text(candidate.get("id") or candidate.get("record_id") or candidate.get("query") or candidate.get("text"))
+
+
+def _writeback_candidate_status(trace: Mapping[str, Any], candidate_index: int) -> str:
+    writeback = trace.get("writeback")
+    if not isinstance(writeback, Mapping):
+        return ""
+    items = writeback.get("items")
+    if not isinstance(items, list):
+        return ""
+    for item in reversed(items):
+        if not isinstance(item, Mapping) or item.get("candidate_index") != candidate_index:
+            continue
+        reason = _clean_text(item.get("reason")).lower()
+        if reason == "memory_policy_deferred":
+            return "deferred"
+        if reason == "memory_policy_rejected":
+            return "rejected"
+        return _clean_text(item.get("status")).lower()
+    return ""
 
 
 def _memory_query(
@@ -509,8 +545,16 @@ class MemoryOrchestrator:
                     default_organ=default_organ,
                 )
                 if isinstance(candidate, dict) and len(trace["errors"]) == previous_error_count:
-                    candidate["committed"] = True
-                    candidate["commit_status"] = "ok"
+                    status = _writeback_candidate_status(trace, index)
+                    if status == "deferred":
+                        candidate["committed"] = False
+                        candidate["commit_status"] = "deferred"
+                    elif status == "rejected":
+                        candidate["committed"] = True
+                        candidate["commit_status"] = "rejected"
+                    else:
+                        candidate["committed"] = True
+                        candidate["commit_status"] = "ok"
         self._commit_memory_trace(trace, session_id=session_id, actor_id=actor_id)
         return self._record_trace(turn, trace)
 
@@ -520,6 +564,7 @@ class MemoryOrchestrator:
         *,
         reply_text: str,
         used_items: Iterable[Mapping[str, Any] | str] | None = None,
+        filtered_items: Iterable[Mapping[str, Any] | str] | None = None,
         session_id: str | None = None,
         actor_id: str | None = None,
     ) -> dict[str, Any]:
@@ -532,9 +577,23 @@ class MemoryOrchestrator:
         reply = {
             "reply_text": _clean_text(reply_text),
             "used_recall_items": self._mark_recall_items_used(turn, used_items=used_items),
+            "filtered_recall_items": self._mark_recall_items_filtered(turn, filtered_items=filtered_items),
         }
         reply["used_count"] = len(reply["used_recall_items"])
+        reply["filtered_count"] = len(reply["filtered_recall_items"])
         trace["reply"] = _json_ready(reply)
+        trace["reply_context"] = {
+            "used": reply["used_recall_items"],
+            "filtered": reply["filtered_recall_items"],
+        }
+        self._append_lifecycle(
+            trace,
+            "recall_used",
+            {
+                "used_count": reply["used_count"],
+                "filtered_count": reply["filtered_count"],
+            },
+        )
         self._commit_memory_trace(
             trace,
             session_id=session_id or str(trace.get("session_id") or "") or None,
@@ -559,11 +618,16 @@ class MemoryOrchestrator:
             "session_id": session_id or "",
             "actor_id": actor_id or "",
             "external_call": external_call,
+            "lifecycle": [],
+            "candidates": {"items": []},
             "prefetch": {"requested": [], "result": []},
             "recall": {"count": 0, "items": []},
+            "policy_decision": {"recall": [], "write": []},
+            "conflict_resolution": {"write": []},
             "write": {"proposed": [], "committed": []},
             "writeback": {"count": 0, "items": []},
             "reply": {"reply_text": "", "used_recall_items": [], "used_count": 0},
+            "reply_context": {"used": [], "filtered": []},
             "memory_trace_summary": {},
             "errors": [],
         }
@@ -612,6 +676,11 @@ class MemoryOrchestrator:
 
     def _record_trace(self, turn: Any, trace: Mapping[str, Any]) -> dict[str, Any]:
         payload = _json_ready(dict(trace))
+        payload.setdefault("lifecycle", [])
+        payload.setdefault("candidates", {"items": []})
+        payload.setdefault("policy_decision", {"recall": [], "write": []})
+        payload.setdefault("conflict_resolution", {"write": []})
+        payload.setdefault("reply_context", {"used": [], "filtered": []})
         payload["memory_trace_summary"] = self._trace_summary(payload)
         current = _value(turn, "memory_traces")
         if isinstance(current, list):
@@ -730,6 +799,7 @@ class MemoryOrchestrator:
 
         diagnostics = dict(getattr(result, "recall_diagnostics", {}) or {})
         resolved = self._recall_candidates_from_result(result, candidate=candidate, diagnostics=diagnostics)
+        self._track_recall_policy_decisions(trace, diagnostics=diagnostics, index=index)
         self._track_prefetch_result(trace, resolved=resolved)
         item = {
             "candidate_index": index,
@@ -741,7 +811,9 @@ class MemoryOrchestrator:
             "selected_count": diagnostics.get("selected_count", 0),
             "selected_records": diagnostics.get("selected_records", []),
             "source_composition": diagnostics.get("source_composition", {}),
+            "recall_filters": diagnostics.get("recall_filters", {}),
             "resolved_count": len(resolved),
+            **_trace_link_fields(metadata),
         }
         if resolved:
             item["resolved_candidates"] = resolved
@@ -789,8 +861,17 @@ class MemoryOrchestrator:
                 "stable": False,
                 "external_call": True,
                 "used_in_reply": False,
+                "reply_context_status": "available",
                 "selected_record": dict(record),
             }
+            policy_decision = record.get("policy_decision")
+            if isinstance(policy_decision, Mapping):
+                payload["policy_decision"] = dict(policy_decision)
+                if _clean_text(policy_decision.get("decision")).lower() in {"filter", "reject", "blocked"}:
+                    payload["reply_context_status"] = "filtered"
+                    payload["reply_context_filter_reason"] = (
+                        _clean_text(policy_decision.get("reason")) or "policy_filter"
+                    )
             resolved.append(_json_ready(payload))
         return resolved
 
@@ -809,6 +890,7 @@ class MemoryOrchestrator:
         metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
         source = str(metadata.get("source") or "eibrain.audio_dialogue")
         memory_type = str(metadata.get("memory_type") or "conversation")
+        trace_links = _trace_link_fields(metadata)
         if candidate.get("requires_commit") is False:
             skipped = {
                 "candidate_index": index,
@@ -818,9 +900,11 @@ class MemoryOrchestrator:
                 "summary": summary,
                 "source": source,
                 "memory_type": memory_type,
+                **trace_links,
             }
             trace["writeback"]["items"].append(skipped)
             trace["write"]["committed"].append(skipped)
+            self._append_lifecycle(trace, "write_skipped", skipped)
             self._refresh_writeback_count(trace)
             return
         world_observation = memory_type == "world_observation" and str(metadata.get("modality") or default_modality) == "vision"
@@ -840,12 +924,67 @@ class MemoryOrchestrator:
                 "summary": summary,
                 "source": source,
                 "memory_type": memory_type,
+                **trace_links,
             }
             trace["writeback"]["items"].append(failure)
             trace["write"]["committed"].append(failure)
             self._refresh_writeback_count(trace)
             return
+        policy_bucket, policy_assessment = self._writeback_policy_assessment(
+            candidate=candidate,
+            metadata=metadata,
+            summary=summary,
+            source=source,
+            memory_type=memory_type,
+            default_modality=default_modality,
+            default_organ=default_organ,
+        )
+        if policy_bucket in {"rejected", "deferred"}:
+            decision = "reject" if policy_bucket == "rejected" else "defer"
+            reason_codes = list(policy_assessment.get("reason_codes") or [])
+            skipped = {
+                "candidate_index": index,
+                "kind": "writeback_proposal",
+                "status": "skipped",
+                "reason": f"memory_policy_{policy_bucket}",
+                "summary": summary,
+                "source": source,
+                "memory_type": memory_type,
+                "diagnostics": policy_assessment,
+                **trace_links,
+            }
+            trace["writeback"]["items"].append(_json_ready(skipped))
+            trace["write"]["committed"].append(_json_ready(skipped))
+            trace.setdefault("policy_decision", {}).setdefault("write", []).append(
+                _json_ready(
+                    {
+                        "candidate_index": index,
+                        "source": source,
+                        "memory_type": memory_type,
+                        "decision": decision,
+                        "reason": ",".join(str(item) for item in reason_codes) or skipped["reason"],
+                        "score": policy_assessment.get("score"),
+                        **trace_links,
+                    }
+                )
+            )
+            if policy_assessment.get("conflicts_with"):
+                trace.setdefault("conflict_resolution", {}).setdefault("write", []).append(
+                    _json_ready(
+                        {
+                            "candidate_index": index,
+                            "status": "requires_confirmation",
+                            "conflicts_with": policy_assessment.get("conflicts_with"),
+                            **trace_links,
+                        }
+                    )
+                )
+            self._append_lifecycle(trace, "policy_decision", {"scope": "write", "decision": decision})
+            self._append_lifecycle(trace, "write_skipped", skipped)
+            self._refresh_writeback_count(trace)
+            return
         try:
+            governance = self._writeback_governance(metadata)
             payload = {
                 "session_id": session_id or str(candidate.get("round_id") or "unknown-session"),
                 "actor_id": actor_id,
@@ -861,6 +1000,7 @@ class MemoryOrchestrator:
                 "tags": [str(tag) for tag in metadata.get("tags", [])],
                 "evidence": [dict(item) for item in metadata.get("evidence", []) if isinstance(item, Mapping)],
                 "links": [dict(item) for item in metadata.get("links", []) if isinstance(item, Mapping)],
+                **governance,
             }
             if writer_name == "remember_world_observation":
                 result = writer(
@@ -873,6 +1013,7 @@ class MemoryOrchestrator:
                     tags=payload["tags"],
                     evidence=payload["evidence"],
                     links=payload["links"],
+                    **governance,
                 )
             else:
                 result = writer(**payload)
@@ -887,6 +1028,7 @@ class MemoryOrchestrator:
                 "summary": summary,
                 "source": source,
                 "memory_type": memory_type,
+                **trace_links,
             }
             trace["writeback"]["items"].append(failure)
             trace["write"]["committed"].append(failure)
@@ -904,10 +1046,13 @@ class MemoryOrchestrator:
                 "memory_type": status.get("memory_type") or memory_type,
                 "record_id": record_id,
                 "diagnostics": status,
+                **trace_links,
             }
         )
         trace["writeback"]["items"].append(committed)
         trace["write"]["committed"].append(committed)
+        self._track_write_policy_and_conflict(trace, metadata=metadata, committed=committed)
+        self._append_lifecycle(trace, "write_committed", committed)
         self._refresh_writeback_count(trace)
 
     @staticmethod
@@ -943,16 +1088,20 @@ class MemoryOrchestrator:
         return normalized or ["voice"]
 
     def _track_prefetch_requested(self, trace: dict[str, Any], *, candidate: Mapping[str, Any], index: int) -> None:
+        metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
         request = {
             "candidate_index": index,
             "query": str(candidate.get("query") or ""),
             "reason": str(candidate.get("reason") or ""),
             "channels": list(candidate.get("channels") or []),
             "limit": int(candidate.get("limit") or 3),
+            **_trace_link_fields(metadata),
         }
         existing = trace["prefetch"]["requested"]
         if request not in existing:
             existing.append(_json_ready(request))
+            self._append_lifecycle(trace, "prefetch", request)
+        self._track_candidate_snapshot(trace, candidate=candidate, index=index)
 
     def _track_prefetch_result(self, trace: dict[str, Any], *, resolved: Iterable[Mapping[str, Any]]) -> None:
         results = trace["prefetch"]["result"]
@@ -970,6 +1119,8 @@ class MemoryOrchestrator:
                 continue
             seen.add(key)
             results.append(_json_ready(payload))
+        if results:
+            self._append_lifecycle(trace, "prefetch_result", {"count": len(results)})
 
     def _track_write_proposed(self, trace: dict[str, Any], *, candidate: Mapping[str, Any], index: int) -> None:
         metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
@@ -978,10 +1129,182 @@ class MemoryOrchestrator:
             "summary": str(candidate.get("summary") or candidate.get("query") or ""),
             "source": str(metadata.get("source") or "eibrain.audio_dialogue"),
             "memory_type": str(metadata.get("memory_type") or "conversation"),
+            **_trace_link_fields(metadata),
         }
         existing = trace["write"]["proposed"]
         if proposal not in existing:
             existing.append(_json_ready(proposal))
+            self._track_candidate_snapshot(trace, candidate=candidate, index=index)
+
+    def _track_candidate_snapshot(self, trace: dict[str, Any], *, candidate: Mapping[str, Any], index: int) -> None:
+        container = trace.setdefault("candidates", {"items": []})
+        items = container.setdefault("items", []) if isinstance(container, dict) else []
+        key = f"{index}:{candidate.get('kind')}:{candidate.get('query')}"
+        seen = {str(item.get("key") or "") for item in items if isinstance(item, Mapping)}
+        if key in seen:
+            return
+        metadata = dict(candidate.get("metadata") or {}) if isinstance(candidate.get("metadata"), Mapping) else {}
+        item = {
+            "key": key,
+            "candidate_index": index,
+            "kind": str(candidate.get("kind") or ""),
+            "query": str(candidate.get("query") or ""),
+            "summary": str(candidate.get("summary") or ""),
+            "source": str(metadata.get("source") or candidate.get("source") or ""),
+            "memory_type": str(metadata.get("memory_type") or ""),
+            **_trace_link_fields(metadata),
+        }
+        items.append(_json_ready(item))
+        if not any(isinstance(event, Mapping) and event.get("stage") == "candidates" for event in trace.get("lifecycle", [])):
+            self._append_lifecycle(trace, "candidates", {"count": len(items)})
+
+    def _track_recall_policy_decisions(
+        self,
+        trace: dict[str, Any],
+        *,
+        diagnostics: Mapping[str, Any],
+        index: int,
+    ) -> None:
+        decisions = trace.setdefault("policy_decision", {}).setdefault("recall", [])
+        seen_keys = {
+            (
+                str(item.get("candidate_index")),
+                str(item.get("record_id") or ""),
+                str(item.get("decision") or ""),
+            )
+            for item in decisions
+            if isinstance(item, Mapping)
+        }
+        selected_records = _mapping_items(diagnostics.get("selected_records", []))
+        filters = _dict_if_mapping(diagnostics.get("recall_filters"))
+        filtered_records = _mapping_items(filters.get("filtered_records", []))
+        for record in selected_records:
+            policy = _dict_if_mapping(record.get("policy_decision"))
+            if not policy:
+                policy = {"decision": "allow", "reason": "selected_for_recall"}
+            item = {
+                "candidate_index": index,
+                "record_id": record.get("record_id") or record.get("id") or "",
+                "source": record.get("source") or "",
+                "memory_type": record.get("memory_type") or record.get("type") or "",
+                **policy,
+            }
+            key = (str(item["candidate_index"]), str(item["record_id"]), str(item.get("decision") or ""))
+            if key not in seen_keys:
+                decisions.append(_json_ready(item))
+                seen_keys.add(key)
+        for record in filtered_records:
+            item = {
+                "candidate_index": index,
+                "record_id": record.get("record_id") or record.get("id") or "",
+                "source": record.get("source") or "",
+                "decision": "filter",
+                "reason": record.get("reason") or "policy_filter",
+            }
+            key = (str(item["candidate_index"]), str(item["record_id"]), "filter")
+            if key not in seen_keys:
+                decisions.append(_json_ready(item))
+                seen_keys.add(key)
+        if selected_records or filtered_records:
+            self._append_lifecycle(trace, "policy_decision", {"scope": "recall", "count": len(decisions)})
+
+    def _track_write_policy_and_conflict(
+        self,
+        trace: dict[str, Any],
+        *,
+        metadata: Mapping[str, Any],
+        committed: Mapping[str, Any],
+    ) -> None:
+        trace_links = _trace_link_fields(metadata)
+        policy = _dict_if_mapping(metadata.get("policy_decision"))
+        if policy:
+            item = {
+                "record_id": committed.get("record_id") or "",
+                "source": committed.get("source") or metadata.get("source") or "",
+                "memory_type": committed.get("memory_type") or metadata.get("memory_type") or "",
+                **trace_links,
+                **policy,
+            }
+            trace.setdefault("policy_decision", {}).setdefault("write", []).append(_json_ready(item))
+            self._append_lifecycle(trace, "policy_decision", {"scope": "write", **item})
+        conflict = _dict_if_mapping(metadata.get("conflict_resolution"))
+        meta = _dict_if_mapping(metadata.get("meta"))
+        if not conflict:
+            conflict = _dict_if_mapping(meta.get("conflict")) or _dict_if_mapping(meta.get("conflict_resolution"))
+        if conflict:
+            item = {
+                "record_id": committed.get("record_id") or "",
+                "source": committed.get("source") or metadata.get("source") or "",
+                "memory_type": committed.get("memory_type") or metadata.get("memory_type") or "",
+                **trace_links,
+                **conflict,
+            }
+            trace.setdefault("conflict_resolution", {}).setdefault("write", []).append(_json_ready(item))
+            self._append_lifecycle(trace, "conflict_resolution", item)
+
+    def _writeback_governance(self, metadata: Mapping[str, Any]) -> dict[str, Any]:
+        meta = _dict_if_mapping(metadata.get("meta"))
+        governance: dict[str, Any] = {}
+        for key in ("idempotency_key", "source_event_id", "persona_snapshot"):
+            value = metadata.get(key, meta.get(key))
+            if value:
+                governance[key] = _json_ready(value)
+        conflict = metadata.get("conflict", meta.get("conflict"))
+        if not conflict:
+            conflict = metadata.get("conflict_resolution", meta.get("conflict_resolution"))
+        if isinstance(conflict, Mapping):
+            governance["conflict"] = _json_ready(dict(conflict))
+        return governance
+
+    def _writeback_policy_assessment(
+        self,
+        *,
+        candidate: Mapping[str, Any],
+        metadata: Mapping[str, Any],
+        summary: str,
+        source: str,
+        memory_type: str,
+        default_modality: str,
+        default_organ: str,
+    ) -> tuple[str, dict[str, Any]]:
+        try:
+            from eibrain.cognition.policy.multimodal_memory import MultimodalMemoryPolicy
+        except ModuleNotFoundError:  # pragma: no cover - optional runtime packaging
+            return "accepted", {"reason_codes": ["policy_unavailable"]}
+
+        meta = _dict_if_mapping(metadata.get("meta"))
+        content = _dict_if_mapping(metadata.get("content"))
+        proposal = {
+            "id": candidate.get("id") or candidate.get("record_id") or f"candidate-{candidate.get('round_id', '')}",
+            "summary": summary,
+            "source": source,
+            "memory_type": memory_type,
+            "modality": metadata.get("modality") or default_modality,
+            "organ": metadata.get("organ") or default_organ,
+            "event_type": metadata.get("event_type") or meta.get("event_type") or content.get("event_type"),
+            "confidence": metadata.get("confidence", meta.get("confidence", content.get("confidence", 0.75))),
+            "novelty": metadata.get("novelty", meta.get("novelty", 0.65)),
+            "recency": metadata.get("recency", meta.get("recency", 0.9)),
+            "importance": metadata.get("importance", meta.get("importance", 0.65)),
+            "subject": metadata.get("subject") or content.get("subject"),
+            "key": metadata.get("key") or content.get("key") or meta.get("key"),
+            "value": metadata.get("value") or content.get("value") or meta.get("value"),
+            "user_confirmed": metadata.get("user_confirmed", meta.get("user_confirmed", False)),
+        }
+        result = MultimodalMemoryPolicy().evaluate_write_proposals(
+            [proposal],
+            existing_memories=_mapping_items(metadata.get("existing_memories", meta.get("existing_memories", []))),
+            persona_constraints=_dict_if_mapping(metadata.get("persona_constraints", meta.get("persona_constraints"))),
+        )
+        for bucket in ("accepted", "deferred", "rejected"):
+            items = result.get(bucket)
+            if isinstance(items, list) and items:
+                return bucket, _json_ready(dict(items[0]))
+        return "accepted", {"reason_codes": ["accepted"]}
+
+    def _append_lifecycle(self, trace: dict[str, Any], stage: str, payload: Mapping[str, Any] | None = None) -> None:
+        event = {"stage": stage, **dict(payload or {})}
+        trace.setdefault("lifecycle", []).append(_json_ready(event))
 
     def _mark_recall_items_used(
         self,
@@ -991,6 +1314,11 @@ class MemoryOrchestrator:
     ) -> list[dict[str, Any]]:
         candidates = _value(turn, "memory_candidates", [])
         if not isinstance(candidates, list):
+            return []
+        if used_items is None:
+            for candidate in candidates:
+                if isinstance(candidate, dict) and candidate.get("kind") == "recall":
+                    candidate.setdefault("reply_context_status", "available")
             return []
         requested = list(used_items or [])
         requested_keys = {
@@ -1007,6 +1335,7 @@ class MemoryOrchestrator:
             if requested_keys and key not in requested_keys:
                 continue
             candidate["used_in_reply"] = True
+            candidate["reply_context_status"] = "used"
             used.append(
                 _json_ready(
                     {
@@ -1019,6 +1348,49 @@ class MemoryOrchestrator:
                 )
             )
         return used
+
+    def _mark_recall_items_filtered(
+        self,
+        turn: Any,
+        *,
+        filtered_items: Iterable[Mapping[str, Any] | str] | None,
+    ) -> list[dict[str, Any]]:
+        candidates = _value(turn, "memory_candidates", [])
+        if not isinstance(candidates, list):
+            return []
+        requested = list(filtered_items or [])
+        requested_by_key: dict[str, Mapping[str, Any] | str] = {}
+        for item in requested:
+            key = _clean_text(item) if isinstance(item, str) else _clean_text(item.get("record_id") or item.get("id") or item.get("text"))
+            if key:
+                requested_by_key[key] = item
+        filtered: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict) or candidate.get("kind") != "recall":
+                continue
+            key = _clean_text(candidate.get("record_id") or candidate.get("id") or candidate.get("text"))
+            auto_filtered_reason = _recall_filter_reason(candidate)
+            if key not in requested_by_key and not auto_filtered_reason:
+                continue
+            raw = requested_by_key.get(key, {})
+            explicit_reason = raw.get("reason") if isinstance(raw, Mapping) else None
+            reason = explicit_reason or auto_filtered_reason or "policy_filter"
+            candidate["used_in_reply"] = False
+            candidate["reply_context_status"] = "filtered"
+            candidate["reply_context_filter_reason"] = reason or "policy_filter"
+            filtered.append(
+                _json_ready(
+                    {
+                        "record_id": candidate.get("record_id", ""),
+                        "text": candidate.get("text", ""),
+                        "title": candidate.get("title", ""),
+                        "memory_type": candidate.get("memory_type", ""),
+                        "memory_source": candidate.get("memory_source", ""),
+                        "reason": reason or "policy_filter",
+                    }
+                )
+            )
+        return filtered
 
     def _latest_trace(self, turn: Any) -> dict[str, Any] | None:
         current = _value(turn, "memory_traces")
@@ -1058,6 +1430,19 @@ class MemoryOrchestrator:
             ),
         )
         return _json_ready(asdict(summary))
+
+
+def _recall_filter_reason(candidate: Mapping[str, Any]) -> str:
+    status = _clean_text(candidate.get("reply_context_status")).lower()
+    if status == "filtered":
+        return _clean_text(candidate.get("reply_context_filter_reason")) or "policy_filter"
+    policy = _dict_if_mapping(candidate.get("policy_decision"))
+    decision = _clean_text(policy.get("decision")).lower()
+    if decision in {"filter", "reject", "blocked"}:
+        return _clean_text(policy.get("reason")) or "policy_filter"
+    if bool(candidate.get("persona_guardrail_applied")):
+        return _clean_text(candidate.get("persona_guardrail_reason")) or "persona_guardrail_applied"
+    return ""
 
 
 __all__ = ["CLOSED_LOOP_TRACE_SCHEMA", "MemoryOrchestrator"]

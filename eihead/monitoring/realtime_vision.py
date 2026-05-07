@@ -128,9 +128,19 @@ def build_realtime_vision_payload(
         "scene": diagnostic["scene"],
         "scene_id": diagnostic["scene_id"],
         "scene_summary": diagnostic["scene_summary"],
+        "scene_graph_summary": diagnostic["scene_graph_summary"],
         "tracks": diagnostic["tracks"],
         "track_count": diagnostic["track_count"],
         "track_summary": diagnostic["track_summary"],
+        "tracking_stability": diagnostic["tracking_stability"],
+        "tracking_stability_score": diagnostic["tracking_stability_score"],
+        "tracking_switch_count": diagnostic["tracking_switch_count"],
+        "tracking_lost_count": diagnostic["tracking_lost_count"],
+        "tracking_reacquired_count": diagnostic["tracking_reacquired_count"],
+        "multimodal_availability": diagnostic["multimodal_availability"],
+        "pose_availability": diagnostic["pose_availability"],
+        "clip_availability": diagnostic["clip_availability"],
+        "depth_availability": diagnostic["depth_availability"],
         "events": diagnostic["events"],
         "event_count": diagnostic["event_count"],
         "event_summary": diagnostic["event_summary"],
@@ -281,6 +291,8 @@ def _build_realtime_diagnostic(
     scene = _scene_payload(observation)
     target = _target_payload(observation, overlay.get("top_target"))
     score_labels = _score_labels(overlay, target)
+    tracking_stability = _tracking_stability_payload(observation)
+    multimodal_availability = _multimodal_availability(observation)
 
     return {
         "status": status,
@@ -325,9 +337,19 @@ def _build_realtime_diagnostic(
         "scene": scene,
         "scene_id": scene.get("scene_id"),
         "scene_summary": scene.get("summary"),
+        "scene_graph_summary": scene.get("graph_summary") or scene.get("summary") or "waiting",
         "tracks": tracks,
         "track_count": tracks["count"],
         "track_summary": tracks["summary"],
+        "tracking_stability": tracking_stability,
+        "tracking_stability_score": tracking_stability.get("score"),
+        "tracking_switch_count": _int_or_zero(_first_nested_present(observation, "tracking_switch_count", "switch_count", "switches")),
+        "tracking_lost_count": _int_or_zero(_first_nested_present(observation, "tracking_lost_count", "lost_count", "lost")),
+        "tracking_reacquired_count": _int_or_zero(_first_nested_present(observation, "tracking_reacquired_count", "reacquired_count", "reacquired")),
+        "multimodal_availability": multimodal_availability,
+        "pose_availability": multimodal_availability["pose"]["status"],
+        "clip_availability": multimodal_availability["clip"]["status"],
+        "depth_availability": multimodal_availability["depth"]["status"],
         "events": events,
         "event_count": events["count"],
         "event_summary": events["summary"],
@@ -703,6 +725,108 @@ def _scene_source(observation: Mapping[str, Any] | None) -> Mapping[str, Any] | 
     return None
 
 
+def _tracking_stability_payload(observation: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = _first_nested_present(observation, "tracking_stability", "stability")
+    payload = {str(k): _json_ready(v) for k, v in raw.items()} if isinstance(raw, Mapping) else {}
+    state = _string_or_none(_first_present(payload, "state", "status"))
+    if state is None:
+        state = _string_or_none(_first_nested_present(observation, "stability_state")) or "unknown"
+    score = _number_or_none(
+        _first_present(payload, "score", "stability_score")
+        if payload
+        else _first_nested_present(observation, "tracking_stability_score", "stability_score", "stable_ratio")
+    )
+    return {
+        **payload,
+        "state": state,
+        "score": round(score, 6) if score is not None else None,
+    }
+
+
+def _multimodal_availability(observation: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+    return {
+        "pose": _availability_payload(_multimodal_value(observation, "pose")),
+        "clip": _availability_payload(_multimodal_value(observation, "clip", "clipLabels", "clip_labels")),
+        "semantic": _availability_payload(
+            _multimodal_value(observation, "semantic", "semanticLabels", "semantic_labels")
+        ),
+        "depth": _availability_payload(_multimodal_value(observation, "depth")),
+        "distance": _availability_payload(_multimodal_value(observation, "distance")),
+        "tracking": _availability_payload(
+            _multimodal_value(observation, "trackingDiagnostics", "tracking_diagnostics")
+        ),
+    }
+
+
+def _multimodal_value(observation: Mapping[str, Any] | None, *keys: str) -> Any:
+    value = _first_nested_present(observation, *keys)
+    if value is not None:
+        return value
+    scene = _scene_source(observation)
+    sources = [scene] if scene is not None else []
+    if observation is not None:
+        sources.append(observation)
+    value = _first_present(scene, *keys)
+    if value is not None:
+        return value
+    collected: list[Any] = []
+    collected_from_list = False
+    for source in sources:
+        if source is None:
+            continue
+        for collection_key in ("objects", "tracks", "events", "event_contents", "detections"):
+            items = source.get(collection_key)
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                if not isinstance(item, Mapping):
+                    continue
+                item_value = _first_present(item, *keys)
+                if item_value is None:
+                    attributes = item.get("attributes")
+                    if isinstance(attributes, Mapping):
+                        item_value = _first_present(attributes, *keys)
+                if item_value is None:
+                    continue
+                if isinstance(item_value, list):
+                    collected_from_list = True
+                    collected.extend(item_value)
+                else:
+                    collected.append(item_value)
+    if not collected:
+        return None
+    return collected if collected_from_list or len(collected) > 1 else collected[0]
+
+
+def _availability_payload(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {"status": "unknown", "summary": "unknown"}
+    if isinstance(value, bool):
+        return {"status": "present" if value else "waiting", "summary": "available" if value else "waiting"}
+    if isinstance(value, list):
+        return {
+            "status": "present" if value else "waiting",
+            "summary": f"{len(value)} label(s)" if value else "waiting",
+        }
+    if not isinstance(value, Mapping):
+        text = str(value)
+        return {"status": text or "unknown", "summary": text or "unknown"}
+
+    status = _string_or_none(_first_present(value, "status", "state"))
+    available = value.get("available")
+    if status is None and isinstance(available, bool):
+        status = "present" if available else "waiting"
+    normalized = (status or "unknown").strip().lower()
+    if normalized in {"ok", "ready", "available", "present", "live", "healthy", "enabled"}:
+        normalized = "present"
+    elif normalized in {"missing", "false", "unavailable", "disabled", "pending"}:
+        normalized = "waiting"
+    summary = _string_or_none(_first_present(value, "summary", "reason", "message")) or (
+        "available" if normalized == "present" else normalized
+    )
+    return {"status": normalized, "summary": summary}
+
+
 def _target_payload(
     observation: Mapping[str, Any] | None,
     overlay_target: Any,
@@ -831,7 +955,7 @@ def _normalized_detection(raw_detection: Any) -> dict[str, Any] | None:
             return {"value": detection, "payload_type": type(raw_detection).__name__}
         detection = {str(k): _json_ready(v) for k, v in detection.items()}
     if "bbox" in detection:
-        normalized_box = _normalize_box(detection.get("bbox"))
+        normalized_box = _normalize_box(detection.get("bbox"), format_hint=_bbox_format(detection))
         detection["bbox"] = normalized_box if normalized_box is not None else detection.get("bbox")
     return detection
 
@@ -964,14 +1088,14 @@ def _round_overlay_number(value: float) -> float:
     return 0.0 if rounded == 0 else rounded
 
 
-def _normalize_box(raw_box: Any) -> dict[str, Any] | None:
+def _normalize_box(raw_box: Any, *, format_hint: str = "") -> dict[str, Any] | None:
     if raw_box is None:
         return None
     if isinstance(raw_box, Mapping):
         normalized = _normalize_mapping_box(raw_box)
         return normalized or {str(k): _json_ready(v) for k, v in raw_box.items()}
     if isinstance(raw_box, (list, tuple)) and len(raw_box) == 4:
-        x_min, y_min, x_max, y_max = raw_box
+        x_min, y_min, x_max, y_max = _normalize_sequence_box(raw_box, format_hint=format_hint)
         return {
             "x_min": _json_ready(x_min),
             "y_min": _json_ready(y_min),
@@ -979,6 +1103,34 @@ def _normalize_box(raw_box: Any) -> dict[str, Any] | None:
             "y_max": _json_ready(y_max),
         }
     return None
+
+
+def _normalize_sequence_box(raw_box: list[Any] | tuple[Any, ...], *, format_hint: str = "") -> tuple[float, float, float, float]:
+    x_min = float(raw_box[0])
+    y_min = float(raw_box[1])
+    third = float(raw_box[2])
+    fourth = float(raw_box[3])
+    if format_hint == "xyxy":
+        return (x_min, y_min, third, fourth)
+    if format_hint == "xywh":
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if max(abs(x_min), abs(y_min), abs(third), abs(fourth)) <= 1.0:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if third <= x_min or fourth <= y_min:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    return (x_min, y_min, third, fourth)
+
+
+def _bbox_format(detection: Mapping[str, Any]) -> str:
+    for key in ("bboxFormat", "bbox_format", "boxFormat", "box_format", "format"):
+        value = detection.get(key)
+        if value is not None:
+            normalized = str(value).strip().lower().replace("-", "").replace("_", "")
+            if normalized in {"xyxy", "x1y1x2y2"}:
+                return "xyxy"
+            if normalized in {"xywh", "ltwh"}:
+                return "xywh"
+    return ""
 
 
 def _normalize_mapping_box(raw_box: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1090,6 +1242,11 @@ def _int_or_none(value: Any) -> int | None:
     if number is None:
         return None
     return int(number)
+
+
+def _int_or_zero(value: Any) -> int:
+    number = _number_or_none(value)
+    return int(number) if number is not None else 0
 
 
 def _string_or_none(value: Any) -> str | None:

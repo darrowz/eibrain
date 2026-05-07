@@ -50,11 +50,15 @@ def build_visual_feedback_record(
     before_metrics, after_metrics = _split_metrics(follow_map, outcome_map)
     error = _first_text(outcome_map, follow_map, keys=("error", "reason"), default="")
     privacy_result = _privacy_result(privacy_map)
+    confidence = _confidence(follow_map, outcome_map, subject_map)
 
     record: dict[str, object] = {
         "record_type": "visual_feedback",
         "feedback_type": resolved_type,
         "source": source,
+        "modality": "vision",
+        "organ": "eye",
+        "confidence": confidence,
         "subject": _redact_if_needed(subject_map, privacy_result),
         "outcome": resolved_outcome,
         "success": resolved_outcome == "success",
@@ -76,8 +80,17 @@ def build_visual_feedback_record(
         ),
         "privacy": privacy_result,
     }
+    record["tracking_provenance"] = _tracking_provenance(
+        subject=subject_map,
+        follow_score=follow_map,
+        round_id=str(record["round_id"]),
+        session_id=str(record["session_id"]),
+    )
+    record["scene_provenance"] = _scene_provenance(frame_map)
     record["writeback"] = {
-        "eligible": True,
+        "eligible": not (
+            confidence is not None and confidence < 0.5 and (resolved_outcome == "observed" or resolved_type == "observed")
+        ),
         "durable": True,
         "reason": "visual_feedback_event",
         "target_memory_type": "visual_feedback",
@@ -87,10 +100,22 @@ def build_visual_feedback_record(
     return _json_safe(record)
 
 
-def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[str, object]:
+def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[str, object] | None:
     """Build eimemory upsert params from a visual feedback record."""
 
     cleaned = _json_safe(dict(record))
+    writeback = cleaned.get("writeback", {})
+    if isinstance(writeback, Mapping) and writeback.get("eligible") is False:
+        return None
+    scene_provenance = cleaned.get("scene_provenance", {})
+    source_event_id = ""
+    if isinstance(scene_provenance, Mapping):
+        source_event_id = str(scene_provenance.get("source_event_id") or "")
+    idempotency_key = (
+        f"{cleaned.get('session_id', '')}:{source_event_id}:{cleaned.get('feedback_type', '')}"
+        if source_event_id
+        else ""
+    )
     return {
         "text": str(cleaned.get("summary") or ""),
         "title": _title(cleaned),
@@ -98,6 +123,9 @@ def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[
         "source": str(cleaned.get("source") or SOURCE),
         "organ": "eye",
         "modality": "vision",
+        "confidence": cleaned.get("confidence"),
+        "source_event_id": source_event_id,
+        "idempotency_key": idempotency_key,
         "content": {
             "feedback_type": cleaned.get("feedback_type"),
             "subject": cleaned.get("subject", {}),
@@ -109,12 +137,19 @@ def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[
             "after_metrics": cleaned.get("after_metrics", {}),
             "round_id": cleaned.get("round_id", ""),
             "session_id": cleaned.get("session_id", ""),
+            "tracking_provenance": cleaned.get("tracking_provenance", {}),
+            "scene_provenance": cleaned.get("scene_provenance", {}),
         },
         "meta": {
             "importance": cleaned.get("importance"),
+            "confidence": cleaned.get("confidence"),
             "timestamp_ms": cleaned.get("timestamp_ms"),
             "privacy": cleaned.get("privacy", {}),
             "record_type": "visual_feedback",
+            "source_event_id": source_event_id,
+            "idempotency_key": idempotency_key,
+            "tracking_provenance": cleaned.get("tracking_provenance", {}),
+            "scene_provenance": cleaned.get("scene_provenance", {}),
             "writeback": cleaned.get("writeback", {}),
         },
         "tags": list(cleaned.get("tags", [])),
@@ -137,6 +172,9 @@ def build_eitraining_visual_feedback_trace(record: Mapping[str, object]) -> dict
         "round_id": cleaned.get("round_id", ""),
         "session_id": cleaned.get("session_id", ""),
         "importance": cleaned.get("importance"),
+        "confidence": cleaned.get("confidence"),
+        "tracking_provenance": cleaned.get("tracking_provenance", {}),
+        "scene_provenance": cleaned.get("scene_provenance", {}),
         "timestamp_ms": cleaned.get("timestamp_ms"),
         "privacy": cleaned.get("privacy", {}),
     }
@@ -203,6 +241,52 @@ def _importance(
     if outcome == "success":
         return 0.7
     return 0.5
+
+
+def _confidence(*maps: Mapping[str, object]) -> float | None:
+    for mapping in maps:
+        value = _first_value(mapping, keys=("score", "confidence", "tracking_score", "follow_score"))
+        if isinstance(value, bool) or value is None:
+            continue
+        try:
+            return float(str(value))
+        except ValueError:
+            continue
+    return None
+
+
+def _tracking_provenance(
+    *,
+    subject: Mapping[str, object],
+    follow_score: Mapping[str, object],
+    round_id: str,
+    session_id: str,
+) -> dict[str, object]:
+    return {
+        "track_id": str(subject.get("track_id") or subject.get("target_id") or ""),
+        "round_id": round_id,
+        "session_id": session_id,
+        "follow_score": _confidence(follow_score),
+        "window_ms": _int_value(follow_score.get("window_ms")),
+    }
+
+
+def _scene_provenance(frame: Mapping[str, object]) -> dict[str, object]:
+    provenance = {}
+    for key in ("scene_id", "frame_id", "source_event_id", "trace_id", "camera_id", "device_id"):
+        value = frame.get(key)
+        if value:
+            provenance[key] = value
+    return provenance
+
+
+def _int_value(value: object) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(float(str(value)))
+    except ValueError:
+        return None
 
 
 def _privacy_result(privacy: Mapping[str, object]) -> dict[str, object]:

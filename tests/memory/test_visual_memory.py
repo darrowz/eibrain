@@ -76,9 +76,25 @@ def test_stable_target_presence_builds_memory_trace_and_upsert_candidate() -> No
     assert upsert["method"] == "memory.upsert"
     assert upsert["params"]["source"] == "eibrain.vision"
     assert upsert["params"]["memory_type"] == "visual_event"
-    assert upsert["params"]["scope"] == {"session_id": "vision-session-1", "actor_id": "user-1"}
+    assert upsert["params"]["confidence"] == 0.88
+    assert upsert["params"]["scope"] == {"tenant_id": "default", "user_id": "user-1"}
+    assert upsert["params"]["meta"]["session_id"] == "vision-session-1"
     assert upsert["params"]["meta"]["dedupe_key"] == candidate["dedupe_key"]
     assert upsert["params"]["meta"]["retention"] == "episode"
+    assert upsert["params"]["meta"]["tracking_provenance"] == {
+        "target_id": "user-1",
+        "track_id": "",
+        "stable_frames": 18,
+        "duration_ms": 12500,
+        "follow_score": 0.88,
+        "source_event_id": "frame-42",
+        "trace_id": "trace-vision-42",
+    }
+    assert upsert["params"]["meta"]["scene_provenance"] == {
+        "source_event_id": "frame-42",
+        "trace_id": "trace-vision-42",
+        "device_id": "eihead-camera-1",
+    }
     assert upsert["params"]["meta"]["ttl_ms"] == 7 * 24 * 60 * 60 * 1000
     assert upsert["params"]["meta"]["writeback"]["eligible"] is True
     assert upsert["params"]["content"]["target_lock"]["stable_frames"] == 18

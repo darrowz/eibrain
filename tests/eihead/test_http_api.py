@@ -243,19 +243,20 @@ def test_head_client_post_event_routes_eiprotocol_action_through_runtime_app() -
     assert body_runtime.dispatched[0].target_name == "neck.pan"
 
 
-def test_post_events_returns_not_wired_success_when_handler_is_absent() -> None:
+def test_post_events_returns_503_when_handler_is_absent() -> None:
     app = FakeHeadApp()
 
     with running_server(app) as (base_url, _server, _thread):
-        status_code, _, payload = read_json(
+        status_code, payload = read_error_json(
             f"{base_url}/events",
             method="POST",
             json_body={"event": {"type": "wakeword.detected"}, "trace_id": "trace-event-2"},
         )
 
-    assert status_code == 200
-    assert payload == {
-        "ok": True,
+    assert status_code == 503
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "event_handler_not_wired"
+    assert payload["error"]["details"] == {
         "accepted": False,
         "status": "not_wired",
         "reason": "runtime_app_handle_event_unavailable",

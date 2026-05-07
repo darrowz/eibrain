@@ -244,13 +244,17 @@ def create_handler(
 
             handle_event = getattr(runtime_app, "handle_event", None)
             if not callable(handle_event):
-                return {
-                    "ok": True,
-                    "accepted": False,
-                    "status": "not_wired",
-                    "reason": "runtime_app_handle_event_unavailable",
-                    "trace_id": trace_id,
-                }
+                raise HeadHttpApiError(
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                    "event_handler_not_wired",
+                    "runtime app does not expose handle_event()",
+                    details={
+                        "accepted": False,
+                        "status": "not_wired",
+                        "reason": "runtime_app_handle_event_unavailable",
+                        "trace_id": trace_id,
+                    },
+                )
 
             result = handle_event(dict(event), trace_id=trace_id)
             return _as_json_object(result, "app.handle_event()")

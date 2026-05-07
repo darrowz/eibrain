@@ -172,6 +172,9 @@ class EventEnvelope:
         source = data.get("source")
         target = data.get("target")
         policy = data.get("policy")
+        ttl_ms = data.get("ttlMs")
+        if ttl_ms is None:
+            ttl_ms = data.get("ttl_ms")
         return cls(
             spec_version=str(data.get("specVersion", data.get("spec_version", SPEC_VERSION)) or SPEC_VERSION),
             event_id=str(data.get("id", data.get("event_id", "")) or ""),
@@ -188,7 +191,7 @@ class EventEnvelope:
             source=SourceRef.from_dict(source if isinstance(source, Mapping) else {}),
             target=TargetRef.from_dict(target) if isinstance(target, Mapping) else None,
             priority=str(data.get("priority", "normal") or "normal"),
-            ttl_ms=int(data["ttlMs"]) if data.get("ttlMs") is not None else None,
+            ttl_ms=int(ttl_ms) if ttl_ms is not None else None,
             mode=_dict(data.get("mode") if isinstance(data.get("mode"), Mapping) else None),
             content=_dict(data.get("content") if isinstance(data.get("content"), Mapping) else None),
             policy=PolicyState.from_dict(policy if isinstance(policy, Mapping) else None),
@@ -601,10 +604,14 @@ class MemoryPolicyReport:
     decision: str
     reason: str = ""
     evidence: list[dict[str, Any]] = field(default_factory=list)
+    writes: list[dict[str, Any]] = field(default_factory=list)
+    filters: list[dict[str, Any]] = field(default_factory=list)
+    conflict_resolution: dict[str, Any] = field(default_factory=dict)
+    persona_consistency_signals: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_content(self) -> dict[str, Any]:
-        return {
+        content = {
             "policyId": self.policy_id,
             "scope": dict(self.scope),
             "decision": self.decision,
@@ -612,11 +619,27 @@ class MemoryPolicyReport:
             "evidence": [dict(item) for item in self.evidence],
             "metadata": dict(self.metadata),
         }
+        if self.writes:
+            content["writes"] = [dict(item) for item in self.writes]
+        if self.filters:
+            content["filters"] = [dict(item) for item in self.filters]
+        if self.conflict_resolution:
+            content["conflictResolution"] = dict(self.conflict_resolution)
+        if self.persona_consistency_signals:
+            content["personaConsistencySignals"] = [dict(item) for item in self.persona_consistency_signals]
+        return content
 
     @classmethod
     def from_content(cls, data: Mapping[str, Any]) -> "MemoryPolicyReport":
         scope = data.get("scope")
         evidence = data.get("evidence")
+        writes = data.get("writes")
+        filters = data.get("filters")
+        conflict_resolution = data.get("conflictResolution", data.get("conflict_resolution"))
+        persona_consistency_signals = data.get(
+            "personaConsistencySignals",
+            data.get("persona_consistency_signals"),
+        )
         metadata = data.get("metadata")
         return cls(
             policy_id=str(data.get("policyId", data.get("policy_id", "")) or ""),
@@ -624,6 +647,10 @@ class MemoryPolicyReport:
             decision=str(data.get("decision", "") or ""),
             reason=str(data.get("reason", "") or ""),
             evidence=_dict_items(evidence),
+            writes=_dict_items(writes),
+            filters=_dict_items(filters),
+            conflict_resolution=_dict(conflict_resolution if isinstance(conflict_resolution, Mapping) else None),
+            persona_consistency_signals=_dict_items(persona_consistency_signals),
             metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
         )
 
@@ -787,24 +814,55 @@ class Detection:
     score: float
     bbox: list[Any] | dict[str, Any]
     track_id: str = ""
+    pose: dict[str, Any] = field(default_factory=dict)
+    clip_labels: list[dict[str, Any]] = field(default_factory=list)
+    semantic_labels: list[dict[str, Any]] = field(default_factory=list)
+    depth: dict[str, Any] = field(default_factory=dict)
+    distance: dict[str, Any] = field(default_factory=dict)
+    tracking_diagnostics: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "label": self.label,
             "score": float(self.score),
             "bbox": _bbox(self.bbox),
             "trackId": self.track_id,
             "metadata": dict(self.metadata),
         }
+        if self.pose:
+            payload["pose"] = dict(self.pose)
+        if self.clip_labels:
+            payload["clipLabels"] = [dict(item) for item in self.clip_labels]
+        if self.semantic_labels:
+            payload["semanticLabels"] = [dict(item) for item in self.semantic_labels]
+        if self.depth:
+            payload["depth"] = dict(self.depth)
+        if self.distance:
+            payload["distance"] = dict(self.distance)
+        if self.tracking_diagnostics:
+            payload["trackingDiagnostics"] = dict(self.tracking_diagnostics)
+        return payload
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Detection":
+        pose = data.get("pose")
+        clip_labels = data.get("clipLabels", data.get("clip_labels"))
+        semantic_labels = data.get("semanticLabels", data.get("semantic_labels"))
+        depth = data.get("depth")
+        distance = data.get("distance")
+        tracking_diagnostics = data.get("trackingDiagnostics", data.get("tracking_diagnostics"))
         return cls(
             label=str(data.get("label", "") or ""),
-            score=float(data.get("score", 0.0) or 0.0),
+            score=_score_from_mapping(data),
             bbox=_bbox(data.get("bbox")),
             track_id=str(data.get("trackId", data.get("track_id", "")) or ""),
+            pose=_dict(pose if isinstance(pose, Mapping) else None),
+            clip_labels=_dict_items(clip_labels),
+            semantic_labels=_dict_items(semantic_labels),
+            depth=_dict(depth if isinstance(depth, Mapping) else None),
+            distance=_dict(distance if isinstance(distance, Mapping) else None),
+            tracking_diagnostics=_dict(tracking_diagnostics if isinstance(tracking_diagnostics, Mapping) else None),
             metadata=_dict(data.get("metadata") if isinstance(data.get("metadata"), Mapping) else None),
         )
 
@@ -821,12 +879,18 @@ class RealtimeVisionObservation:
     scores: list[float] = field(default_factory=list)
     tracked_target: dict[str, Any] = field(default_factory=dict)
     latency_ms: dict[str, Any] = field(default_factory=dict)
+    tracking_diagnostics: dict[str, Any] = field(default_factory=dict)
+    pose: dict[str, Any] = field(default_factory=dict)
+    clip_labels: list[dict[str, Any]] = field(default_factory=list)
+    semantic_labels: list[dict[str, Any]] = field(default_factory=list)
+    depth: dict[str, Any] = field(default_factory=dict)
+    distance: dict[str, Any] = field(default_factory=dict)
     image_url: str = ""
     status: str = "ok"
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_content(self) -> dict[str, Any]:
-        return {
+        content = {
             "frameId": self.frame_id,
             "width": self.width,
             "height": self.height,
@@ -841,6 +905,19 @@ class RealtimeVisionObservation:
             "trackedTarget": dict(self.tracked_target),
             "metadata": dict(self.metadata),
         }
+        if self.tracking_diagnostics:
+            content["trackingDiagnostics"] = dict(self.tracking_diagnostics)
+        if self.pose:
+            content["pose"] = dict(self.pose)
+        if self.clip_labels:
+            content["clipLabels"] = [dict(item) for item in self.clip_labels]
+        if self.semantic_labels:
+            content["semanticLabels"] = [dict(item) for item in self.semantic_labels]
+        if self.depth:
+            content["depth"] = dict(self.depth)
+        if self.distance:
+            content["distance"] = dict(self.distance)
+        return content
 
     @classmethod
     def from_content(cls, data: Mapping[str, Any]) -> "RealtimeVisionObservation":
@@ -849,6 +926,12 @@ class RealtimeVisionObservation:
         scores = data.get("scores")
         tracked_target = data.get("trackedTarget", data.get("tracked_target"))
         latency_ms = data.get("latencyMs", data.get("latency_ms"))
+        tracking_diagnostics = data.get("trackingDiagnostics", data.get("tracking_diagnostics"))
+        pose = data.get("pose")
+        clip_labels = data.get("clipLabels", data.get("clip_labels"))
+        semantic_labels = data.get("semanticLabels", data.get("semantic_labels"))
+        depth = data.get("depth")
+        distance = data.get("distance")
         metadata = data.get("metadata")
         return cls(
             frame_id=str(data.get("frameId", data.get("frame_id", "")) or ""),
@@ -865,6 +948,12 @@ class RealtimeVisionObservation:
             scores=[float(item) for item in _list(scores if isinstance(scores, (list, tuple)) else None)],
             tracked_target=_dict(tracked_target if isinstance(tracked_target, Mapping) else None),
             latency_ms=_dict(latency_ms if isinstance(latency_ms, Mapping) else None),
+            tracking_diagnostics=_dict(tracking_diagnostics if isinstance(tracking_diagnostics, Mapping) else None),
+            pose=_dict(pose if isinstance(pose, Mapping) else None),
+            clip_labels=_dict_items(clip_labels),
+            semantic_labels=_dict_items(semantic_labels),
+            depth=_dict(depth if isinstance(depth, Mapping) else None),
+            distance=_dict(distance if isinstance(distance, Mapping) else None),
             image_url=str(data.get("imageUrl", data.get("image_url", "")) or ""),
             status=str(data.get("status", "ok") or "ok"),
             metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
@@ -888,11 +977,23 @@ class VisionSceneObservation:
     objects: list[dict[str, Any]] = field(default_factory=list)
     relationships: list[dict[str, Any]] = field(default_factory=list)
     environment: dict[str, Any] = field(default_factory=dict)
+    clip_labels: list[dict[str, Any]] = field(default_factory=list)
+    semantic_labels: list[dict[str, Any]] = field(default_factory=list)
+    depth: dict[str, Any] = field(default_factory=dict)
+    distance: dict[str, Any] = field(default_factory=dict)
+    scene_graph: dict[str, Any] = field(default_factory=dict)
+    scene_graph_provenance: dict[str, Any] = field(default_factory=dict)
+    attention: dict[str, Any] = field(default_factory=dict)
+    stable_target: dict[str, Any] = field(default_factory=dict)
+    event_summary: str = ""
+    tracking_diagnostics: dict[str, Any] = field(default_factory=dict)
+    temporal: dict[str, Any] = field(default_factory=dict)
+    events: list[dict[str, Any]] = field(default_factory=list)
     image_url: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_content(self) -> dict[str, Any]:
-        return {
+        content = {
             "sceneId": self.scene_id,
             "observedAt": self.observed_at,
             "summary": self.summary,
@@ -902,12 +1003,48 @@ class VisionSceneObservation:
             "imageUrl": self.image_url,
             "metadata": dict(self.metadata),
         }
+        if self.clip_labels:
+            content["clipLabels"] = [dict(item) for item in self.clip_labels]
+        if self.semantic_labels:
+            content["semanticLabels"] = [dict(item) for item in self.semantic_labels]
+        if self.depth:
+            content["depth"] = dict(self.depth)
+        if self.distance:
+            content["distance"] = dict(self.distance)
+        if self.scene_graph:
+            content["sceneGraph"] = dict(self.scene_graph)
+        if self.scene_graph_provenance:
+            content["sceneGraphProvenance"] = dict(self.scene_graph_provenance)
+        if self.attention:
+            content["attention"] = dict(self.attention)
+        if self.stable_target:
+            content["stableTarget"] = dict(self.stable_target)
+        if self.event_summary:
+            content["eventSummary"] = self.event_summary
+        if self.tracking_diagnostics:
+            content["trackingDiagnostics"] = dict(self.tracking_diagnostics)
+        if self.temporal:
+            content["temporal"] = dict(self.temporal)
+        if self.events:
+            content["events"] = [dict(item) for item in self.events]
+        return content
 
     @classmethod
     def from_content(cls, data: Mapping[str, Any]) -> "VisionSceneObservation":
         objects = data.get("objects")
         relationships = data.get("relationships")
         environment = data.get("environment")
+        clip_labels = data.get("clipLabels", data.get("clip_labels"))
+        semantic_labels = data.get("semanticLabels", data.get("semantic_labels"))
+        depth = data.get("depth")
+        distance = data.get("distance")
+        scene_graph = data.get("sceneGraph", data.get("scene_graph"))
+        scene_graph_provenance = data.get("sceneGraphProvenance", data.get("scene_graph_provenance"))
+        attention = data.get("attention")
+        stable_target = data.get("stableTarget", data.get("stable_target"))
+        tracking_diagnostics = data.get("trackingDiagnostics", data.get("tracking_diagnostics"))
+        temporal = data.get("temporal")
+        events = data.get("events")
         metadata = data.get("metadata")
         return cls(
             scene_id=str(data.get("sceneId", data.get("scene_id", "")) or ""),
@@ -916,11 +1053,25 @@ class VisionSceneObservation:
             objects=_dict_items(objects),
             relationships=_dict_items(relationships),
             environment=_dict(environment if isinstance(environment, Mapping) else None),
+            clip_labels=_dict_items(clip_labels),
+            semantic_labels=_dict_items(semantic_labels),
+            depth=_dict(depth if isinstance(depth, Mapping) else None),
+            distance=_dict(distance if isinstance(distance, Mapping) else None),
+            scene_graph=_dict(scene_graph if isinstance(scene_graph, Mapping) else None),
+            scene_graph_provenance=_dict(scene_graph_provenance if isinstance(scene_graph_provenance, Mapping) else None),
+            attention=_dict(attention if isinstance(attention, Mapping) else None),
+            stable_target=_dict(stable_target if isinstance(stable_target, Mapping) else None),
+            event_summary=str(data.get("eventSummary", data.get("event_summary", "")) or ""),
+            tracking_diagnostics=_dict(tracking_diagnostics if isinstance(tracking_diagnostics, Mapping) else None),
+            temporal=_dict(temporal if isinstance(temporal, Mapping) else None),
+            events=_dict_items(events),
             image_url=str(data.get("imageUrl", data.get("image_url", "")) or ""),
             metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
         )
 
     def to_event(self, **kwargs: Any) -> EventEnvelope:
+        kwargs.setdefault("session_id", "")
+        kwargs.setdefault("round_id", "")
         return _round_event(
             event_type="observation",
             name="ei.observation.vision.scene",
@@ -938,11 +1089,18 @@ class VisionEventObservation:
     scene_id: str = ""
     subject: dict[str, Any] = field(default_factory=dict)
     confidence: float | None = None
+    pose: dict[str, Any] = field(default_factory=dict)
+    clip_labels: list[dict[str, Any]] = field(default_factory=list)
+    semantic_labels: list[dict[str, Any]] = field(default_factory=list)
+    depth: dict[str, Any] = field(default_factory=dict)
+    distance: dict[str, Any] = field(default_factory=dict)
+    scene_graph_provenance: dict[str, Any] = field(default_factory=dict)
+    tracking_diagnostics: dict[str, Any] = field(default_factory=dict)
     details: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_content(self) -> dict[str, Any]:
-        return {
+        content = {
             "eventId": self.event_id,
             "eventType": self.event_type,
             "observedAt": self.observed_at,
@@ -952,10 +1110,32 @@ class VisionEventObservation:
             "details": dict(self.details),
             "metadata": dict(self.metadata),
         }
+        if self.pose:
+            content["pose"] = dict(self.pose)
+        if self.clip_labels:
+            content["clipLabels"] = [dict(item) for item in self.clip_labels]
+        if self.semantic_labels:
+            content["semanticLabels"] = [dict(item) for item in self.semantic_labels]
+        if self.depth:
+            content["depth"] = dict(self.depth)
+        if self.distance:
+            content["distance"] = dict(self.distance)
+        if self.scene_graph_provenance:
+            content["sceneGraphProvenance"] = dict(self.scene_graph_provenance)
+        if self.tracking_diagnostics:
+            content["trackingDiagnostics"] = dict(self.tracking_diagnostics)
+        return content
 
     @classmethod
     def from_content(cls, data: Mapping[str, Any]) -> "VisionEventObservation":
         subject = data.get("subject")
+        pose = data.get("pose")
+        clip_labels = data.get("clipLabels", data.get("clip_labels"))
+        semantic_labels = data.get("semanticLabels", data.get("semantic_labels"))
+        depth = data.get("depth")
+        distance = data.get("distance")
+        scene_graph_provenance = data.get("sceneGraphProvenance", data.get("scene_graph_provenance"))
+        tracking_diagnostics = data.get("trackingDiagnostics", data.get("tracking_diagnostics"))
         details = data.get("details")
         metadata = data.get("metadata")
         return cls(
@@ -965,11 +1145,20 @@ class VisionEventObservation:
             scene_id=str(data.get("sceneId", data.get("scene_id", "")) or ""),
             subject=_dict(subject if isinstance(subject, Mapping) else None),
             confidence=_optional_float(data.get("confidence")),
+            pose=_dict(pose if isinstance(pose, Mapping) else None),
+            clip_labels=_dict_items(clip_labels),
+            semantic_labels=_dict_items(semantic_labels),
+            depth=_dict(depth if isinstance(depth, Mapping) else None),
+            distance=_dict(distance if isinstance(distance, Mapping) else None),
+            scene_graph_provenance=_dict(scene_graph_provenance if isinstance(scene_graph_provenance, Mapping) else None),
+            tracking_diagnostics=_dict(tracking_diagnostics if isinstance(tracking_diagnostics, Mapping) else None),
             details=_dict(details if isinstance(details, Mapping) else None),
             metadata=_dict(metadata if isinstance(metadata, Mapping) else None),
         )
 
     def to_event(self, **kwargs: Any) -> EventEnvelope:
+        kwargs.setdefault("session_id", "")
+        kwargs.setdefault("round_id", "")
         return _round_event(
             event_type="observation",
             name="ei.observation.vision.event",
@@ -1168,11 +1357,22 @@ def _round_event(
 def _dict_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, (list, tuple)):
         return []
-    return [dict(item) for item in value if isinstance(item, Mapping)]
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            items.append(dict(item))
+        elif isinstance(item, str) and item.strip():
+            items.append({"label": item.strip()})
+    return items
 
 
 def _optional_float(value: Any) -> float | None:
     return float(value) if value not in (None, "") else None
+
+
+def _score_from_mapping(data: Mapping[str, Any]) -> float:
+    value = data.get("score", data.get("confidence", 0.0))
+    return float(value or 0.0)
 
 
 def validate_event(event: EventEnvelope | Mapping[str, Any]) -> list[str]:

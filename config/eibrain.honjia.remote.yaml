@@ -20,7 +20,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -42,7 +42,7 @@ body:
           vad_end_silence_ms: 240
           vad_pre_roll_ms: 160
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -56,7 +56,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -67,7 +67,7 @@ body:
           - --label
           - audio-vad
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -81,7 +81,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-sherpa-model
@@ -104,7 +104,7 @@ body:
             洪图: 鸿途
             黄土: 鸿途
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-sherpa-model
@@ -116,7 +116,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -127,7 +127,7 @@ body:
           - --label
           - camera
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -148,7 +148,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -159,7 +159,7 @@ body:
           - --label
           - hailo8
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -187,7 +187,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -198,7 +198,7 @@ body:
           - --label
           - hailo8-identity
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -216,7 +216,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-speaker
@@ -231,7 +231,7 @@ body:
           - --voice-id
           - female-shaonv
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-speaker
@@ -250,7 +250,7 @@ body:
           kind: command
           timeout_s: 60
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - speak
@@ -273,7 +273,7 @@ body:
           - --channel
           - '1'
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-speaker
@@ -302,7 +302,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - move-gimbal
@@ -311,7 +311,7 @@ body:
           - --home-angle
           - '90'
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -331,7 +331,7 @@ body:
         driver:
           kind: command
           command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device
@@ -342,7 +342,7 @@ body:
           - --label
           - gimbal-tracking
           health_command:
-          - /home/darrow/dev-project/eibrain/.venv/bin/python
+          - /home/darrow/eibrain/.venv/bin/python
           - -m
           - apps.body_runtime.device_ops
           - probe-binary-device

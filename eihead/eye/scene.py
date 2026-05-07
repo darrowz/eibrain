@@ -23,6 +23,10 @@ except ModuleNotFoundError:  # pragma: no cover - standalone eihead has no full 
 from .realtime import COMPAT_STATIC_FRAME_MODE, REALTIME_STREAM_MODE
 
 
+_DEVICE_LABELS = {"phone", "mobile", "smartphone", "tablet", "laptop", "monitor", "screen", "device"}
+_HAND_KEYPOINTS = {"left_wrist", "right_wrist", "left_hand", "right_hand", "hand", "wrist"}
+
+
 class RealtimeVisionSceneBridge:
     """Convert realtime eye observations into scene snapshots and events."""
 
@@ -51,14 +55,17 @@ class RealtimeVisionSceneBridge:
         if not live:
             return self._non_live_result(frame_id=frame_id, observed_at=observed_at, reason=reason)
 
+        detections = _detections(observation)
         snapshot = self.simulator.update(
             frame_id=frame_id,
             observed_at=observed_at,
-            detections=_detections(observation),
+            detections=detections,
         )
         scene_snapshot = _scene_content(snapshot)
+        _augment_scene_with_detection_modalities(scene_snapshot, detections)
         _attach_observation_metadata(scene_snapshot, observation)
         event_contents = _event_contents(snapshot)
+        event_contents.extend(_lightweight_event_contents(scene_snapshot, observed_at=observed_at, frame_id=frame_id))
         self.latest_scene_id = str(scene_snapshot.get("sceneId", ""))
         object_count = len(scene_snapshot.get("objects", []))
         stable_target = _stable_target_from_scene(scene_snapshot)
@@ -317,6 +324,315 @@ def _attach_observation_metadata(scene_snapshot: dict[str, Any], observation: Ma
         metadata["soak_summary"] = dict(soak_summary)
 
 
+def _augment_scene_with_detection_modalities(scene_snapshot: dict[str, Any], detections: list[Mapping[str, Any]]) -> None:
+    objects = [item for item in scene_snapshot.get("objects", []) if isinstance(item, dict)]
+    used_detection_indexes: set[int] = set()
+    for obj in objects:
+        detection_index = _best_detection_index(obj, detections, used_detection_indexes)
+        if detection_index is None:
+            continue
+        used_detection_indexes.add(detection_index)
+        raw = detections[detection_index]
+        source = _first_text(raw.get("source"), raw.get("provider"), obj.get("source"))
+        model_id = _first_text(raw.get("model_id"), raw.get("modelId"), raw.get("model"), obj.get("model_id"))
+        if source:
+            obj["source"] = source
+        if model_id:
+            obj["model_id"] = model_id
+        provenance = dict(raw.get("provenance")) if isinstance(raw.get("provenance"), Mapping) else {}
+        if source:
+            provenance.setdefault("source", source)
+        if model_id:
+            provenance.setdefault("model_id", model_id)
+        if provenance:
+            obj["provenance"] = provenance
+        pose = _normalize_pose(_raw_value(raw, "pose"))
+        if pose:
+            obj["pose"] = pose
+            obj["keypoints"] = list(pose["keypoints"])
+        clip_labels = _normalize_label_annotations(_raw_value(raw, "clip_labels", "clipLabels"))
+        if clip_labels:
+            obj["clip_labels"] = clip_labels
+        semantic_labels = _normalize_semantic_labels(_raw_value(raw, "semantic_labels", "semanticLabels"))
+        if semantic_labels:
+            obj["semantic_labels"] = semantic_labels
+        tracking_diagnostics = _raw_value(raw, "tracking_diagnostics", "trackingDiagnostics")
+        if isinstance(tracking_diagnostics, Mapping):
+            obj["trackingDiagnostics"] = dict(tracking_diagnostics)
+        depth_m = _structured_depth_m(raw) or _number_or_none(_raw_value(raw, "depth_m", "distance_m", "z_m"))
+        if depth_m is not None:
+            obj["depth_m"] = round(depth_m, 3)
+        distance_band = _first_text(_raw_value(raw, "distance_band", "depth_band"))
+        if not distance_band and depth_m is not None:
+            distance_band = "near" if depth_m <= 1.0 else "far"
+        if distance_band:
+            obj["distance_band"] = distance_band
+        looking_at_device = _optional_bool(_raw_value(raw, "looking_at_device", "lookingAtDevice"))
+        if looking_at_device is not None:
+            obj["looking_at_device"] = looking_at_device
+
+
+def _best_detection_index(
+    obj: Mapping[str, Any],
+    detections: list[Mapping[str, Any]],
+    used_indexes: set[int],
+) -> int | None:
+    label = _first_text(obj.get("label"))
+    obj_track_id = _track_id(obj)
+    obj_source_track_id = _first_text(obj.get("sourceTrackId"), obj.get("source_track_id"), obj.get("rawTrackId"))
+    if obj_track_id:
+        for index, raw in enumerate(detections):
+            if index in used_indexes:
+                continue
+            raw_track_id = _track_id(raw)
+            if raw_track_id == obj_track_id or (obj_source_track_id and raw_track_id == obj_source_track_id):
+                return index
+    bbox = obj.get("bbox")
+    obj_center = _center(bbox) if isinstance(bbox, Mapping) else (0.0, 0.0)
+    candidates: list[tuple[float, int]] = []
+    for index, raw in enumerate(detections):
+        if index in used_indexes or _first_text(raw.get("label"), raw.get("name"), raw.get("class")) != label:
+            continue
+        raw_bbox = _normalize_bbox(raw.get("bbox"), format_hint=_bbox_format(raw))
+        if raw_bbox is None:
+            continue
+        candidates.append((_distance(obj_center, _center(raw_bbox)), index))
+    if not candidates:
+        return None
+    return min(candidates)[1]
+
+
+def _lightweight_event_contents(
+    scene_snapshot: Mapping[str, Any],
+    *,
+    observed_at: str,
+    frame_id: str,
+) -> list[dict[str, Any]]:
+    objects = [item for item in scene_snapshot.get("objects", []) if isinstance(item, Mapping)]
+    scene_id = str(scene_snapshot.get("sceneId", ""))
+    events: list[dict[str, Any]] = []
+    for item in objects:
+        if item.get("looking_at_device") is True:
+            target = _nearest_device(item, objects)
+            events.append(
+                _lightweight_event_content(
+                    event_type="looking_at_device",
+                    scene_id=scene_id,
+                    observed_at=observed_at,
+                    frame_id=frame_id,
+                    subject=item,
+                    obj=target,
+                    confidence=_number_or_zero(item.get("confidence")),
+                )
+            )
+    for subject in objects:
+        for obj in objects:
+            if _track_id(subject) == _track_id(obj):
+                continue
+            if not _hand_near_object(subject, obj):
+                continue
+            events.append(
+                _lightweight_event_content(
+                    event_type="hand_near_object",
+                    scene_id=scene_id,
+                    observed_at=observed_at,
+                    frame_id=frame_id,
+                    subject=subject,
+                    obj=obj,
+                    confidence=min(_number_or_zero(subject.get("confidence")), _number_or_zero(obj.get("confidence"))),
+                )
+            )
+    return sorted(events, key=lambda item: (str(item["eventType"]), str(item["subject"].get("trackId")), str(item["details"].get("objectId", ""))))
+
+
+def _lightweight_event_content(
+    *,
+    event_type: str,
+    scene_id: str,
+    observed_at: str,
+    frame_id: str,
+    subject: Mapping[str, Any],
+    obj: Mapping[str, Any] | None,
+    confidence: float,
+) -> dict[str, Any]:
+    track_id = _track_id(subject)
+    details: dict[str, Any] = {"frameId": frame_id}
+    if obj is not None:
+        details.update({"objectId": _track_id(obj), "objectLabel": _first_text(obj.get("label"))})
+    metadata = dict(subject.get("provenance")) if isinstance(subject.get("provenance"), Mapping) else {}
+    metadata["frameId"] = frame_id
+    source = _first_text(subject.get("source"))
+    model_id = _first_text(subject.get("model_id"))
+    if source:
+        metadata.setdefault("source", source)
+    if model_id:
+        metadata.setdefault("model_id", model_id)
+    object_id = _track_id(obj) if obj is not None else ""
+    object_suffix = f":{object_id}" if object_id else ""
+    return {
+        "eventId": f"{scene_id}:{event_type}:{track_id}{object_suffix}",
+        "eventType": event_type,
+        "observedAt": observed_at,
+        "sceneId": scene_id,
+        "subject": {"trackId": track_id, "label": subject.get("label")},
+        "confidence": round(float(confidence), 3),
+        "details": details,
+        "metadata": metadata,
+    }
+
+
+def _normalize_pose(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("keypoints"), list):
+        return {}
+    keypoints: list[dict[str, Any]] = []
+    for item in raw["keypoints"]:
+        if not isinstance(item, Mapping):
+            continue
+        name = _first_text(item.get("name"), item.get("label"), item.get("part"))
+        x = _number_or_none(item.get("x"))
+        y = _number_or_none(item.get("y"))
+        if not name or x is None or y is None:
+            continue
+        point: dict[str, Any] = {"name": name, "x": round(_clip01(x), 4), "y": round(_clip01(y), 4)}
+        confidence = _number_or_none(item.get("confidence", item.get("score")))
+        if confidence is not None:
+            point["confidence"] = round(confidence, 3)
+        keypoints.append(point)
+    return {"keypoints": keypoints} if keypoints else {}
+
+
+def _normalize_label_annotations(raw: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw, list):
+        return []
+    labels: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            label = _first_text(item.get("label"), item.get("name"), item.get("text"))
+            if not label:
+                continue
+            normalized: dict[str, Any] = {"label": label}
+            confidence = _number_or_none(item.get("confidence", item.get("score")))
+            if confidence is not None:
+                normalized["confidence"] = round(confidence, 3)
+            source = _first_text(item.get("source"))
+            if source:
+                normalized["source"] = source
+            labels.append(normalized)
+        else:
+            label = _first_text(item)
+            if label:
+                labels.append({"label": label})
+    return labels
+
+
+def _normalize_semantic_labels(raw: Any) -> list[str]:
+    if not isinstance(raw, list):
+        return []
+    labels: list[str] = []
+    for item in raw:
+        label = _first_text(item.get("label") if isinstance(item, Mapping) else item)
+        if label and label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _structured_depth_m(raw: Mapping[str, Any]) -> float | None:
+    depth = _raw_value(raw, "depth")
+    if isinstance(depth, Mapping):
+        for key in ("median", "subjectMedian", "subject_median", "meters", "m", "value"):
+            value = _number_or_none(depth.get(key))
+            if value is not None:
+                return value
+    distance = _raw_value(raw, "distance")
+    if isinstance(distance, Mapping):
+        for key in ("fromCameraM", "trackedTargetM", "nearestObjectM", "meters", "m", "value"):
+            value = _number_or_none(distance.get(key))
+            if value is not None:
+                return value
+    return None
+
+
+def _hand_near_object(subject: Mapping[str, Any], obj: Mapping[str, Any]) -> bool:
+    bbox = obj.get("bbox")
+    if not isinstance(bbox, Mapping):
+        return False
+    return any(_point_bbox_gap(point, bbox) <= 0.12 for point in _hand_points(subject))
+
+
+def _hand_points(subject: Mapping[str, Any]) -> list[tuple[float, float]]:
+    pose = subject.get("pose")
+    keypoints = pose.get("keypoints") if isinstance(pose, Mapping) else subject.get("keypoints")
+    if not isinstance(keypoints, list):
+        return []
+    points: list[tuple[float, float]] = []
+    for item in keypoints:
+        if not isinstance(item, Mapping):
+            continue
+        name = _first_text(item.get("name"), item.get("label"), item.get("part")).lower()
+        if name in _HAND_KEYPOINTS:
+            points.append((_number_or_zero(item.get("x")), _number_or_zero(item.get("y"))))
+    return points
+
+
+def _point_bbox_gap(point: tuple[float, float], bbox: Mapping[str, Any]) -> float:
+    x, y = point
+    horizontal_gap = max(_number_or_zero(bbox.get("x_min")) - x, x - _number_or_zero(bbox.get("x_max")), 0.0)
+    vertical_gap = max(_number_or_zero(bbox.get("y_min")) - y, y - _number_or_zero(bbox.get("y_max")), 0.0)
+    return math.hypot(horizontal_gap, vertical_gap)
+
+
+def _nearest_device(subject: Mapping[str, Any], objects: list[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    devices = [item for item in objects if _track_id(item) != _track_id(subject) and _is_device(item)]
+    if not devices:
+        return None
+    subject_center = _object_center(subject)
+    return min(devices, key=lambda item: _distance(subject_center, _object_center(item)))
+
+
+def _is_device(item: Mapping[str, Any]) -> bool:
+    labels = {_first_text(item.get("label")).lower()}
+    labels.update(label.lower() for label in _normalize_semantic_labels(item.get("semantic_labels")))
+    for clip_label in _normalize_label_annotations(item.get("clip_labels")):
+        labels.add(_first_text(clip_label.get("label")).lower())
+    return bool(labels & _DEVICE_LABELS)
+
+
+def _object_center(item: Mapping[str, Any]) -> tuple[float, float]:
+    center = item.get("center")
+    if isinstance(center, Mapping):
+        return (_number_or_zero(center.get("x")), _number_or_zero(center.get("y")))
+    bbox = item.get("bbox")
+    return _center(bbox) if isinstance(bbox, Mapping) else (0.0, 0.0)
+
+
+def _track_id(item: Mapping[str, Any]) -> str:
+    return _first_text(item.get("trackId"), item.get("track_id"), item.get("id"), item.get("stable_id"))
+
+
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    return bool(value)
+
+
 def _number_or_zero(value: Any) -> float:
     number = _number_or_none(value)
     return 0.0 if number is None else number
@@ -417,6 +733,7 @@ class _FallbackRealtimeVisionSimulator:
                 {
                     "bbox": dict(detection["bbox"]),
                     "confidence": detection["confidence"],
+                    "extras": dict(detection.get("extras", {})),
                     "last_seen_frame": frame_id,
                     "last_observed_at": observed_at,
                     "missing_frames": 0,
@@ -543,21 +860,68 @@ class _FallbackRealtimeVisionSimulator:
             "last_seen_frame": frame_id,
             "last_observed_at": observed_at,
             "missing_frames": 0,
+            "extras": dict(detection.get("extras", {})),
         }
 
 
 def _normalize_detection(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     label = str(raw.get("label") or raw.get("name") or raw.get("class") or "").strip()
-    bbox = _normalize_bbox(raw.get("bbox"))
+    bbox = _normalize_bbox(raw.get("bbox"), format_hint=_bbox_format(raw))
     if not label or bbox is None:
         return None
-    return {"label": label, "bbox": bbox, "confidence": _coerce_float(raw.get("confidence", raw.get("score", 0.0)))}
+    return {
+        "label": label,
+        "bbox": bbox,
+        "confidence": _coerce_float(raw.get("confidence", raw.get("score", 0.0))),
+        "extras": _detection_extras(raw),
+    }
 
 
-def _normalize_bbox(raw: Any) -> dict[str, float] | None:
+def _normalize_bbox(raw: Any, *, format_hint: str = "") -> dict[str, float] | None:
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        try:
+            x_min, y_min, x_max, y_max = _sequence_bbox_values(raw, format_hint=format_hint)
+        except (TypeError, ValueError):
+            return None
+        if x_max < x_min:
+            x_min, x_max = x_max, x_min
+        if y_max < y_min:
+            y_min, y_max = y_max, y_min
+        return {
+            "x_min": round(_clip01(x_min), 4),
+            "y_min": round(_clip01(y_min), 4),
+            "x_max": round(_clip01(x_max), 4),
+            "y_max": round(_clip01(y_max), 4),
+        }
     if not isinstance(raw, Mapping):
         return None
     try:
+        if "x" in raw and "y" in raw and ("w" in raw or "width" in raw) and ("h" in raw or "height" in raw):
+            x_min = _clip01(float(raw.get("x", 0.0)))
+            y_min = _clip01(float(raw.get("y", 0.0)))
+            x_max = _clip01(x_min + float(raw.get("w", raw.get("width", 0.0))))
+            y_max = _clip01(y_min + float(raw.get("h", raw.get("height", 0.0))))
+            return {
+                "x_min": round(x_min, 4),
+                "y_min": round(y_min, 4),
+                "x_max": round(x_max, 4),
+                "y_max": round(y_max, 4),
+            }
+        if "x1" in raw and "y1" in raw and "x2" in raw and "y2" in raw:
+            x_min = _clip01(float(raw.get("x1", 0.0)))
+            y_min = _clip01(float(raw.get("y1", 0.0)))
+            x_max = _clip01(float(raw.get("x2", 0.0)))
+            y_max = _clip01(float(raw.get("y2", 0.0)))
+            if x_max < x_min:
+                x_min, x_max = x_max, x_min
+            if y_max < y_min:
+                y_min, y_max = y_max, y_min
+            return {
+                "x_min": round(x_min, 4),
+                "y_min": round(y_min, 4),
+                "x_max": round(x_max, 4),
+                "y_max": round(y_max, 4),
+            }
         x_min = _clip01(float(raw.get("x_min", raw.get("xmin", raw.get("left", 0.0)))))
         y_min = _clip01(float(raw.get("y_min", raw.get("ymin", raw.get("top", 0.0)))))
         x_max = _clip01(float(raw.get("x_max", raw.get("xmax", raw.get("right", 0.0)))))
@@ -571,6 +935,34 @@ def _normalize_bbox(raw: Any) -> dict[str, float] | None:
     return {"x_min": x_min, "y_min": y_min, "x_max": x_max, "y_max": y_max}
 
 
+def _sequence_bbox_values(raw: list[Any] | tuple[Any, ...], *, format_hint: str = "") -> tuple[float, float, float, float]:
+    x_min = float(raw[0])
+    y_min = float(raw[1])
+    third = float(raw[2])
+    fourth = float(raw[3])
+    if format_hint == "xyxy":
+        return (x_min, y_min, third, fourth)
+    if format_hint == "xywh":
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if max(abs(x_min), abs(y_min), abs(third), abs(fourth)) <= 1.0:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if third <= x_min or fourth <= y_min:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    return (x_min, y_min, third, fourth)
+
+
+def _bbox_format(raw: Mapping[str, Any]) -> str:
+    for key in ("bboxFormat", "bbox_format", "boxFormat", "box_format", "format"):
+        value = raw.get(key)
+        if value is not None:
+            normalized = str(value).strip().lower().replace("-", "").replace("_", "")
+            if normalized in {"xyxy", "x1y1x2y2"}:
+                return "xyxy"
+            if normalized in {"xywh", "ltwh"}:
+                return "xywh"
+    return ""
+
+
 def _fallback_event(
     *,
     event_type: str,
@@ -581,7 +973,7 @@ def _fallback_event(
     to_region: str,
     distance: float,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "eventId": "",
         "eventType": event_type,
         "observedAt": observed_at,
@@ -591,11 +983,18 @@ def _fallback_event(
         "details": {"fromRegion": from_region, "toRegion": to_region, "distance": round(float(distance), 3)},
         "metadata": {"frameId": frame_id},
     }
+    extras = track.get("extras")
+    if isinstance(extras, Mapping):
+        for key in ("pose", "clipLabels", "semanticLabels", "depth", "distance", "trackingDiagnostics"):
+            value = extras.get(key)
+            if value:
+                payload[key] = value
+    return payload
 
 
 def _track_object(track: Mapping[str, Any]) -> dict[str, Any]:
     center = _center(track["bbox"])
-    return {
+    payload = {
         "trackId": track["trackId"],
         "label": track["label"],
         "confidence": round(float(track["confidence"]), 3),
@@ -604,6 +1003,44 @@ def _track_object(track: Mapping[str, Any]) -> dict[str, Any]:
         "region": _region(center),
         "missingFrames": int(track.get("missing_frames", 0)),
     }
+    extras = track.get("extras")
+    if isinstance(extras, Mapping):
+        payload.update({key: value for key, value in extras.items() if value})
+    return payload
+
+
+def _detection_extras(raw: Mapping[str, Any]) -> dict[str, Any]:
+    extras: dict[str, Any] = {}
+    source_track_id = _track_id(raw)
+    if source_track_id:
+        extras["sourceTrackId"] = source_track_id
+    for source_key, target_key in (
+        ("pose", "pose"),
+        ("clipLabels", "clipLabels"),
+        ("clip_labels", "clipLabels"),
+        ("semanticLabels", "semanticLabels"),
+        ("semantic_labels", "semanticLabels"),
+        ("depth", "depth"),
+        ("distance", "distance"),
+        ("trackingDiagnostics", "trackingDiagnostics"),
+        ("tracking_diagnostics", "trackingDiagnostics"),
+    ):
+        value = _raw_value(raw, source_key)
+        if value:
+            extras[target_key] = value
+    return extras
+
+
+def _raw_value(raw: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw and raw[key] not in (None, ""):
+            return raw[key]
+    attributes = raw.get("attributes")
+    if isinstance(attributes, Mapping):
+        for key in keys:
+            if key in attributes and attributes[key] not in (None, ""):
+                return attributes[key]
+    return None
 
 
 def _fallback_summary(objects: list[dict[str, Any]], events: list[dict[str, Any]]) -> str:

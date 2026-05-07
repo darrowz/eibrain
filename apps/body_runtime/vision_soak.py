@@ -15,7 +15,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
-DEFAULT_STATUS_URL = "http://127.0.0.1:18080/status.json"
+DEFAULT_STATUS_URL = "http://127.0.0.1:18081/status.json"
 
 
 def make_http_status_source(status_url: str, *, timeout_s: float = 5.0) -> Callable[[], dict[str, Any]]:

@@ -326,7 +326,8 @@ def scheduler_snapshot_to_eiprotocol_events(
     brain_target = _target_from_source_like(source, fallback="eibrain.honxin")
     head_source = _source_from_target_like(target, fallback="eihead.honjia")
     head_target = _target_like(target, fallback="eihead.honjia")
-    memory_target = _target_like("eimemory.default", fallback="eimemory.default")
+    memory_source = _source_like("eimemory.memoria", fallback="eimemory.memoria")
+    memory_target = _target_like("eimemory.memoria", fallback="eimemory.memoria")
     common = {
         "session_id": session_id or _first_text(raw.get("session_id"), raw.get("sessionId")),
         "round_id": round_id,
@@ -402,18 +403,21 @@ def scheduler_snapshot_to_eiprotocol_events(
                     ids=ids,
                     name="ei.memory.recall.result",
                     event_type="memory",
-                    source=brain_source,
-                    target=memory_target,
+                    source=memory_source,
+                    target=brain_target,
                     content={
-                        "traceSchema": trace_schema,
-                        "traceRoundId": trace_round_id,
                         "query": query,
-                        "summary": _first_text(recall_item.get("summary")),
-                        "selectedCount": _optional_int(recall_item.get("selectedCount", recall_item.get("selected_count")), fallback=len(results)),
-                        "sourceComposition": _dict_from(recall_item.get("sourceComposition", recall_item.get("source_composition"))),
+                        "resultCount": _optional_int(recall_item.get("selectedCount", recall_item.get("selected_count")), fallback=len(results)),
                         "results": results,
-                        "errors": _mapping_items(trace.get("errors")),
-                        "recallItem": recall_item,
+                        "metadata": {
+                            "traceSchema": trace_schema,
+                            "traceRoundId": trace_round_id,
+                            "summary": _first_text(recall_item.get("summary")),
+                            "selectedCount": _optional_int(recall_item.get("selectedCount", recall_item.get("selected_count")), fallback=len(results)),
+                            "sourceComposition": _dict_from(recall_item.get("sourceComposition", recall_item.get("source_composition"))),
+                            "errors": _mapping_items(trace.get("errors")),
+                            "recallItem": recall_item,
+                        },
                     },
                     sequence=sequence,
                     session_id=trace_session_id,
@@ -441,8 +445,8 @@ def scheduler_snapshot_to_eiprotocol_events(
                     ids=ids,
                     name="ei.memory.write.committed",
                     event_type="memory",
-                    source=brain_source,
-                    target=memory_target,
+                    source=memory_source,
+                    target=brain_target,
                     content={
                         "memoryId": memory_id,
                         "traceSchema": trace_schema,
@@ -592,7 +596,7 @@ def capability_manifest_to_eiprotocol_event(
             "protocolVersion": manifest.protocol_version or "head.v1",
             "timestampMs": manifest.timestamp_ms,
         },
-        "transports": {},
+        "transports": _manifest_transports(manifest),
         "modalities": modalities,
         "capabilities": [_device_to_capability(device) for device in manifest.devices],
         "backends": [_backend_to_capability(backend) for backend in manifest.backends],
@@ -617,6 +621,33 @@ def capability_manifest_to_eiprotocol_event(
         source_device_id=manifest.node_id,
         round_scoped=False,
     )
+
+
+def _manifest_transports(manifest: LegacyCapabilityManifest) -> dict[str, Any]:
+    metadata: Mapping[str, Any] | None
+    if isinstance(manifest.metadata, Mapping):
+        metadata = manifest.metadata
+        metadata_transports = manifest.metadata.get("transports")
+        if isinstance(metadata_transports, Mapping):
+            return _copy_jsonish(dict(metadata_transports))
+    else:
+        metadata = None
+    host = _first_text(manifest.node_id, manifest.source, fallback="honjia")
+    port = 18081
+    endpoint = None
+    if isinstance(metadata, Mapping):
+        endpoint = metadata.get("runtime")
+        if not isinstance(endpoint, Mapping):
+            endpoint = metadata.get("monitoring", metadata.get("monitor"))
+    if isinstance(endpoint, Mapping):
+        try:
+            port = int(endpoint.get("port", port))
+        except (TypeError, ValueError):
+            port = 18081
+    return {
+        "http": {"baseUrl": f"http://{host}.local:{port}"},
+        "websocket": {"path": "/events"},
+    }
 
 
 def audio_turn_to_eiprotocol_event(
@@ -696,6 +727,12 @@ def realtime_vision_payload_to_eiprotocol_event(
         scores=_vision_scores(raw, detections),
         tracked_target=_vision_tracked_target(raw),
         latency_ms=_vision_latency_ms(raw),
+        tracking_diagnostics=_dict_from(raw.get("trackingDiagnostics", raw.get("tracking_diagnostics"))),
+        pose=_dict_from(raw.get("pose")),
+        clip_labels=_mapping_items(raw.get("clipLabels", raw.get("clip_labels"))),
+        semantic_labels=_mapping_items(raw.get("semanticLabels", raw.get("semantic_labels"))),
+        depth=_dict_from(raw.get("depth")),
+        distance=_dict_from(raw.get("distance")),
         image_url=_first_text(raw.get("imageUrl"), raw.get("image_url")),
         status=_first_text(raw.get("status"), fallback="ok"),
         metadata=_dict_from(raw.get("metadata")),
@@ -853,7 +890,7 @@ def generic_memory_policy_report_payload_to_eiprotocol_event(
         source=source,
         target=target,
         source_fallback="eibrain.honxin",
-        target_fallback="eimemory.default",
+        target_fallback="eimemory.memoria",
         event_id_prefix="memory_policy_report",
         event_id_token=policy_id,
         priority="normal",
@@ -1057,9 +1094,16 @@ def _resolve_event_id(explicit: str | None, prefix: str, *candidates: object) ->
 
 def _resolve_sequence(message: object, explicit: int | None) -> int:
     if explicit is not None:
-        return int(explicit)
+        value = int(explicit)
+        return value if value > 0 else 1
     sequence = getattr(message, "sequence", None)
-    return int(sequence) if sequence is not None else 0
+    if sequence is None:
+        return 1
+    try:
+        value = int(sequence)
+    except (TypeError, ValueError):
+        return 1
+    return value if value > 0 else 1
 
 
 def _resolve_time(message: object, explicit: str | None) -> str:
@@ -1665,7 +1709,14 @@ def _vision_scores(payload: Mapping[str, Any], detections: list[Mapping[str, Any
     scores = payload.get("scores")
     if isinstance(scores, list):
         return [float(item) for item in scores]
-    return [float(item["score"]) for item in detections if isinstance(item, Mapping) and item.get("score") is not None]
+    values: list[float] = []
+    for item in detections:
+        if not isinstance(item, Mapping):
+            continue
+        score = item.get("score", item.get("confidence"))
+        if score is not None:
+            values.append(float(score))
+    return values
 
 
 def _vision_tracked_target(payload: Mapping[str, Any]) -> dict[str, Any]:

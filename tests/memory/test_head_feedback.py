@@ -100,8 +100,14 @@ def test_head_feedback_builds_eimemory_and_eitraining_payloads_without_network()
     )
 
     record = build_head_feedback_record(
-        action={"kind": "SpeakAction", "planned_by": "eibrain.dialogue", "modality": "audio_text"},
-        outcome={"success": True, "latency_ms": 15, "executed_by": "eihead.mouth"},
+        action={"kind": "SpeakAction", "planned_by": "eibrain.dialogue", "modality": "audio_text", "organ": "mouth"},
+        outcome={
+            "success": True,
+            "latency_ms": 15,
+            "executed_by": "eihead.mouth",
+            "confidence": 0.88,
+            "source_event_id": "head-event-4",
+        },
         feedback="reply felt faster",
         trace_id="trace-4",
         timestamp_ms=126000,
@@ -112,6 +118,16 @@ def test_head_feedback_builds_eimemory_and_eitraining_payloads_without_network()
 
     assert ingest_params["memory_type"] == "head_execution_feedback"
     assert ingest_params["source"] == "eibrain.head_feedback"
+    assert ingest_params["modality"] == "audio_text"
+    assert ingest_params["confidence"] == 0.88
+    assert ingest_params["content"]["confidence"] == 0.88
+    assert ingest_params["content"]["tracking_provenance"] == {
+        "trace_id": "trace-4",
+        "source_event_id": "head-event-4",
+        "planned_by": "eibrain.dialogue",
+        "executed_by": "eihead.mouth",
+        "organ": "mouth",
+    }
     assert ingest_params["meta"]["memory_kind"] == "episodic"
     assert ingest_params["meta"]["persona_memory"] is False
     assert ingest_params["meta"]["writeback"]["eligible"] is True

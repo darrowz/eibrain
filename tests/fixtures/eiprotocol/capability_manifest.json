@@ -37,7 +37,7 @@
     },
     "transports": {
       "http": {
-        "baseUrl": "http://honjia.local:8080"
+        "baseUrl": "http://honjia.local:18081"
       },
       "websocket": {
         "path": "/events"

@@ -48,6 +48,18 @@ EVENT_PAYLOAD_KEYS = frozenset(
         "actions",
     }
 )
+UNHEALTHY_STATES = {
+    "blocked",
+    "degraded",
+    "error",
+    "failed",
+    "not_wired",
+    "offline",
+    "stale",
+    "unavailable",
+    "unhealthy",
+    "unknown",
+}
 
 
 class EiheadMonitorError(RuntimeError):
@@ -319,7 +331,7 @@ def _health_payload(app: Any, timestamp: float) -> tuple[int, JsonObject]:
     else:
         status_payload = _call_json_object(app, "status")
         state = str(status_payload.get("status", status_payload.get("overall_status", "ok"))).lower()
-        ok = status_payload.get("ok") is not False and state not in {"error", "failed", "offline", "unhealthy"}
+        ok = status_payload.get("ok") is not False and state not in UNHEALTHY_STATES
         health = {
             "ok": ok,
             "status": "ok" if ok else state,
@@ -1239,7 +1251,7 @@ def _is_healthy(payload: Mapping[str, Any]) -> bool:
     state = str(payload.get("status", "ok")).lower()
     if payload.get("ok") is False:
         return False
-    return state not in {"error", "failed", "offline", "unhealthy"}
+    return state not in UNHEALTHY_STATES
 
 
 def _http_phrase(status_code: int) -> str:

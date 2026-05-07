@@ -104,9 +104,18 @@ class OperatorConsoleApp:
             runtime_overview=runtime_overview,
             probe_metrics=probe_metrics,
         )
-        system_health = "healthy" if degradation == "normal" and not warnings and not degraded_organs else "degraded"
+        system_health, degraded_reasons = self._system_health(
+            degradation=degradation,
+            warnings=warnings,
+            degraded_organs=degraded_organs,
+            audio_diagnostics=audio_diagnostics,
+            visual_diagnostics=visual_diagnostics,
+            dialogue_diagnostics=dialogue_diagnostics,
+            memory_diagnostics=memory_diagnostics,
+        )
         return {
             "system_health": system_health,
+            "degraded_reasons": degraded_reasons,
             "generated_at_ts": generated_at,
             "trace_count": len(traces),
             "warnings": warnings,
@@ -129,6 +138,67 @@ class OperatorConsoleApp:
             "cognition": cognitive_snapshot,
             "recent_traces": traces[-5:],
         }
+
+    @staticmethod
+    def _system_health(
+        *,
+        degradation: str,
+        warnings: list[str],
+        degraded_organs: list[str],
+        audio_diagnostics: dict[str, object],
+        visual_diagnostics: dict[str, object],
+        dialogue_diagnostics: dict[str, object],
+        memory_diagnostics: dict[str, object],
+    ) -> tuple[str, list[str]]:
+        reasons: list[str] = []
+        if degradation != "normal":
+            reasons.append(f"degradation_mode={degradation}")
+        reasons.extend(warnings)
+        reasons.extend(f"organ.{name}=degraded" for name in degraded_organs)
+        if visual_diagnostics.get("enabled") is True:
+            data_health = str(visual_diagnostics.get("data_health") or "").lower()
+            service_status = str(visual_diagnostics.get("vision_service_status") or "").lower()
+            if data_health not in {"", "healthy"}:
+                reasons.append(f"vision.data_health={data_health}")
+            if service_status and service_status not in {"ok", "healthy", "live", "sleeping"}:
+                reasons.append(f"vision.service_status={service_status}")
+        voice_chain_observed = bool(
+            audio_diagnostics.get("enabled")
+            or dialogue_diagnostics.get("enabled")
+            or dialogue_diagnostics.get("running")
+            or audio_diagnostics.get("interrupt_stop_ready") is not None
+            or audio_diagnostics.get("round_leak_count") is not None
+        )
+        if voice_chain_observed:
+            live_trace_summary = str(audio_diagnostics.get("live_trace_summary") or "").lower()
+            if live_trace_summary.startswith("not ready"):
+                reasons.append("voice.live_trace=not_ready")
+            provider_readiness = str(audio_diagnostics.get("provider_readiness") or "").lower()
+            if provider_readiness in {"degraded", "unavailable", "error"}:
+                reasons.append(f"voice.provider_readiness={provider_readiness}")
+            aec_readiness = str(audio_diagnostics.get("aec_readiness") or "").lower()
+            if aec_readiness in {"degraded", "unavailable", "error"}:
+                reasons.append(f"audio.aec_readiness={aec_readiness}")
+            if audio_diagnostics.get("interrupt_stop_ready") is False:
+                reasons.append("voice.interrupt_stop_ready=false")
+            round_leak_count = OperatorConsoleApp._int_or_zero(audio_diagnostics.get("round_leak_count"))
+            if round_leak_count > 0:
+                reasons.append(f"voice.round_leak_count={round_leak_count}")
+        if int(memory_diagnostics.get("memory_conflict_count") or 0) > 0:
+            reasons.append("memory.conflict_detected")
+        latest_trace = memory_diagnostics.get("latest_trace", {})
+        if not isinstance(latest_trace, dict):
+            latest_trace = {}
+        latest_trace_status = str(memory_diagnostics.get("latest_trace_status") or latest_trace.get("status") or "").lower()
+        if latest_trace_status in {"error", "failed", "failure"}:
+            reasons.append(f"memory.trace_status={latest_trace_status}")
+        trace_error_count = OperatorConsoleApp._int_or_zero(latest_trace.get("error_count"))
+        if trace_error_count > 0:
+            reasons.append(f"memory.trace_error_count={trace_error_count}")
+        guardrail_status = str(memory_diagnostics.get("persona_guardrail_status") or "").lower()
+        if guardrail_status in {"blocked", "rejected", "degraded", "violated"}:
+            reasons.append(f"persona.guardrail={guardrail_status}")
+        return ("healthy" if not reasons else "degraded", reasons)
 
     @staticmethod
     def _annotate_live_voice_loop(
@@ -507,7 +577,17 @@ class OperatorConsoleApp:
     ) -> dict[str, object]:
         eye = organs.get("eye", {})
         if not isinstance(eye, dict):
-            return {"enabled": False, "detections": [], "identity_candidates": []}
+            return {
+                "enabled": False,
+                "detections": [],
+                "identity_candidates": [],
+                "tracking_stability": {"state": "unknown", "score": None},
+                "scene_graph_summary": "waiting",
+                "multimodal_availability": self._multimodal_availability(),
+                "pose_availability": "unknown",
+                "clip_availability": "unknown",
+                "depth_availability": "unknown",
+            }
         subfunctions = eye.get("subfunctions", {})
         if not isinstance(subfunctions, dict):
             subfunctions = {}
@@ -607,6 +687,32 @@ class OperatorConsoleApp:
         soak_summary = visual_tracking.get("soak_summary", {})
         if not isinstance(soak_summary, dict):
             soak_summary = {}
+        tracking_stability = self._tracking_stability_payload(
+            visual_tracking.get("tracking_stability") or visual_tracking.get("stability"),
+            visual_tracking=visual_tracking,
+            soak_summary=soak_summary,
+        )
+        tracking_switch_count = self._first_int_from_sources(
+            [visual_tracking, tracking_stability, soak_summary],
+            keys=("switch_count", "tracking_switch_count", "switches"),
+        )
+        tracking_lost_count = self._first_int_from_sources(
+            [visual_tracking, tracking_stability, soak_summary],
+            keys=("lost_count", "tracking_lost_count", "lost"),
+        )
+        tracking_reacquired_count = self._first_int_from_sources(
+            [visual_tracking, tracking_stability, soak_summary],
+            keys=("reacquired_count", "tracking_reacquired_count", "reacquired"),
+        )
+        soak_summary = dict(soak_summary)
+        soak_summary.setdefault("switch_count", tracking_switch_count)
+        soak_summary.setdefault("lost_count", tracking_lost_count)
+        soak_summary.setdefault("reacquired_count", tracking_reacquired_count)
+        soak_summary["long_tracking_field_count"] = sum(
+            1
+            for key in ("duration_s", "stable_ratio", "switch_count", "lost_count", "reacquired_count", "bottleneck_reason")
+            if soak_summary.get(key) is not None
+        )
         model_profile = visual_tracking.get("model_profile", {})
         if not isinstance(model_profile, dict):
             model_profile = {}
@@ -664,6 +770,19 @@ class OperatorConsoleApp:
 
         top_detection = detection_details.get("top_detection")
         top_detection_bbox = top_detection.get("bbox") if isinstance(top_detection, dict) else None
+        scene_graph_summary = str(
+            scene_graph.get("summary")
+            or scene_graph.get("scene_graph_summary")
+            or detection_details.get("scene_graph_summary")
+            or detection_details.get("scene_summary")
+            or "waiting"
+        )
+        multimodal_availability = self._multimodal_availability(
+            visual_tracking,
+            detection_details,
+            camera_details,
+            scene_graph,
+        )
         return {
             "enabled": bool(frame_path or detections or identity_candidates or registered_identity.get("registered")),
             "data_health": data_health,
@@ -683,6 +802,7 @@ class OperatorConsoleApp:
             "registered_identity": registered_identity,
             "recognized_identity": recognized_identity,
             "scene_summary": detection_details.get("scene_summary", "waiting for camera/detection data"),
+            "scene_graph_summary": scene_graph_summary,
             "identity_summary": identity_summary,
             "scene_labels": detection_details.get("scene_labels", []),
             "top_detection": detection_details.get("top_detection"),
@@ -713,6 +833,18 @@ class OperatorConsoleApp:
             "vision_events": vision_events,
             "scene_graph": scene_graph,
             "voice_context": voice_context,
+            "multimodal_availability": multimodal_availability,
+            "pose_availability": multimodal_availability["pose"]["status"],
+            "clip_availability": multimodal_availability["clip"]["status"],
+            "semantic_availability": multimodal_availability["semantic"]["status"],
+            "depth_availability": multimodal_availability["depth"]["status"],
+            "distance_availability": multimodal_availability["distance"]["status"],
+            "tracking_diagnostics_availability": multimodal_availability["tracking"]["status"],
+            "tracking_stability": tracking_stability,
+            "tracking_stability_score": tracking_stability.get("score"),
+            "tracking_switch_count": tracking_switch_count,
+            "tracking_lost_count": tracking_lost_count,
+            "tracking_reacquired_count": tracking_reacquired_count,
             "memory_candidate": memory_candidate,
             "training_feedback": training_feedback,
             "soak_summary": soak_summary,
@@ -1184,6 +1316,49 @@ class OperatorConsoleApp:
         if not last_writeback and isinstance(latest_trace.get("latest_writeback"), dict):
             last_writeback = cls._normalize_writeback(latest_trace.get("latest_writeback"))
         memory_trace_count = int(memory_trace_panel.get("count", 0)) if isinstance(memory_trace_panel, dict) else 0
+        conflicts = cls._as_diagnostic_list(
+            cls._first_present(
+                diagnostics,
+                cognitive_snapshot,
+                keys=("memory_conflicts", "conflicts", "memory_conflict", "conflict"),
+                default=[],
+            )
+        )
+        memory_conflict_summary = str(
+            cls._first_present(
+                diagnostics,
+                cognitive_snapshot,
+                keys=("memory_conflict_summary", "conflict_summary"),
+                default="",
+            )
+            or cls._first_item_summary(conflicts)
+            or "unknown"
+        )
+        current_turn = cognitive_snapshot.get("current") if isinstance(cognitive_snapshot.get("current"), dict) else {}
+        safety_state = current_turn.get("safety_state") if isinstance(current_turn, dict) else {}
+        safety_state = safety_state if isinstance(safety_state, dict) else {}
+        persona_guardrail = cls._first_dict(
+            safety_state,
+            diagnostics,
+            cognitive_snapshot,
+            keys=(
+                "persona_memory_guardrail",
+                "persona_guardrail",
+                "persona_guardrails",
+                "persona_state",
+                "persona",
+            ),
+        )
+        persona_guardrail_status = str(persona_guardrail.get("status") or persona_guardrail.get("state") or "unknown")
+        persona_guardrail_summary = str(
+            persona_guardrail.get("summary")
+            or persona_guardrail.get("reason")
+            or persona_guardrail.get("message")
+            or "unknown"
+        )
+        persona_guardrail_violations = cls._int_or_zero(
+            persona_guardrail.get("violations", persona_guardrail.get("violation_count", 0))
+        )
         return {
             "enabled": bool(diagnostics or recall or query or task_context or selected_records or source_composition or last_writeback or memory_trace_count),
             "provider": cls._first_present(
@@ -1230,6 +1405,13 @@ class OperatorConsoleApp:
             "latest_trace_round_id": latest_trace.get("round_id", ""),
             "latest_trace_status": latest_trace.get("status", ""),
             "latest_trace": latest_trace,
+            "memory_conflicts": conflicts,
+            "memory_conflict_count": len(conflicts),
+            "memory_conflict_summary": memory_conflict_summary,
+            "persona_guardrail": persona_guardrail,
+            "persona_guardrail_status": persona_guardrail_status,
+            "persona_guardrail_summary": persona_guardrail_summary,
+            "persona_guardrail_violations": persona_guardrail_violations,
         }
 
     @classmethod
@@ -1513,6 +1695,175 @@ class OperatorConsoleApp:
         except (TypeError, ValueError):
             return None
 
+    @classmethod
+    def _tracking_stability_payload(
+        cls,
+        value: object,
+        *,
+        visual_tracking: dict[str, object],
+        soak_summary: dict[str, object],
+    ) -> dict[str, object]:
+        payload = dict(value) if isinstance(value, dict) else {}
+        state = str(payload.get("state") or payload.get("status") or visual_tracking.get("stability_state") or "unknown")
+        score = cls._first_numeric_from_sources(
+            [payload, visual_tracking, soak_summary],
+            keys=("score", "stability_score", "tracking_stability_score", "stable_ratio"),
+        )
+        return {
+            **payload,
+            "state": state,
+            "score": round(float(score), 4) if isinstance(score, (int, float)) else None,
+        }
+
+    @classmethod
+    def _multimodal_availability(cls, *sources: dict[str, object]) -> dict[str, dict[str, object]]:
+        return {
+            "pose": cls._availability_payload(cls._multimodal_value(*sources, keys=("pose",))),
+            "clip": cls._availability_payload(
+                cls._multimodal_value(*sources, keys=("clip", "clipLabels", "clip_labels"))
+            ),
+            "semantic": cls._availability_payload(
+                cls._multimodal_value(*sources, keys=("semantic", "semanticLabels", "semantic_labels"))
+            ),
+            "depth": cls._availability_payload(cls._multimodal_value(*sources, keys=("depth", "depth_m"))),
+            "distance": cls._availability_payload(cls._multimodal_value(*sources, keys=("distance", "distance_band"))),
+            "tracking": cls._availability_payload(
+                cls._multimodal_value(
+                    *sources,
+                    keys=("trackingDiagnostics", "tracking_diagnostics", "tracking_diagnostics_availability"),
+                )
+            ),
+        }
+
+    @classmethod
+    def _multimodal_value(cls, *sources: dict[str, object], keys: tuple[str, ...]) -> object:
+        value = cls._first_present(*sources, keys=keys, default=None)
+        if value is not None:
+            return value
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            collected: list[object] = []
+            for item_value in cls._collect_multimodal_values(source, keys=keys, depth=0):
+                cls._append_multimodal_value(collected, item_value)
+            if collected:
+                return collected if len(collected) > 1 else collected[0]
+        return None
+
+    @classmethod
+    def _collect_multimodal_values(cls, value: object, *, keys: tuple[str, ...], depth: int) -> list[object]:
+        if depth > 5:
+            return []
+        if isinstance(value, list):
+            collected: list[object] = []
+            for item in value:
+                for item_value in cls._collect_multimodal_values(item, keys=keys, depth=depth + 1):
+                    cls._append_multimodal_value(collected, item_value)
+            return collected
+        if not isinstance(value, dict):
+            return []
+
+        direct = cls._first_present(value, keys=keys, default=None)
+        if direct is not None:
+            return [direct]
+
+        collected: list[object] = []
+        for nested in cls._nested_multimodal_sources(value):
+            for item_value in cls._collect_multimodal_values(nested, keys=keys, depth=depth + 1):
+                cls._append_multimodal_value(collected, item_value)
+        for collection_key in (
+            "objects",
+            "tracks",
+            "events",
+            "event_contents",
+            "items",
+            "detections",
+            "subjects",
+        ):
+            items = value.get(collection_key)
+            if isinstance(items, (dict, list)):
+                for item_value in cls._collect_multimodal_values(items, keys=keys, depth=depth + 1):
+                    cls._append_multimodal_value(collected, item_value)
+        return collected
+
+    @staticmethod
+    def _append_multimodal_value(collected: list[object], value: object) -> None:
+        collected.append(value)
+
+    @classmethod
+    def _nested_multimodal_sources(cls, source: dict[str, object]) -> list[dict[str, object]]:
+        nested: list[dict[str, object]] = []
+        for key in (
+            "scene",
+            "scene_snapshot",
+            "sceneSnapshot",
+            "scene_graph",
+            "sceneGraph",
+            "snapshot",
+            "features",
+            "feature",
+            "multimodal",
+            "payload",
+            "content",
+            "details",
+            "attributes",
+            "metadata",
+            "subject",
+        ):
+            value = source.get(key)
+            if isinstance(value, dict):
+                nested.append(dict(value))
+        return nested
+
+    @classmethod
+    def _availability_payload(cls, value: object) -> dict[str, object]:
+        if value is None:
+            return {"status": "unknown", "summary": "unknown"}
+        if isinstance(value, bool):
+            return {"status": "present" if value else "waiting", "summary": "available" if value else "waiting"}
+        if isinstance(value, list):
+            return {
+                "status": "present" if value else "waiting",
+                "summary": f"{len(value)} label(s)" if value else "waiting",
+            }
+        if not isinstance(value, dict):
+            text = str(value)
+            return {"status": text or "unknown", "summary": text or "unknown"}
+
+        status = str(value.get("status") or value.get("state") or "")
+        available = value.get("available")
+        if not status and isinstance(available, bool):
+            status = "present" if available else "waiting"
+        if status.lower() in {"ok", "ready", "available", "present", "live", "healthy", "enabled"}:
+            status = "present"
+        elif status.lower() in {"missing", "false", "unavailable", "disabled", "pending"}:
+            status = "waiting"
+        elif not status:
+            status = "unknown"
+        summary = str(
+            value.get("summary")
+            or value.get("reason")
+            or value.get("message")
+            or ("available" if status == "present" else status)
+        )
+        return {"status": status, "summary": summary}
+
+    @classmethod
+    def _first_int_from_sources(cls, sources: list[dict[str, object]], *, keys: tuple[str, ...]) -> int:
+        value = cls._first_numeric_from_sources(sources, keys=keys)
+        return int(value) if isinstance(value, (int, float)) else 0
+
+    @staticmethod
+    def _int_or_zero(value: object) -> int:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        try:
+            return int(str(value))
+        except (TypeError, ValueError):
+            return 0
+
     @staticmethod
     def _derive_stage_latency_ms(last_latency_s: dict[str, object]) -> dict[str, float]:
         stage_latency_ms: dict[str, float] = {}
@@ -1587,6 +1938,29 @@ class OperatorConsoleApp:
         if value in (None, ""):
             return []
         return [value]
+
+    @staticmethod
+    def _as_diagnostic_list(value: object) -> list[dict[str, object]]:
+        if isinstance(value, dict):
+            return [dict(value)]
+        if not isinstance(value, list):
+            return []
+        items: list[dict[str, object]] = []
+        for index, item in enumerate(value):
+            if isinstance(item, dict):
+                items.append(dict(item))
+            elif item not in (None, ""):
+                items.append({"summary": str(item), "index": index})
+        return items
+
+    @staticmethod
+    def _first_item_summary(items: list[dict[str, object]]) -> str:
+        for item in items:
+            for key in ("summary", "message", "reason", "type", "status"):
+                value = item.get(key)
+                if value not in (None, ""):
+                    return str(value)
+        return ""
 
     @staticmethod
     def _as_record_list(value: object) -> list[dict[str, object]]:

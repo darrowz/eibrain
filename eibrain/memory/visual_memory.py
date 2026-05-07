@@ -171,6 +171,7 @@ def build_visual_memory_candidate(
         target_id=target_id,
     )
     importance = _importance_for(event_type=event_type, event_map=event_map, lock_map=lock_map, follow_map=follow_map)
+    confidence = _confidence_for(event_map=event_map, follow_map=follow_map)
     retention = _retention_policy(event_type)
     dedupe_key = _dedupe_key(
         event_type=event_type,
@@ -180,6 +181,8 @@ def build_visual_memory_candidate(
         event_map=event_map,
     )
     event_reference = _event_reference(event_map=event_map, event_type=event_type, source=resolved_source)
+    tracking_provenance = _tracking_provenance(lock_map=lock_map, follow_map=follow_map, event_reference=event_reference)
+    scene_provenance = _scene_provenance(event_map=event_map, context_map=context_map, event_reference=event_reference)
     content = _content_for(
         event_type=event_type,
         summary=summary,
@@ -188,6 +191,9 @@ def build_visual_memory_candidate(
         follow_map=follow_map,
         context_map=context_map,
     )
+    content["confidence"] = confidence
+    content["tracking_provenance"] = tracking_provenance
+    content["scene_provenance"] = scene_provenance
 
     meta: dict[str, object] = {
         "source_system": "eibrain",
@@ -196,10 +202,14 @@ def build_visual_memory_candidate(
         "event_type": event_type,
         "trace_id": event_reference["trace_id"],
         "source_event_id": event_reference["event_id"],
+        "session_id": session_id,
         "eiprotocol_event_reference": event_reference,
         "event_reference": event_reference,
         "dedupe_key": dedupe_key,
         "importance": importance,
+        "confidence": confidence,
+        "tracking_provenance": tracking_provenance,
+        "scene_provenance": scene_provenance,
         "ttl_ms": retention["ttl_ms"],
         "retention": retention["retention"],
         "memory_kind": retention["memory_kind"],
@@ -225,9 +235,12 @@ def build_visual_memory_candidate(
         "actor_id": actor_id,
         "dedupe_key": dedupe_key,
         "importance": importance,
+        "confidence": confidence,
         "retention": retention["retention"],
         "ttl_ms": retention["ttl_ms"],
         "event_reference": event_reference,
+        "tracking_provenance": tracking_provenance,
+        "scene_provenance": scene_provenance,
         "decision": {
             "decision": "visual_memory_candidate",
             "why": _decision_reason(event_type),
@@ -243,6 +256,7 @@ def build_visual_memory_candidate(
         "source": resolved_source,
         "organ": "eye",
         "modality": "vision",
+        "confidence": confidence,
         "content": content,
         "meta": meta,
         "tags": _tags_for(
@@ -457,6 +471,56 @@ def _importance_for(
     if event_type == "user_feedback":
         return 0.96
     return 0.5
+
+
+def _confidence_for(*, event_map: Mapping[str, object], follow_map: Mapping[str, object]) -> float | None:
+    follow_confidence = _extract_float(follow_map, "score", "follow_score", "tracking_score", "confidence")
+    if follow_confidence > 0:
+        return follow_confidence
+    event_confidence = _extract_float(event_map, "confidence", "score")
+    if event_confidence > 0:
+        return event_confidence
+    objects = event_map.get("objects") or event_map.get("detections")
+    if isinstance(objects, list):
+        scores = [
+            _extract_float(item, "confidence", "score")
+            for item in objects
+            if isinstance(item, Mapping)
+        ]
+        scores = [score for score in scores if score > 0]
+        if scores:
+            return max(scores)
+    return None
+
+
+def _tracking_provenance(
+    *,
+    lock_map: Mapping[str, object],
+    follow_map: Mapping[str, object],
+    event_reference: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "target_id": _first_text(lock_map, "target_id", "subject_id", "actor_id", "last_target_id"),
+        "track_id": _first_text(lock_map, "track_id"),
+        "stable_frames": _extract_int(lock_map, "stable_frames", "consecutive_frames", "frames"),
+        "duration_ms": _extract_int(lock_map, "duration_ms", "stable_duration_ms", "visible_duration_ms"),
+        "follow_score": _confidence_for(event_map={}, follow_map=follow_map),
+        "source_event_id": event_reference.get("event_id") or "",
+        "trace_id": event_reference.get("trace_id") or "",
+    }
+
+
+def _scene_provenance(
+    *,
+    event_map: Mapping[str, object],
+    context_map: Mapping[str, object],
+    event_reference: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        "source_event_id": event_reference.get("event_id") or "",
+        "trace_id": event_reference.get("trace_id") or "",
+        "device_id": _first_text_from_maps(event_map, context_map, keys=("device_id", "camera_id", "sensor_id")),
+    }
 
 
 def _retention_policy(event_type: str) -> dict[str, object]:
@@ -692,11 +756,10 @@ def _decision_reason(event_type: str) -> str:
 
 
 def _scope(*, session_id: str, actor_id: str) -> dict[str, str]:
-    scope: dict[str, str] = {}
-    if session_id:
-        scope["session_id"] = session_id
+    del session_id
+    scope: dict[str, str] = {"tenant_id": "default"}
     if actor_id:
-        scope["actor_id"] = actor_id
+        scope["user_id"] = actor_id
     return scope
 
 

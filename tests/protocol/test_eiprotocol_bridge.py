@@ -93,6 +93,7 @@ def test_bridge_capability_manifest_to_eiprotocol_envelope() -> None:
     assert payload["content"]["capabilities"][0]["capabilityId"] == "camera.main"
     assert payload["content"]["capabilities"][0]["limits"]["fps"]["max_value"] == 30
     assert payload["content"]["backends"][0]["capabilityId"] == "vision.hailo"
+    assert payload["content"]["transports"]["http"]["baseUrl"] == "http://honjia.local:18081"
     assert payload["content"]["metadata"]["legacyCapabilities"] == ["audio_turn", "vision_observation"]
 
 
@@ -224,6 +225,7 @@ def test_bridge_vision_observation_preserves_detections() -> None:
 def test_bridge_head_action_derives_missing_idempotency_key_from_action_id() -> None:
     from eibrain.protocol.eiprotocol_bridge import head_action_to_eiprotocol_event
     from eibrain.protocol.head import HeadAction
+    from eiprotocol import classify_event
 
     action = HeadAction(
         ts=5.0,
@@ -245,7 +247,7 @@ def test_bridge_head_action_derives_missing_idempotency_key_from_action_id() -> 
     assert event.to_dict() == repeated.to_dict()
     assert payload["id"] == "evt_head_action_action-1"
     assert payload["requestId"] == "trace-action"
-    assert payload["sequence"] == 0
+    assert payload["sequence"] == 1
     assert payload["name"] == "ei.action.request"
     assert payload["type"] == "action"
     assert payload["roundId"] == "session-1"
@@ -253,6 +255,33 @@ def test_bridge_head_action_derives_missing_idempotency_key_from_action_id() -> 
     assert payload["content"]["target"] == "neck.pan"
     assert payload["content"]["params"] == {"target_angle": 92, "reason": "center_target"}
     assert payload["content"]["idempotencyKey"] == "action-1"
+    assert classify_event(payload)["route"] == "action_request"
+
+
+def test_bridge_capability_manifest_prefers_runtime_port_over_monitor_port() -> None:
+    from eibrain.protocol.capabilities import CapabilityManifest
+    from eibrain.protocol.eiprotocol_bridge import capability_manifest_to_eiprotocol_event
+
+    event = capability_manifest_to_eiprotocol_event(
+        CapabilityManifest(
+            ts=1.0,
+            source="honjia",
+            target="honxin",
+            timestamp_ms=1_714_800_000_000,
+            node_id="honjia",
+            metadata={
+                "runtime": {"port": 18081},
+                "monitoring": {"port": 18080},
+            },
+        ),
+        event_id="evt_cap_runtime_port",
+        request_id="req_cap_runtime_port",
+        sequence=1,
+    )
+
+    _, payload = _round_trip_event(event)
+
+    assert payload["content"]["transports"]["http"]["baseUrl"] == "http://honjia.local:18081"
 
 
 def test_bridge_execution_outcome_to_eiprotocol_envelope() -> None:
@@ -408,6 +437,12 @@ def test_bridge_converts_realtime_vision_payload_to_head_to_brain_frame_event() 
             "scores": [0.91],
             "tracked_target": {"label": "person", "track_id": "track-person-1"},
             "latency_ms": {"capture": 8.0, "detect": 15.0, "publish": 3.5},
+            "trackingDiagnostics": {"stability": 0.96, "switchCount": 0},
+            "pose": {"keypoints": [{"name": "nose", "x": 0.5, "y": 0.2}]},
+            "clipLabels": [{"label": "person_at_desk", "score": 0.77}],
+            "semanticLabels": [{"label": "attention", "score": 0.82}],
+            "depth": {"meters": 1.2},
+            "distance": {"band": "near"},
             "metadata": {"scene": "lab"},
         },
         event_id="evt_vision_bridge",
@@ -428,7 +463,32 @@ def test_bridge_converts_realtime_vision_payload_to_head_to_brain_frame_event() 
     assert payload["content"]["boxes"] == [{"x": 0.2, "y": 0.1, "w": 0.4, "h": 0.6}]
     assert payload["content"]["scores"] == [0.91]
     assert payload["content"]["latencyMs"] == {"capture": 8.0, "detect": 15.0, "publish": 3.5}
+    assert payload["content"]["trackingDiagnostics"] == {"stability": 0.96, "switchCount": 0}
+    assert payload["content"]["pose"] == {"keypoints": [{"name": "nose", "x": 0.5, "y": 0.2}]}
+    assert payload["content"]["clipLabels"] == [{"label": "person_at_desk", "score": 0.77}]
+    assert payload["content"]["semanticLabels"] == [{"label": "attention", "score": 0.82}]
+    assert payload["content"]["depth"] == {"meters": 1.2}
+    assert payload["content"]["distance"] == {"band": "near"}
     assert payload["content"]["metadata"] == {"scene": "lab"}
+
+
+def test_realtime_vision_payload_bridge_accepts_confidence_only_detector_payloads() -> None:
+    from eibrain.protocol.eiprotocol_bridge import realtime_vision_payload_to_eiprotocol_event
+
+    event = realtime_vision_payload_to_eiprotocol_event(
+        {
+            "kind": "realtime_vision_frame",
+            "frame_id": "frame-confidence-bridge",
+            "detections": [{"label": "person", "confidence": 0.87, "bbox": [0.62, 0.35, 0.12, 0.18]}],
+        },
+        event_id="evt_confidence_bridge",
+        request_id="req_confidence_bridge",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "realtime_vision_frame")
+
+    assert payload["content"]["detections"][0]["score"] == 0.87
+    assert payload["content"]["scores"] == [0.87]
 
 
 def test_payload_to_eiprotocol_event_routes_realtime_vision_payload_kind() -> None:
@@ -522,7 +582,11 @@ def test_payload_to_eiprotocol_event_routes_v011_generic_payload_kinds() -> None
                 "reason": "salient user preference",
                 "writes": [{"memory_id": "mem-1", "status": "proposed"}],
             },
-            {"policyId": "memory-policy-1", "decision": "allow"},
+            {
+                "policyId": "memory-policy-1",
+                "decision": "allow",
+                "writes": [{"memory_id": "mem-1", "status": "proposed"}],
+            },
         ),
         (
             "memory_policy_report",
@@ -606,10 +670,13 @@ def test_scheduler_snapshot_bridge_emits_memory_trace_events_with_trace_metadata
                             {
                                 "query": "favorite tea",
                                 "summary": "recalled tea preference",
+                                "selected_count": 1,
+                                "source_composition": {"conversation": 1},
                                 "selected_records": [{"memory_id": "mem-1", "summary": "likes oolong"}],
                             }
                         ]
                     },
+                    "errors": [{"code": "partial", "message": "one shard timed out"}],
                     "writeback": {
                         "items": [
                             {
@@ -630,9 +697,32 @@ def test_scheduler_snapshot_bridge_emits_memory_trace_events_with_trace_metadata
     recall_event = next(event for event in events if event.name == "ei.memory.recall.result")
     write_event = next(event for event in events if event.name == "ei.memory.write.committed")
 
-    assert recall_event.content["traceSchema"] == "v0.1.1"
-    assert recall_event.content["traceRoundId"] == "rnd-memory-1"
-    assert recall_event.content["results"] == [{"memory_id": "mem-1", "summary": "likes oolong"}]
+    assert recall_event.source.domain == "eimemory"
+    assert recall_event.target is not None
+    assert recall_event.target.domain == "eibrain"
+    assert write_event.source.domain == "eimemory"
+    assert write_event.target is not None
+    assert write_event.target.domain == "eibrain"
+    assert recall_event.content == {
+        "query": "favorite tea",
+        "resultCount": 1,
+        "results": [{"memory_id": "mem-1", "summary": "likes oolong"}],
+        "metadata": {
+            "traceSchema": "v0.1.1",
+            "traceRoundId": "rnd-memory-1",
+            "summary": "recalled tea preference",
+            "selectedCount": 1,
+            "sourceComposition": {"conversation": 1},
+            "errors": [{"code": "partial", "message": "one shard timed out"}],
+            "recallItem": {
+                "query": "favorite tea",
+                "summary": "recalled tea preference",
+                "selected_count": 1,
+                "source_composition": {"conversation": 1},
+                "selected_records": [{"memory_id": "mem-1", "summary": "likes oolong"}],
+            },
+        },
+    }
     assert write_event.content["traceSchema"] == "v0.1.1"
     assert write_event.content["traceRoundId"] == "rnd-memory-1"
     assert write_event.content["memoryId"] == "mem-2"

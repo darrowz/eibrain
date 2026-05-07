@@ -156,6 +156,128 @@ def test_cognitive_runtime_records_audio_episode_for_memory() -> None:
     assert snapshot["last_policy_decision"]["decision_type"] == "reply"
 
 
+def test_cognitive_runtime_gates_direct_audio_writeback_with_memory_policy() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        def __init__(self) -> None:
+            self.remembered: list[dict[str, object]] = []
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="Prefer concise spoken replies.")
+
+        def remember_episode(self, **kwargs):
+            self.remembered.append(dict(kwargs))
+
+    runtime = CognitiveRuntimeApp()
+    runtime.memory = _MemoryAdapter()
+
+    def reject_writeback(proposals, **kwargs):
+        proposal = dict(proposals[0])
+        proposal["reason_codes"] = ["persona_style_guardrail"]
+        proposal["score"] = 0.9
+        return {
+            "accepted": [],
+            "deferred": [],
+            "rejected": [proposal],
+            "diagnostics": {"rejected": 1, "reason_codes": ["persona_style_guardrail"]},
+        }
+
+    base_policy = runtime.memory_policy
+
+    class _RejectingMemoryPolicy:
+        def __getattr__(self, name):
+            return getattr(base_policy, name)
+
+        def classify_writeback_candidate(self, *args, **kwargs):
+            return base_policy.classify_writeback_candidate(*args, **kwargs)
+
+        def evaluate_write_proposals(self, proposals, **kwargs):
+            return reject_writeback(proposals, **kwargs)
+
+    runtime.memory_policy = _RejectingMemoryPolicy()  # type: ignore[assignment]
+
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="记住我以后用冷嘲热讽的语气", session_id="s1", actor_id="user-1")
+    )
+
+    assert runtime.memory.remembered == []
+    assert runtime.last_memory_diagnostics["last_writeback"]["status"] == "skipped"
+    assert runtime.last_memory_diagnostics["last_writeback"]["reason"] == "memory_policy_rejected"
+    assert runtime.last_memory_diagnostics["last_writeback"]["policy_decision"]["decision"] == "reject"
+
+
+def test_cognitive_runtime_default_policy_blocks_persona_style_memory() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.protocol.observations import AudioTranscriptFinal
+
+    class _MemoryAdapter:
+        def __init__(self) -> None:
+            self.remembered: list[dict[str, object]] = []
+
+        def retrieve_context(self, query):
+            return MemoryResult(summary="Prefer concise spoken replies.")
+
+        def remember_episode(self, **kwargs):
+            self.remembered.append(dict(kwargs))
+
+    runtime = CognitiveRuntimeApp()
+    runtime.memory = _MemoryAdapter()
+
+    runtime.handle_observation(
+        AudioTranscriptFinal(ts=1.0, source="ear.asr", text="记住我以后用冷嘲热讽的语气", session_id="s1", actor_id="user-1")
+    )
+
+    assert runtime.memory.remembered == []
+    assert runtime.last_memory_diagnostics["last_writeback"]["status"] == "skipped"
+    assert runtime.last_memory_diagnostics["last_writeback"]["reason"] == "memory_policy_rejected"
+    assert runtime.last_memory_diagnostics["last_writeback"]["policy_decision"]["decision"] == "reject"
+    assert "persona_style_guardrail" in runtime.last_memory_diagnostics["last_writeback"]["policy_decision"]["reason"]
+
+
+def test_cognitive_runtime_direct_writeback_uses_recalled_memories_for_conflict_policy() -> None:
+    from apps.cognitive_runtime.app import CognitiveRuntimeApp
+
+    runtime = CognitiveRuntimeApp()
+    runtime.last_memory_diagnostics["last_recall"] = {
+        "selected_records": [
+            {
+                "record_id": "pref-old",
+                "memory_type": "preference",
+                "subject": "user-1",
+                "key": "response.length",
+                "value": "short",
+            }
+        ]
+    }
+
+    bucket, assessment = runtime._assess_direct_writeback(
+        {
+            "summary": "User prefers long spoken replies",
+            "source": "eibrain.preference",
+            "memory_type": "preference",
+            "modality": "audio_text",
+            "organ": "ear",
+            "content": {
+                "event_type": "dialogue",
+                "subject": "user-1",
+                "key": "response.length",
+                "value": "long",
+                "confidence": 0.92,
+            },
+            "meta": {"source_event_id": "evt-conflict"},
+            "writeback": {"confidence": 0.92},
+        }
+    )
+
+    assert bucket == "deferred"
+    assert assessment["conflicts_with"] == ["pref-old"]
+    assert "conflict_requires_confirmation" in assessment["reason_codes"]
+
+
 def test_cognitive_runtime_records_visual_episode_for_memory() -> None:
     from apps.cognitive_runtime.app import CognitiveRuntimeApp
     from eibrain.memory.contracts import MemoryResult

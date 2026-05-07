@@ -1796,6 +1796,30 @@ def test_health_falls_back_to_status_and_can_return_503() -> None:
     assert error_payload["status"] == "offline"
 
 
+def test_health_fallback_uses_runtime_unhealthy_state_contract() -> None:
+    class DegradedFallbackHealthApp(FallbackHealthApp):
+        def status(self) -> dict[str, Any]:
+            return {
+                "ok": True,
+                "status": "degraded",
+                "runtime": "eihead",
+                "node_id": "honjia-test",
+            }
+
+    with running_server(DegradedFallbackHealthApp(health_payload=None), clock=lambda: 222.0) as (
+        base_url,
+        _server,
+        _thread,
+    ):
+        status_code, payload = read_error_json(f"{base_url}/health")
+
+    assert status_code == 503
+    assert payload["ok"] is False
+    assert payload["status"] == "degraded"
+    assert payload["source"] == "status"
+    assert payload["checked_at_ts"] == 222.0
+
+
 def test_unknown_path_wrong_method_and_runtime_errors_are_json() -> None:
     with running_server(FakeMonitorApp()) as (base_url, _server, _thread):
         not_found_code, not_found_payload = read_error_json(f"{base_url}/missing")

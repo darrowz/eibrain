@@ -180,10 +180,13 @@ def test_scheduler_snapshot_bridge_emits_memory_trace_result_and_write_events() 
     ]
     assert [payload["sequence"] for payload in payloads] == [40, 41]
     assert {payload["roundId"] for payload in payloads} == {"round-memory"}
-    assert {payload["source"]["domain"] for payload in payloads} == {"eibrain"}
-    assert {payload["target"]["domain"] for payload in payloads} == {"eimemory"}
+    assert payloads[0]["source"]["domain"] == "eimemory"
+    assert payloads[0]["target"]["domain"] == "eibrain"
+    assert payloads[1]["source"]["domain"] == "eimemory"
+    assert payloads[1]["target"]["domain"] == "eibrain"
     assert payloads[0]["content"]["query"] == "用户偏好简短回复"
+    assert payloads[0]["content"]["resultCount"] == 1
     assert payloads[0]["content"]["results"][0]["record_id"] == "mem_1"
-    assert payloads[0]["content"]["sourceComposition"]["eibrain.preference"] == 1
+    assert payloads[0]["content"]["metadata"]["sourceComposition"]["eibrain.preference"] == 1
     assert payloads[1]["content"]["memoryId"] == "mem_2"
     assert payloads[1]["content"]["summary"] == "用户偏好更短的语音回复。"

@@ -447,7 +447,7 @@ def test_vision_soak_cli_passes_runtime_arguments(monkeypatch, tmp_path):
             "--interval",
             "2",
             "--status-url",
-            "http://honjia.local:18080/status.json",
+            "http://honjia.local:18081/status.json",
             "--output-path",
             str(output_path),
             "--target-fps",
@@ -466,7 +466,7 @@ def test_vision_soak_cli_passes_runtime_arguments(monkeypatch, tmp_path):
     assert exit_code == 0
     assert captured["duration_s"] == 30.0
     assert captured["interval_s"] == 2.0
-    assert captured["status_url"] == "http://honjia.local:18080/status.json"
+    assert captured["status_url"] == "http://honjia.local:18081/status.json"
     assert captured["output_path"] == output_path
     assert captured["target_fps"] == 12.0
     assert captured["thresholds"]["min_fps_ratio"] == 0.7

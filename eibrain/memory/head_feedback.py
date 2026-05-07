@@ -104,6 +104,14 @@ def build_head_feedback_record(
         keys=("trace_id", "request_id", "turn_id"),
         default="",
     )
+    resolved_source_event_id = _first_text_from_maps(
+        outcome_map,
+        details,
+        action_map,
+        feedback_map,
+        keys=("source_event_id", "event_id", "request_id", "turn_id"),
+        default="",
+    )
     resolved_timestamp_ms = timestamp_ms or _extract_int(
         outcome_map,
         feedback_map,
@@ -133,6 +141,8 @@ def build_head_feedback_record(
         keys=("executed_by", "executor", "target_id", "organ"),
         default="eihead",
     )
+    resolved_organ = _infer_organ(action_map, outcome_map, details)
+    confidence = _extract_float(outcome_map, details, feedback_map, "confidence", "score")
 
     record: dict[str, object] = {
         "record_type": "head_execution_feedback",
@@ -140,8 +150,9 @@ def build_head_feedback_record(
         "memory_kind": resolved_memory_kind,
         "category": resolved_category,
         "source": source,
-        "organ": _infer_organ(action_map, outcome_map, details),
+        "organ": resolved_organ,
         "modality": _infer_modality(action_map, outcome_map, details),
+        "confidence": confidence,
         "what_attempted": attempted,
         "planned_by": resolved_planned_by,
         "executed_by": resolved_executed_by,
@@ -151,6 +162,7 @@ def build_head_feedback_record(
         "user_feedback": user_feedback,
         "suggested_adjustment": suggested_adjustment,
         "trace_id": resolved_trace_id,
+        "source_event_id": resolved_source_event_id,
         "timestamp_ms": resolved_timestamp_ms,
         "persona_memory": False,
         "retention": _retention_for(resolved_memory_kind),
@@ -158,6 +170,13 @@ def build_head_feedback_record(
         "action": action_map,
         "outcome": outcome_map,
         "feedback": feedback_map,
+    }
+    record["tracking_provenance"] = {
+        "trace_id": resolved_trace_id,
+        "source_event_id": resolved_source_event_id,
+        "planned_by": resolved_planned_by,
+        "executed_by": resolved_executed_by,
+        "organ": resolved_organ,
     }
     record["writeback"] = _writeback_for(resolved_memory_kind)
     record["summary"] = summarize_head_feedback_record(record)
@@ -175,6 +194,8 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
             "action": cleaned.get("action", {}),
             "outcome": cleaned.get("outcome", {}),
             "feedback": cleaned.get("feedback", {}),
+            "confidence": cleaned.get("confidence"),
+            "tracking_provenance": cleaned.get("tracking_provenance", {}),
         }
     )
     return {
@@ -184,6 +205,7 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
         "source": str(cleaned.get("source") or "eibrain.head_feedback"),
         "organ": str(cleaned.get("organ") or "head"),
         "modality": str(cleaned.get("modality") or "multimodal_action"),
+        "confidence": cleaned.get("confidence"),
         "outcome": {
             "success": cleaned.get("success"),
             "latency_ms": cleaned.get("latency_ms"),
@@ -195,7 +217,10 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
             "memory_kind": cleaned.get("memory_kind"),
             "category": cleaned.get("category"),
             "trace_id": cleaned.get("trace_id"),
+            "source_event_id": cleaned.get("source_event_id"),
             "timestamp_ms": cleaned.get("timestamp_ms"),
+            "confidence": cleaned.get("confidence"),
+            "tracking_provenance": cleaned.get("tracking_provenance", {}),
             "persona_memory": cleaned.get("persona_memory", False),
             "retention": cleaned.get("retention"),
             "promotion_status": cleaned.get("promotion_status"),
@@ -223,6 +248,8 @@ def build_eitraining_trace(record: Mapping[str, object]) -> dict[str, object]:
         "error": cleaned.get("error"),
         "user_feedback": cleaned.get("user_feedback"),
         "suggested_adjustment": cleaned.get("suggested_adjustment"),
+        "confidence": cleaned.get("confidence"),
+        "tracking_provenance": cleaned.get("tracking_provenance", {}),
         "timestamp_ms": cleaned.get("timestamp_ms"),
     }
 
@@ -320,6 +347,21 @@ def _extract_int(*mappings_and_keys: object) -> int | None:
                 continue
             try:
                 return int(float(str(value)))
+            except ValueError:
+                continue
+    return None
+
+
+def _extract_float(*mappings_and_keys: object) -> float | None:
+    mappings = [item for item in mappings_and_keys if isinstance(item, Mapping)]
+    keys = [str(item) for item in mappings_and_keys if isinstance(item, str)]
+    for mapping in mappings:
+        for key in keys:
+            value = mapping.get(str(key))
+            if isinstance(value, bool) or value is None:
+                continue
+            try:
+                return float(str(value))
             except ValueError:
                 continue
     return None

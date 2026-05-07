@@ -95,6 +95,7 @@ class OpenClawConfig:
     endpoint: str = ""
     api_key: str = ""
     timeout_s: float = 5.0
+    tenant_id: str = "default"
     agent_id: str = ""
     workspace_id: str = ""
 
@@ -108,7 +109,7 @@ class MemoryConfig:
 class MonitoringConfig:
     enabled: bool = True
     host: str = "0.0.0.0"
-    port: int = 8080
+    port: int = 18081
 
 
 @dataclass(slots=True)

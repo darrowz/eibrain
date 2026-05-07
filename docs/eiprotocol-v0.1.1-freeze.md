@@ -17,7 +17,8 @@ The following areas are frozen for v0.1.1 and should be treated as the 100%
 completion bar for the protocol package:
 
 - Envelope: versioned event envelope fields, source/target refs, policy state,
-  trace/correlation IDs, timestamps, and JSON round-trip behavior.
+  trace/correlation IDs, timestamps, canonical `ttlMs` output with `ttl_ms`
+  input compatibility, and JSON round-trip behavior.
 - Catalog: known event names and metadata for plane, type, realtime,
   round-scoped, and side-effecting semantics.
 - Routing: classification metadata for every cataloged v0.1.1 event, including
@@ -29,9 +30,11 @@ completion bar for the protocol package:
   tests export cleanly without importing `eibrain`, `eihead`, or runtime
   device modules.
 - Vision observations: `vision.frame`, `vision.scene`, and `vision.event`
-  protocol events are part of the frozen observation surface.
+  protocol events are part of the frozen observation surface; scene/event
+  observations are session-addressable but not round-scoped by default.
 - Memory policy: `memory.policy.report` is the frozen memory-policy exchange
-  event. It reports policy posture; it does not implement memory storage.
+  event. It reports policy posture and proposed/affected `writes`; it does not
+  implement memory storage.
 - Speech-action plan: speech-to-action planning shapes are frozen at the event
   contract level so dialogue, action request, and outcome events can be
   correlated.

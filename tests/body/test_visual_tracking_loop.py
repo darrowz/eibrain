@@ -171,3 +171,58 @@ def test_visual_tracking_loop_preserves_runtime_tracking_status() -> None:
     assert runtime.state["tracking_decision"]["deadband_applied"] is False
     assert runtime.state["tracking_decision"]["suppressed_reason"] == "target_missing"
     assert runtime.state["tracking_decision"]["lock_id"] == "face-1"
+
+
+def test_visual_tracking_loop_merges_tracking_diagnostics_from_runtime_payload() -> None:
+    from apps.body_runtime.visual_tracking_loop import VisualTrackingLoop
+
+    class _Runtime:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.state: dict[str, object] = {}
+
+        def track_visual_target_once(self, *, session_id: str, actor_id: str, source: str):
+            self.calls += 1
+            return {
+                "tracking_diagnostics": {
+                    "track_count": 3,
+                    "active_track_id": "person-2",
+                    "switch_count": 1,
+                    "reacquired_count": 2,
+                    "lost_count": 1,
+                    "stability_ratio": 0.75,
+                    "suppressed_reason": "switch_hold",
+                }
+            }
+
+        def _update_visual_tracking_state(self, **updates: object) -> None:
+            self.state.update(updates)
+
+    runtime = _Runtime()
+    loop = VisualTrackingLoop(body_runtime=runtime, interval_s=0.05, source="state")
+    loop.start()
+    try:
+        deadline = time.time() + 1.0
+        while runtime.calls < 1 and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        loop.stop()
+
+    assert runtime.state["running"] is True
+    assert runtime.state["source"] == "state"
+    assert runtime.state["tracking_diagnostics"] == {
+        "track_count": 3,
+        "active_track_id": "person-2",
+        "switch_count": 1,
+        "reacquired_count": 2,
+        "lost_count": 1,
+        "stability_ratio": 0.75,
+        "suppressed_reason": "switch_hold",
+    }
+    assert runtime.state["track_count"] == 3
+    assert runtime.state["active_track_id"] == "person-2"
+    assert runtime.state["switch_count"] == 1
+    assert runtime.state["reacquired_count"] == 2
+    assert runtime.state["lost_count"] == 1
+    assert runtime.state["stability_ratio"] == 0.75
+    assert runtime.state["suppressed_reason"] == "switch_hold"

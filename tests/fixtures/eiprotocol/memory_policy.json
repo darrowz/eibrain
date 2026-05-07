@@ -41,6 +41,38 @@
         "value": "session"
       }
     ],
+    "filters": [
+      {
+        "field": "memoryType",
+        "op": "in",
+        "values": [
+          "preference"
+        ]
+      },
+      {
+        "field": "sensitivity",
+        "op": "lte",
+        "value": "personal_low"
+      }
+    ],
+    "conflictResolution": {
+      "strategy": "prefer_recent_confirmed",
+      "winnerMemoryId": "mem_pref_001",
+      "conflictingMemoryIds": [
+        "mem_pref_legacy_001"
+      ],
+      "reason": "newer explicit preference overrides inferred legacy memory"
+    },
+    "personaConsistencySignals": [
+      {
+        "signal": "tone_match",
+        "score": 0.92
+      },
+      {
+        "signal": "boundary_consistent",
+        "score": 0.88
+      }
+    ],
     "metadata": {
       "policyVersion": "2026-05-05"
     }

@@ -1114,6 +1114,10 @@ def build_memory_policy_report_event(
     decision: str = "",
     reason: str = "",
     evidence: Iterable[Mapping[str, Any]] | None = None,
+    writes: Iterable[Mapping[str, Any]] | None = None,
+    filters: Iterable[Mapping[str, Any]] | None = None,
+    conflict_resolution: Mapping[str, Any] | None = None,
+    persona_consistency_signals: Iterable[Mapping[str, Any]] | None = None,
     metadata: Mapping[str, Any] | None = None,
     ids: EventIdFactory | None = None,
     event_id: str | None = None,
@@ -1138,6 +1142,10 @@ def build_memory_policy_report_event(
         decision=decision,
         reason=reason,
         evidence=evidence,
+        writes=writes,
+        filters=filters,
+        conflict_resolution=conflict_resolution,
+        persona_consistency_signals=persona_consistency_signals,
         metadata=metadata,
     ).to_content()
     return build_event(
@@ -1368,6 +1376,12 @@ def build_vision_frame_event(
     scores: Iterable[float] | None = None,
     tracked_target: Mapping[str, Any] | None = None,
     latency_ms: Mapping[str, Any] | None = None,
+    tracking_diagnostics: Mapping[str, Any] | None = None,
+    pose: Mapping[str, Any] | None = None,
+    clip_labels: Iterable[Mapping[str, Any]] | None = None,
+    semantic_labels: Iterable[Mapping[str, Any]] | None = None,
+    depth: Mapping[str, Any] | None = None,
+    distance: Mapping[str, Any] | None = None,
     image_url: str = "",
     status: str = "ok",
     metadata: Mapping[str, Any] | None = None,
@@ -1398,6 +1412,12 @@ def build_vision_frame_event(
         scores=[float(item) for item in scores or ()],
         tracked_target=dict(tracked_target or {}),
         latency_ms=dict(latency_ms or {}),
+        tracking_diagnostics=dict(tracking_diagnostics or {}),
+        pose=dict(pose or {}),
+        clip_labels=[dict(item) for item in clip_labels or ()],
+        semantic_labels=[dict(item) for item in semantic_labels or ()],
+        depth=dict(depth or {}),
+        distance=dict(distance or {}),
         image_url=image_url,
         status=status,
         metadata=dict(metadata or {}),
@@ -1437,6 +1457,12 @@ def build_vision_scene_event(
     objects: Iterable[Mapping[str, Any]] | None = None,
     relationships: Iterable[Mapping[str, Any]] | None = None,
     environment: Mapping[str, Any] | None = None,
+    clip_labels: Iterable[Mapping[str, Any]] | None = None,
+    semantic_labels: Iterable[Mapping[str, Any]] | None = None,
+    depth: Mapping[str, Any] | None = None,
+    distance: Mapping[str, Any] | None = None,
+    scene_graph: Mapping[str, Any] | None = None,
+    scene_graph_provenance: Mapping[str, Any] | None = None,
     image_url: str = "",
     metadata: Mapping[str, Any] | None = None,
     ids: EventIdFactory | None = None,
@@ -1462,6 +1488,12 @@ def build_vision_scene_event(
         objects=objects,
         relationships=relationships,
         environment=environment,
+        clip_labels=clip_labels,
+        semantic_labels=semantic_labels,
+        depth=depth,
+        distance=distance,
+        scene_graph=scene_graph,
+        scene_graph_provenance=scene_graph_provenance,
         image_url=image_url,
         metadata=metadata,
     ).to_content()
@@ -1499,6 +1531,12 @@ def build_vision_event_event(
     event: VisionEventObservation | Mapping[str, Any] | None = None,
     subject: Mapping[str, Any] | None = None,
     confidence: float | None = None,
+    pose: Mapping[str, Any] | None = None,
+    clip_labels: Iterable[Mapping[str, Any]] | None = None,
+    semantic_labels: Iterable[Mapping[str, Any]] | None = None,
+    depth: Mapping[str, Any] | None = None,
+    distance: Mapping[str, Any] | None = None,
+    scene_graph_provenance: Mapping[str, Any] | None = None,
     details: Mapping[str, Any] | None = None,
     metadata: Mapping[str, Any] | None = None,
     ids: EventIdFactory | None = None,
@@ -1524,6 +1562,12 @@ def build_vision_event_event(
         scene_id=scene_id,
         subject=subject,
         confidence=confidence,
+        pose=pose,
+        clip_labels=clip_labels,
+        semantic_labels=semantic_labels,
+        depth=depth,
+        distance=distance,
+        scene_graph_provenance=scene_graph_provenance,
         details=details,
         metadata=metadata,
     ).to_content()
@@ -1650,11 +1694,35 @@ def _detection(value: Detection | Mapping[str, Any]) -> Detection:
         raise TypeError("detections must contain Detection objects or mappings")
     return Detection(
         label=str(value.get("label", "") or ""),
-        score=float(value.get("score", 0.0) or 0.0),
+        score=float(value.get("score", value.get("confidence", 0.0)) or 0.0),
         bbox=_bbox(value.get("bbox")),
         track_id=str(value.get("trackId", value.get("track_id", "")) or ""),
+        pose=_dict_or_empty(value.get("pose")),
+        clip_labels=_dict_item_list(value.get("clipLabels", value.get("clip_labels"))),
+        semantic_labels=_dict_item_list(value.get("semanticLabels", value.get("semantic_labels"))),
+        depth=_dict_or_empty(value.get("depth")),
+        distance=_dict_or_empty(value.get("distance")),
+        tracking_diagnostics=_dict_or_empty(
+            value.get("trackingDiagnostics", value.get("tracking_diagnostics")),
+        ),
         metadata=dict(value.get("metadata", {}) or {}),
     )
+
+
+def _dict_or_empty(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _dict_item_list(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    items: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, Mapping):
+            items.append(dict(item))
+        elif isinstance(item, str) and item.strip():
+            items.append({"label": item.strip()})
+    return items
 
 
 def _bbox(value: Any) -> list[Any] | dict[str, Any]:
@@ -1858,6 +1926,10 @@ def _memory_policy_report(
     decision: str,
     reason: str,
     evidence: Iterable[Mapping[str, Any]] | None,
+    writes: Iterable[Mapping[str, Any]] | None,
+    filters: Iterable[Mapping[str, Any]] | None,
+    conflict_resolution: Mapping[str, Any] | None,
+    persona_consistency_signals: Iterable[Mapping[str, Any]] | None,
     metadata: Mapping[str, Any] | None,
 ) -> MemoryPolicyReport:
     if isinstance(report, MemoryPolicyReport):
@@ -1874,6 +1946,14 @@ def _memory_policy_report(
             merged["reason"] = reason
         if evidence is not None:
             merged["evidence"] = [dict(item) for item in evidence]
+        if writes is not None:
+            merged["writes"] = [dict(item) for item in writes]
+        if filters is not None:
+            merged["filters"] = [dict(item) for item in filters]
+        if conflict_resolution is not None:
+            merged["conflictResolution"] = dict(conflict_resolution)
+        if persona_consistency_signals is not None:
+            merged["personaConsistencySignals"] = [dict(item) for item in persona_consistency_signals]
         if metadata is not None:
             merged["metadata"] = dict(metadata)
         return MemoryPolicyReport.from_content(merged)
@@ -1883,6 +1963,10 @@ def _memory_policy_report(
         decision=decision,
         reason=reason,
         evidence=[dict(item) for item in evidence or ()],
+        writes=[dict(item) for item in writes or ()],
+        filters=[dict(item) for item in filters or ()],
+        conflict_resolution=dict(conflict_resolution or {}),
+        persona_consistency_signals=[dict(item) for item in persona_consistency_signals or ()],
         metadata=dict(metadata or {}),
     )
 
@@ -2027,6 +2111,12 @@ def _vision_scene_observation(
     objects: Iterable[Mapping[str, Any]] | None,
     relationships: Iterable[Mapping[str, Any]] | None,
     environment: Mapping[str, Any] | None,
+    clip_labels: Iterable[Mapping[str, Any]] | None,
+    semantic_labels: Iterable[Mapping[str, Any]] | None,
+    depth: Mapping[str, Any] | None,
+    distance: Mapping[str, Any] | None,
+    scene_graph: Mapping[str, Any] | None,
+    scene_graph_provenance: Mapping[str, Any] | None,
     image_url: str,
     metadata: Mapping[str, Any] | None,
 ) -> VisionSceneObservation:
@@ -2046,6 +2136,18 @@ def _vision_scene_observation(
             merged["relationships"] = [dict(item) for item in relationships]
         if environment is not None:
             merged["environment"] = dict(environment)
+        if clip_labels is not None:
+            merged["clipLabels"] = _dict_item_list(list(clip_labels))
+        if semantic_labels is not None:
+            merged["semanticLabels"] = _dict_item_list(list(semantic_labels))
+        if depth is not None:
+            merged["depth"] = dict(depth)
+        if distance is not None:
+            merged["distance"] = dict(distance)
+        if scene_graph is not None:
+            merged["sceneGraph"] = dict(scene_graph)
+        if scene_graph_provenance is not None:
+            merged["sceneGraphProvenance"] = dict(scene_graph_provenance)
         if image_url:
             merged["imageUrl"] = image_url
         if metadata is not None:
@@ -2058,6 +2160,12 @@ def _vision_scene_observation(
         objects=[dict(item) for item in objects or ()],
         relationships=[dict(item) for item in relationships or ()],
         environment=dict(environment or {}),
+        clip_labels=_dict_item_list(list(clip_labels or ())),
+        semantic_labels=_dict_item_list(list(semantic_labels or ())),
+        depth=dict(depth or {}),
+        distance=dict(distance or {}),
+        scene_graph=dict(scene_graph or {}),
+        scene_graph_provenance=dict(scene_graph_provenance or {}),
         image_url=image_url,
         metadata=dict(metadata or {}),
     )
@@ -2072,6 +2180,12 @@ def _vision_event_observation(
     scene_id: str,
     subject: Mapping[str, Any] | None,
     confidence: float | None,
+    pose: Mapping[str, Any] | None,
+    clip_labels: Iterable[Mapping[str, Any]] | None,
+    semantic_labels: Iterable[Mapping[str, Any]] | None,
+    depth: Mapping[str, Any] | None,
+    distance: Mapping[str, Any] | None,
+    scene_graph_provenance: Mapping[str, Any] | None,
     details: Mapping[str, Any] | None,
     metadata: Mapping[str, Any] | None,
 ) -> VisionEventObservation:
@@ -2091,6 +2205,18 @@ def _vision_event_observation(
             merged["subject"] = dict(subject)
         if confidence is not None:
             merged["confidence"] = confidence
+        if pose is not None:
+            merged["pose"] = dict(pose)
+        if clip_labels is not None:
+            merged["clipLabels"] = _dict_item_list(list(clip_labels))
+        if semantic_labels is not None:
+            merged["semanticLabels"] = _dict_item_list(list(semantic_labels))
+        if depth is not None:
+            merged["depth"] = dict(depth)
+        if distance is not None:
+            merged["distance"] = dict(distance)
+        if scene_graph_provenance is not None:
+            merged["sceneGraphProvenance"] = dict(scene_graph_provenance)
         if details is not None:
             merged["details"] = dict(details)
         if metadata is not None:
@@ -2103,6 +2229,12 @@ def _vision_event_observation(
         scene_id=scene_id,
         subject=dict(subject or {}),
         confidence=confidence,
+        pose=dict(pose or {}),
+        clip_labels=_dict_item_list(list(clip_labels or ())),
+        semantic_labels=_dict_item_list(list(semantic_labels or ())),
+        depth=dict(depth or {}),
+        distance=dict(distance or {}),
+        scene_graph_provenance=dict(scene_graph_provenance or {}),
         details=dict(details or {}),
         metadata=dict(metadata or {}),
     )

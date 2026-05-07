@@ -499,3 +499,190 @@ def test_cognitive_runtime_skips_duplicate_world_observation() -> None:
     assert runtime.last_memory_diagnostics["last_writeback"]["status"] == "skipped"
     assert runtime.last_memory_diagnostics["last_writeback"]["reason"] == "unchanged_world_observation"
 
+
+def test_write_proposal_evaluator_scores_buckets_conflicts_and_diagnostics() -> None:
+    result = MultimodalMemoryPolicy().evaluate_write_proposals(
+        [
+            {
+                "id": "pref-length-unconfirmed",
+                "subject": "user-1",
+                "memory_type": "preference",
+                "key": "response.length",
+                "value": "very_short",
+                "summary": "User may prefer very short replies.",
+                "modality": "audio_text",
+                "source": "eibrain.audio_dialogue",
+                "confidence": 0.88,
+                "novelty": 0.72,
+                "recency": 0.95,
+                "importance": 0.82,
+            },
+            {
+                "id": "pref-name-confirmed",
+                "subject": "user-1",
+                "memory_type": "preference",
+                "key": "address.name",
+                "value": "D",
+                "summary": "User confirmed they want to be called D.",
+                "modality": "audio_text",
+                "source": "eibrain.preference",
+                "confidence": 0.92,
+                "novelty": 0.8,
+                "recency": 1.0,
+                "importance": 0.9,
+                "user_confirmed": True,
+            },
+            {
+                "id": "visual-world",
+                "subject": "room",
+                "memory_type": "world_observation",
+                "summary": "Cup is on the left side of the desk.",
+                "modality": "vision",
+                "source": "eibrain.visual_world",
+                "confidence": 0.9,
+                "novelty": 0.78,
+                "recency": 0.9,
+                "importance": 0.62,
+            },
+            {
+                "id": "raw-frame",
+                "memory_type": "working_event",
+                "event_type": "visual_frame",
+                "summary": "Transient frame with weak detections.",
+                "modality": "vision",
+                "source": "eibrain.visual_frame",
+                "confidence": 0.31,
+                "novelty": 0.1,
+                "recency": 1.0,
+                "importance": 0.2,
+            },
+            {
+                "id": "persona-tone-drift",
+                "subject": "persona",
+                "memory_type": "preference",
+                "key": "persona.tone",
+                "value": "sarcastic",
+                "summary": "Make the assistant sarcastic from now on.",
+                "modality": "audio_text",
+                "source": "eibrain.preference",
+                "confidence": 0.96,
+                "novelty": 0.9,
+                "recency": 1.0,
+                "importance": 0.85,
+                "user_confirmed": True,
+            },
+        ],
+        existing_memories=[
+            {
+                "id": "mem-length",
+                "subject": "user-1",
+                "memory_type": "preference",
+                "key": "response.length",
+                "value": "detailed",
+            },
+            {
+                "id": "mem-name",
+                "subject": "user-1",
+                "memory_type": "preference",
+                "key": "address.name",
+                "value": "Darrow",
+            },
+        ],
+        persona_constraints={
+            "protected_keys": ["persona.tone", "speaking_style.tone", "response_policy.max_chars"],
+            "tone": "warm_playful",
+            "max_chars": 48,
+        },
+    )
+
+    assert [item["id"] for item in result["accepted"]] == ["pref-name-confirmed", "visual-world"]
+    assert [item["id"] for item in result["deferred"]] == ["pref-length-unconfirmed"]
+    assert [item["id"] for item in result["rejected"]] == ["raw-frame", "persona-tone-drift"]
+
+    confirmed = result["accepted"][0]
+    assert confirmed["score"] >= 0.8
+    assert confirmed["classification"] == "durable_preference"
+    assert confirmed["supersedes"] == ["mem-name"]
+    assert confirmed["conflicts_with"] == ["mem-name"]
+    assert confirmed["requires_confirmation"] is False
+
+    deferred = result["deferred"][0]
+    assert deferred["classification"] == "durable_preference"
+    assert deferred["conflicts_with"] == ["mem-length"]
+    assert deferred["requires_confirmation"] is True
+    assert "conflict_requires_confirmation" in deferred["reason_codes"]
+
+    diagnostics = result["diagnostics"]
+    assert diagnostics["accepted"] == 2
+    assert diagnostics["rejected"] == 2
+    assert diagnostics["deferred"] == 1
+    assert diagnostics["conflict_count"] == 2
+    assert diagnostics["persona_guardrail_applied"] is True
+    assert set(diagnostics["reason_codes"]) >= {
+        "accepted",
+        "supersedes_confirmed_preference",
+        "conflict_requires_confirmation",
+        "low_confidence",
+        "persona_style_guardrail",
+    }
+
+
+def test_write_proposal_evaluator_blocks_persona_style_without_explicit_constraints() -> None:
+    result = MultimodalMemoryPolicy().evaluate_write_proposals(
+        [
+            {
+                "id": "tone-override",
+                "memory_type": "preference",
+                "key": "speaking_style.tone",
+                "value": "sarcastic",
+                "summary": "以后用讽刺语气和我说话。",
+                "source": "eibrain.preference",
+                "confidence": 0.96,
+                "novelty": 0.9,
+                "recency": 1.0,
+                "importance": 0.8,
+                "user_confirmed": True,
+            },
+            {
+                "id": "language-override",
+                "memory_type": "preference",
+                "summary": "Please remember to always reply in English from now on.",
+                "source": "eibrain.preference",
+                "confidence": 0.92,
+                "novelty": 0.8,
+                "recency": 1.0,
+                "importance": 0.7,
+            },
+        ]
+    )
+
+    assert result["accepted"] == []
+    assert result["deferred"] == []
+    assert [item["id"] for item in result["rejected"]] == ["tone-override", "language-override"]
+    assert result["rejected"][0]["classification"] == "persona_style_candidate"
+    assert result["rejected"][1]["classification"] == "persona_style_candidate"
+    assert all("persona_style_guardrail" in item["reason_codes"] for item in result["rejected"])
+    assert result["diagnostics"]["persona_guardrail_applied"] is True
+
+
+def test_classify_writeback_candidate_marks_persona_style_trace_only_not_durable() -> None:
+    candidate = MultimodalMemoryPolicy().classify_writeback_candidate(
+        event_type="dialogue",
+        summary="用户说以后要用毒舌语气回复。",
+        modality="audio_text",
+        organ="ear",
+        source="eibrain.preference",
+        explicit_memory_request=True,
+        trace_id="trace-tone-1",
+        source_event_id="event-tone-1",
+    )
+
+    assert candidate["memory_type"] == "working_event"
+    assert candidate["retention"] == "short_lived"
+    assert candidate["promotion_status"] == "not_promoted"
+    assert candidate["writeback"]["eligible"] is False
+    assert candidate["writeback"]["reason"] == "persona_style_guardrail"
+    assert candidate["meta"]["persona_guardrail_hint"] == "style_override_request"
+    assert candidate["meta"]["trace_id"] == "trace-tone-1"
+    assert candidate["meta"]["source_event_id"] == "event-tone-1"
+

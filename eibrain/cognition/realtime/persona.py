@@ -296,6 +296,67 @@ class PersonaRuntime:
             )
         )
 
+    def stable_style_constraints(self) -> dict[str, Any]:
+        """Expose persona invariants that memory recall/writeback must not mutate."""
+
+        return deepcopy(
+            to_json_ready(
+                {
+                    "personaCode": self.persona_code or self.persona_id,
+                    "protected_keys": [
+                        "speaking_style.tone",
+                        "speaking_style.brevity",
+                        "speaking_style.language",
+                        "response_policy.max_chars",
+                        "response_policy.sentence_limit",
+                        "memory_policy.writeback",
+                    ],
+                    "speaking_style": {
+                        "tone": self.speaking_style.get("tone"),
+                        "brevity": self.speaking_style.get("brevity"),
+                        "language": self.speaking_style.get("language"),
+                    },
+                    "response_policy": {
+                        "max_chars": self.response_policy.get("max_chars"),
+                        "sentence_limit": self.response_policy.get("sentence_limit"),
+                    },
+                    "memory_policy": {
+                        "writeback": self.memory_policy.get("writeback"),
+                    },
+                }
+            )
+        )
+
+    def apply_memory_guardrails(self, memory_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Filter recalled memory hints that would drift stable persona style."""
+
+        accepted = deepcopy(_mapping(memory_context))
+        constraints = self.stable_style_constraints()
+        protected_keys = list(constraints["protected_keys"])
+        rejected_overrides: dict[str, Any] = {}
+        reason_codes: list[str] = []
+
+        for key_path in protected_keys:
+            found, value = _nested_get(accepted, key_path)
+            if not found:
+                continue
+            rejected_overrides[key_path] = value
+            _nested_pop(accepted, key_path)
+            reason_codes.append(f"blocked_{key_path}")
+
+        persona_guardrail_applied = bool(rejected_overrides)
+        if persona_guardrail_applied:
+            reason_codes.insert(0, "persona_guardrail_applied")
+        return to_json_ready(
+            {
+                "persona_guardrail_applied": persona_guardrail_applied,
+                "constraints": constraints,
+                "accepted_memory_context": accepted,
+                "rejected_overrides": rejected_overrides,
+                "reason_codes": reason_codes,
+            }
+        )
+
     def to_dict(self) -> dict[str, Any]:
         payload = {"persona_id": self.persona_id}
         payload.update(self.constraints())
@@ -324,8 +385,10 @@ class PersonaRuntime:
         text: str,
         *,
         emotion_context: dict[str, Any] | None = None,
+        memory_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         emotion_context = emotion_context or {}
+        memory_guardrail = self.apply_memory_guardrails(memory_context) if memory_context else None
         max_chars = int(self.response_policy.get("max_chars") or 0)
         tone = str(self.speaking_style.get("tone") or "gentle")
         mood = str(emotion_context.get("mood") or emotion_context.get("state") or "").lower()
@@ -344,8 +407,37 @@ class PersonaRuntime:
                 "action_style": deepcopy(self.action_style),
                 "response_policy": deepcopy(self.response_policy),
                 "proactive_policy": deepcopy(self.proactive_policy),
+                "persona_guardrail_applied": bool(
+                    memory_guardrail and memory_guardrail.get("persona_guardrail_applied")
+                ),
             }
         )
+
+
+def _nested_get(payload: Mapping[str, Any], key_path: str) -> tuple[bool, Any]:
+    current: Any = payload
+    for part in key_path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False, None
+        current = current[part]
+    return True, current
+
+
+def _nested_pop(payload: dict[str, Any], key_path: str) -> None:
+    parts = key_path.split(".")
+    current = payload
+    parents: list[tuple[dict[str, Any], str]] = []
+    for part in parts[:-1]:
+        child = current.get(part)
+        if not isinstance(child, dict):
+            return
+        parents.append((current, part))
+        current = child
+    current.pop(parts[-1], None)
+    for parent, part in reversed(parents):
+        child = parent.get(part)
+        if isinstance(child, dict) and not child:
+            parent.pop(part, None)
 
 
 __all__ = ["PersonaRuntime", "resolve_voice_style_policy"]

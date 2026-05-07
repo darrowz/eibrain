@@ -26,10 +26,10 @@ OPTIONAL_PATHS = (
 def main() -> int:
     parser = argparse.ArgumentParser(description="Sync deployable eibrain files to honjia.")
     parser.add_argument("--target-host", required=True, help="honjia ssh target, e.g. darrow@honjia")
-    parser.add_argument("--target-dir", default="/home/darrow/dev-project/eibrain", help="Remote deployment dir")
+    parser.add_argument("--target-dir", default="/home/darrow/eibrain", help="Remote deployment dir")
     parser.add_argument(
         "--config-source",
-        default="config/eibrain.honjia.yaml",
+        default="config/eibrain.honjia.local.yaml",
         help="Source config file in the honxin repo to deploy as honjia config/eibrain.yaml",
     )
     parser.add_argument("--include-tests", action="store_true", help="Also sync the tests directory for remote validation")

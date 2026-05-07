@@ -158,3 +158,58 @@ def test_scheduler_and_fast_payload_expose_persona_emotion_and_proactive_summari
     assert snapshot["scheduler"]["emotion"]["mood"] == "tired"
     assert snapshot["scheduler"]["proactive_activity"]["channel"] == result["proactive_activity"]["channel"]
     assert snapshot["current"]["safety_state"]["proactive_activity"]["round_id"] == result["round_id"]
+
+
+def test_persona_runtime_exposes_stable_style_constraints_and_guards_memory_drift() -> None:
+    persona = PersonaRuntime.from_persona_code("joyinside_companion")
+
+    constraints = persona.stable_style_constraints()
+    guarded = persona.apply_memory_guardrails(
+        {
+            "speaking_style": {"tone": "sarcastic", "brevity": "long_form"},
+            "response_policy": {"max_chars": 512, "sentence_limit": 8},
+            "addressing": {"preferred_name": "D"},
+            "memory_policy": {"writeback": "always_rewrite_persona"},
+        }
+    )
+
+    assert constraints["personaCode"] == "joyinside_companion"
+    assert constraints["protected_keys"] == [
+        "speaking_style.tone",
+        "speaking_style.brevity",
+        "speaking_style.language",
+        "response_policy.max_chars",
+        "response_policy.sentence_limit",
+        "memory_policy.writeback",
+    ]
+    assert constraints["speaking_style"]["tone"] == "warm_playful"
+    assert constraints["response_policy"]["max_chars"] == 48
+
+    assert guarded["persona_guardrail_applied"] is True
+    assert guarded["constraints"] == constraints
+    assert guarded["accepted_memory_context"] == {"addressing": {"preferred_name": "D"}}
+    assert guarded["rejected_overrides"] == {
+        "speaking_style.tone": "sarcastic",
+        "speaking_style.brevity": "long_form",
+        "response_policy.max_chars": 512,
+        "response_policy.sentence_limit": 8,
+        "memory_policy.writeback": "always_rewrite_persona",
+    }
+    assert set(guarded["reason_codes"]) == {
+        "persona_guardrail_applied",
+        "blocked_speaking_style.tone",
+        "blocked_speaking_style.brevity",
+        "blocked_response_policy.max_chars",
+        "blocked_response_policy.sentence_limit",
+        "blocked_memory_policy.writeback",
+    }
+
+    shaped = persona.shape_reply(
+        "这段回复会因为记忆召回想变成长篇，但 persona runtime 应该仍然保持短回复。",
+        memory_context=guarded["accepted_memory_context"],
+    )
+
+    assert shaped["tone"] == "warm_playful"
+    assert shaped["response_policy"]["max_chars"] == 48
+    assert len(shaped["text"]) <= 48
+    assert shaped["persona_guardrail_applied"] is False

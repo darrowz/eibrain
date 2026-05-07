@@ -7,7 +7,7 @@ eiprotocol-friendly observation content.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import math
@@ -26,6 +26,7 @@ class _Track:
     missing_frames: int = 0
     temporal_state: str = "appeared"
     stationary_frames: int = 0
+    extras: dict[str, Any] = field(default_factory=dict)
 
 
 class RealtimeVisionSimulator:
@@ -76,6 +77,7 @@ class RealtimeVisionSimulator:
             area_delta = _area(detection["bbox"]) - _area(previous_bbox)
             track.bbox = dict(detection["bbox"])
             track.confidence = float(detection["confidence"])
+            track.extras = dict(detection.get("extras", {}))
             track.last_seen_frame = frame_id
             track.last_observed_at = observed_at
             track.missing_frames = 0
@@ -263,6 +265,7 @@ class RealtimeVisionSimulator:
             first_seen_frame=frame_id,
             last_seen_frame=frame_id,
             last_observed_at=observed_at,
+            extras=dict(detection.get("extras", {})),
         )
 
     def _attention_track(self, tracks: list[_Track], *, current_track_id: str) -> _Track | None:
@@ -305,12 +308,14 @@ def to_eiprotocol_scene_content(snapshot: Mapping[str, Any]) -> dict[str, Any]:
     """Map a simulator result to VisionSceneObservation content."""
 
     scene = _scene_snapshot(snapshot)
-    return {
+    objects = [dict(item) for item in _dict_list(scene.get("objects"))]
+    relationships = [dict(item) for item in _dict_list(scene.get("relationships"))]
+    content = {
         "sceneId": str(scene.get("sceneId", "")),
         "observedAt": str(scene.get("observedAt", "")),
         "summary": str(snapshot.get("sceneGraphSummary") or scene.get("summary") or ""),
-        "objects": [dict(item) for item in _dict_list(scene.get("objects"))],
-        "relationships": [dict(item) for item in _dict_list(scene.get("relationships"))],
+        "objects": objects,
+        "relationships": relationships,
         "environment": {"source": "realtime_vision_simulator"},
         "imageUrl": "",
         "metadata": dict(scene.get("metadata") if isinstance(scene.get("metadata"), Mapping) else {}),
@@ -318,6 +323,25 @@ def to_eiprotocol_scene_content(snapshot: Mapping[str, Any]) -> dict[str, Any]:
         "stableTarget": dict(scene.get("stableTarget") if isinstance(scene.get("stableTarget"), Mapping) else {}),
         "eventSummary": str(snapshot.get("eventSummary") or scene.get("eventSummary") or ""),
     }
+    for key, value in (
+        ("clipLabels", _first_non_empty(scene.get("clipLabels"), _aggregate_items(objects, "clipLabels"))),
+        ("semanticLabels", _first_non_empty(scene.get("semanticLabels"), _aggregate_items(objects, "semanticLabels"))),
+        ("depth", _first_non_empty(scene.get("depth"), _first_mapping_from_items(objects, "depth"))),
+        ("distance", _first_non_empty(scene.get("distance"), _first_mapping_from_items(objects, "distance"))),
+        (
+            "trackingDiagnostics",
+            _first_non_empty(scene.get("trackingDiagnostics"), _first_mapping_from_items(objects, "trackingDiagnostics")),
+        ),
+    ):
+        if value:
+            content[key] = value
+    if objects:
+        content["sceneGraph"] = {
+            "nodes": [{"id": item.get("trackId"), "label": item.get("label")} for item in objects],
+            "edges": relationships,
+        }
+        content["sceneGraphProvenance"] = {"builder": "realtime_vision_simulator"}
+    return content
 
 
 def to_eiprotocol_event_contents(snapshot: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -333,6 +357,17 @@ def to_eiprotocol_event_contents(snapshot: Mapping[str, Any]) -> list[dict[str, 
                 "sceneId": str(event.get("sceneId", "")),
                 "subject": dict(event.get("subject") if isinstance(event.get("subject"), Mapping) else {}),
                 "confidence": event.get("confidence"),
+                "pose": dict(event.get("pose") if isinstance(event.get("pose"), Mapping) else {}),
+                "clipLabels": [dict(item) for item in _dict_list(event.get("clipLabels"))],
+                "semanticLabels": [dict(item) for item in _dict_list(event.get("semanticLabels"))],
+                "depth": dict(event.get("depth") if isinstance(event.get("depth"), Mapping) else {}),
+                "distance": dict(event.get("distance") if isinstance(event.get("distance"), Mapping) else {}),
+                "trackingDiagnostics": dict(
+                    event.get("trackingDiagnostics") if isinstance(event.get("trackingDiagnostics"), Mapping) else {}
+                ),
+                "sceneGraphProvenance": dict(
+                    event.get("sceneGraphProvenance") if isinstance(event.get("sceneGraphProvenance"), Mapping) else {}
+                ),
                 "details": dict(event.get("details") if isinstance(event.get("details"), Mapping) else {}),
                 "metadata": dict(event.get("metadata") if isinstance(event.get("metadata"), Mapping) else {}),
             }
@@ -342,20 +377,65 @@ def to_eiprotocol_event_contents(snapshot: Mapping[str, Any]) -> list[dict[str, 
 
 def _normalize_detection(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     label = str(raw.get("label") or raw.get("name") or raw.get("class") or "").strip()
-    bbox = _normalize_bbox(raw.get("bbox"))
+    bbox = _normalize_bbox(
+        raw.get("bbox"),
+        width=_raw_value(raw, "width", "frame_width", "image_width"),
+        height=_raw_value(raw, "height", "frame_height", "image_height"),
+        format_hint=_bbox_format(raw),
+    )
     if not label or bbox is None:
         return None
     return {
         "label": label,
         "bbox": bbox,
         "confidence": _coerce_float(raw.get("confidence", raw.get("score", 0.0))),
+        "extras": _detection_extras(raw),
     }
 
 
-def _normalize_bbox(raw: Any) -> dict[str, float] | None:
+def _normalize_bbox(raw: Any, *, width: Any = None, height: Any = None, format_hint: str = "") -> dict[str, float] | None:
+    if isinstance(raw, (list, tuple)) and len(raw) == 4:
+        try:
+            x_min, y_min, x_max, y_max = _sequence_bbox_values(raw, format_hint=format_hint)
+        except (TypeError, ValueError):
+            return None
+        frame_width = _positive_float(width)
+        frame_height = _positive_float(height)
+        if frame_width and max(abs(x_min), abs(x_max)) > 1.0:
+            x_min /= frame_width
+            x_max /= frame_width
+        if frame_height and max(abs(y_min), abs(y_max)) > 1.0:
+            y_min /= frame_height
+            y_max /= frame_height
+        if x_max < x_min:
+            x_min, x_max = x_max, x_min
+        if y_max < y_min:
+            y_min, y_max = y_max, y_min
+        return {
+            "x_min": round(_clip01(x_min), 4),
+            "y_min": round(_clip01(y_min), 4),
+            "x_max": round(_clip01(x_max), 4),
+            "y_max": round(_clip01(y_max), 4),
+        }
     if not isinstance(raw, Mapping):
         return None
     try:
+        if "x" in raw and "y" in raw and ("w" in raw or "width" in raw) and ("h" in raw or "height" in raw):
+            x_min = _clip01(float(raw.get("x", 0.0)))
+            y_min = _clip01(float(raw.get("y", 0.0)))
+            x_max = _clip01(x_min + float(raw.get("w", raw.get("width", 0.0))))
+            y_max = _clip01(y_min + float(raw.get("h", raw.get("height", 0.0))))
+            return {"x_min": round(x_min, 4), "y_min": round(y_min, 4), "x_max": round(x_max, 4), "y_max": round(y_max, 4)}
+        if "x1" in raw and "y1" in raw and "x2" in raw and "y2" in raw:
+            x_min = _clip01(float(raw.get("x1", 0.0)))
+            y_min = _clip01(float(raw.get("y1", 0.0)))
+            x_max = _clip01(float(raw.get("x2", 0.0)))
+            y_max = _clip01(float(raw.get("y2", 0.0)))
+            if x_max < x_min:
+                x_min, x_max = x_max, x_min
+            if y_max < y_min:
+                y_min, y_max = y_max, y_min
+            return {"x_min": round(x_min, 4), "y_min": round(y_min, 4), "x_max": round(x_max, 4), "y_max": round(y_max, 4)}
         x_min = _clip01(float(raw.get("x_min", raw.get("xmin", raw.get("left", 0.0)))))
         y_min = _clip01(float(raw.get("y_min", raw.get("ymin", raw.get("top", 0.0)))))
         x_max = _clip01(float(raw.get("x_max", raw.get("xmax", raw.get("right", 0.0)))))
@@ -367,6 +447,34 @@ def _normalize_bbox(raw: Any) -> dict[str, float] | None:
     if y_max < y_min:
         y_min, y_max = y_max, y_min
     return {"x_min": x_min, "y_min": y_min, "x_max": x_max, "y_max": y_max}
+
+
+def _sequence_bbox_values(raw: list[Any] | tuple[Any, ...], *, format_hint: str = "") -> tuple[float, float, float, float]:
+    x_min = float(raw[0])
+    y_min = float(raw[1])
+    third = float(raw[2])
+    fourth = float(raw[3])
+    if format_hint == "xyxy":
+        return (x_min, y_min, third, fourth)
+    if format_hint == "xywh":
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if max(abs(x_min), abs(y_min), abs(third), abs(fourth)) <= 1.0:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    if third <= x_min or fourth <= y_min:
+        return (x_min, y_min, x_min + third, y_min + fourth)
+    return (x_min, y_min, third, fourth)
+
+
+def _bbox_format(raw: Mapping[str, Any]) -> str:
+    for key in ("bboxFormat", "bbox_format", "boxFormat", "box_format", "format"):
+        value = raw.get(key)
+        if value is not None:
+            normalized = str(value).strip().lower().replace("-", "").replace("_", "")
+            if normalized in {"xyxy", "x1y1x2y2"}:
+                return "xyxy"
+            if normalized in {"xywh", "ltwh"}:
+                return "xywh"
+    return ""
 
 
 def _event(
@@ -391,7 +499,7 @@ def _event(
     }
     if area_delta:
         details["areaDelta"] = round(float(area_delta), 4)
-    return {
+    payload = {
         "eventId": f"{scene_id}:{event_type}:{track.track_id}" if scene_id else "",
         "eventType": event_type,
         "observedAt": observed_at,
@@ -401,11 +509,18 @@ def _event(
         "details": details,
         "metadata": {"frameId": frame_id},
     }
+    for key in ("pose", "clipLabels", "semanticLabels", "depth", "distance", "trackingDiagnostics"):
+        value = track.extras.get(key)
+        if value:
+            payload[key] = value
+    if track.extras:
+        payload["sceneGraphProvenance"] = {"builder": "realtime_vision_simulator"}
+    return payload
 
 
 def _track_object(track: _Track) -> dict[str, Any]:
     center = _center(track.bbox)
-    return {
+    payload = {
         "trackId": track.track_id,
         "label": track.label,
         "confidence": round(float(track.confidence), 3),
@@ -416,6 +531,8 @@ def _track_object(track: _Track) -> dict[str, Any]:
         "temporalState": track.temporal_state,
         "stationaryFrames": track.stationary_frames,
     }
+    payload.update({key: value for key, value in track.extras.items() if value})
+    return payload
 
 
 def _relationships(objects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -515,6 +632,90 @@ def _dict_list(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         return []
     return [dict(item) for item in value if isinstance(item, Mapping)]
+
+
+def _detection_extras(raw: Mapping[str, Any]) -> dict[str, Any]:
+    extras: dict[str, Any] = {}
+    source_track_id = _source_track_id(raw)
+    if source_track_id:
+        extras["sourceTrackId"] = source_track_id
+    for source_key, target_key in (
+        ("pose", "pose"),
+        ("clipLabels", "clipLabels"),
+        ("clip_labels", "clipLabels"),
+        ("semanticLabels", "semanticLabels"),
+        ("semantic_labels", "semanticLabels"),
+        ("depth", "depth"),
+        ("distance", "distance"),
+        ("trackingDiagnostics", "trackingDiagnostics"),
+        ("tracking_diagnostics", "trackingDiagnostics"),
+    ):
+        value = _raw_value(raw, source_key)
+        if value:
+            extras[target_key] = value
+    return extras
+
+
+def _source_track_id(raw: Mapping[str, Any]) -> str:
+    for key in ("trackId", "track_id", "id", "stable_id"):
+        value = raw.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def _aggregate_items(items: list[dict[str, Any]], key: str) -> list[dict[str, Any]]:
+    aggregated: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        raw = item.get(key)
+        if not isinstance(raw, list):
+            continue
+        for entry in raw:
+            if not isinstance(entry, Mapping):
+                continue
+            payload = dict(entry)
+            label = str(payload.get("label") or payload.get("name") or payload)
+            if label in seen:
+                continue
+            seen.add(label)
+            aggregated.append(payload)
+    return aggregated
+
+
+def _first_mapping_from_items(items: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    for item in items:
+        value = item.get(key)
+        if isinstance(value, Mapping):
+            return dict(value)
+    return {}
+
+
+def _raw_value(raw: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw and raw[key] not in (None, ""):
+            return raw[key]
+    attributes = raw.get("attributes")
+    if isinstance(attributes, Mapping):
+        for key in keys:
+            if key in attributes and attributes[key] not in (None, ""):
+                return attributes[key]
+    return None
+
+
+def _positive_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
 
 
 def _scene_id(frame_id: str, observed_at: str, objects: list[dict[str, Any]], relationships: list[dict[str, Any]]) -> str:
