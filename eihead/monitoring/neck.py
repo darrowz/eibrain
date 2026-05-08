@@ -111,6 +111,16 @@ def _from_snapshot(app: Any, *, timestamp: float) -> JsonObject | None:
                 timestamp=timestamp,
                 source=f"snapshot.body_runtime.{key}",
             )
+
+    organs = _coerce_mapping(body_runtime.get("organs"))
+    neck_organ = _coerce_mapping(organs.get("neck")) if organs is not None else None
+    body_neck = _neck_data_from_body_runtime_organ(neck_organ)
+    if body_neck is not None:
+        return _payload_from_neck_data(
+            body_neck,
+            timestamp=timestamp,
+            source="snapshot.body_runtime.organs.neck",
+        )
     return None
 
 
@@ -253,6 +263,76 @@ def _payload_from_plan(
     return payload
 
 
+def _neck_data_from_body_runtime_organ(organ: Mapping[str, Any] | None) -> JsonObject | None:
+    if organ is None:
+        return None
+
+    subfunctions = _coerce_mapping(organ.get("subfunctions")) or {}
+    motor = _coerce_mapping(subfunctions.get("motor")) or {}
+    tracking = _coerce_mapping(subfunctions.get("tracking")) or {}
+    motor_details = _coerce_mapping(motor.get("details")) or {}
+    tracking_details = _coerce_mapping(tracking.get("details")) or {}
+    neck_control = _coerce_mapping(tracking_details.get("neck_control"))
+
+    if neck_control is None and not motor and not tracking:
+        return None
+
+    status = _string_or_default(
+        organ.get("health")
+        or tracking_details.get("status")
+        or tracking.get("health")
+        or motor_details.get("status")
+        or motor.get("health"),
+        "unknown",
+    )
+    pan: JsonObject = {}
+    if neck_control is not None:
+        pan = {
+            "current_angle": _first_present(neck_control, keys=("last_angle", "current_angle", "angle")),
+            "target_angle": _first_present(
+                neck_control,
+                keys=("desired_angle", "target_angle", "last_commanded_angle"),
+            ),
+            "moving": _string_or_default(neck_control.get("state"), "") not in {"", "idle", "stable"},
+            "suppression_reason": _string_or_default(
+                _first_present(
+                    neck_control,
+                    keys=("last_suppression_reason", "suppression_reason", "reason"),
+                ),
+                "none",
+            ),
+            "state": neck_control.get("state"),
+        }
+
+    motor_status = _string_or_default(
+        motor_details.get("status") or motor.get("health") or organ.get("health"),
+        "unknown",
+    ).strip().lower()
+    motor_device_details = _coerce_mapping(motor_details.get("details")) or {}
+    servo: JsonObject = {
+        "status": motor_status,
+        "available": motor_status in {"ok", "healthy", "ready", "wired", "online"},
+        "reason": _string_or_default(motor_details.get("reason"), ""),
+    }
+    for key in ("device", "device_exists"):
+        if key in motor_device_details:
+            servo[key] = motor_device_details.get(key)
+
+    return {
+        "status": status,
+        "pan": pan,
+        "servo": servo,
+        "axis_support": {
+            "pan": {"supported": True, "status": "supported"},
+            "tilt": {
+                "supported": False,
+                "status": "unsupported",
+                "reason": "tilt_not_supported",
+            },
+        },
+    }
+
+
 def _not_wired_payload(timestamp: float) -> JsonObject:
     axis_support = _default_axis_support(native_data=False)
     return _base_payload(
@@ -336,6 +416,10 @@ def _status_for_neck_data(
     requested = requested.strip().lower()
     if requested in {"not_wired", "unknown", "unsupported", "invalid", "degraded", "suppressed"}:
         return requested
+    if requested in {"wired", "healthy", "ready", "tracking_ready", "online"} and (
+        has_angles or servo_status in {"ok", "healthy", "ready", "wired", "online"}
+    ):
+        return "wired"
     if servo_status in {"unavailable", "error", "invalid", "unsupported"}:
         return "degraded"
     if suppressed is True:
@@ -460,7 +544,7 @@ def _normalize_servo(value: Mapping[str, Any] | None) -> JsonObject:
     status = _string_or_default(value.get("status"), "unknown").strip().lower() or "unknown"
     available = _optional_bool(value.get("available"))
     if available is None:
-        if status in {"ok", "suppressed", "planned", "accepted"}:
+        if status in {"ok", "healthy", "ready", "wired", "online", "suppressed", "planned", "accepted"}:
             available = True
         elif status in {"unavailable", "error", "invalid", "unsupported"}:
             available = False

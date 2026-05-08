@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 import html
 import json
+import os
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -182,13 +183,16 @@ def create_handler(
         def _route_get(self) -> None:
             path = _normalize_path(self.path)
             if path == "/":
+                if _env_truthy("EIHEAD_MONITOR_LIGHTWEIGHT_ROOT"):
+                    self._write_html(HTTPStatus.OK, _render_lightweight_index(now()))
+                    return
                 self._write_html(HTTPStatus.OK, _render_index(runtime_app, now()))
                 return
-            if path == "/health":
+            if path in {"/health", "/healthz"}:
                 status_code, payload = _health_payload(runtime_app, now())
                 self._write_json(status_code, payload)
                 return
-            if path == "/api/status":
+            if path in {"/api/status", "/status.json"}:
                 self._write_json(HTTPStatus.OK, _call_json_object(runtime_app, "status"))
                 return
             if path == "/api/capabilities":
@@ -828,6 +832,83 @@ def _render_index(app: Any, timestamp: float) -> str:
 </body>
 </html>
 """
+
+
+def _render_lightweight_index(timestamp: float) -> str:
+    generated_at = _display_value(timestamp)
+    return f"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eihead native monitor</title>
+  <style>
+    body {{ margin: 0; font: 15px/1.5 sans-serif; background: #f7f3ea; color: #17201a; }}
+    main {{ max-width: 980px; margin: 0 auto; padding: 28px 20px 42px; }}
+    header {{ border-bottom: 3px solid #5f8f7a; margin-bottom: 20px; }}
+    h1 {{ margin: 0 0 6px; font-size: 32px; }}
+    .grid {{ display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }}
+    .card {{ background: #fffaf0; border: 1px solid #d7cbb3; border-radius: 14px; padding: 16px; }}
+    .label {{ color: #5c6b61; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }}
+    .metric {{ display: block; margin-top: 4px; font-size: 20px; font-weight: 700; }}
+    pre {{ overflow: auto; padding: 14px; background: #10231a; color: #d9f3df; border-radius: 10px; }}
+    a {{ color: #315f4c; }}
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>eihead native monitor</h1>
+      <p>lightweight shell · generated {generated_at} · live cards load from JSON APIs</p>
+    </header>
+    <section class="grid">
+      <div class="card"><div class="label">Health</div><span class="metric" id="health">loading</span><a href="/health">/health</a></div>
+      <div class="card"><div class="label">Vision</div><span class="metric" id="vision">loading</span><a href="/api/vision/realtime">/api/vision/realtime</a></div>
+      <div class="card"><div class="label">Neck</div><span class="metric" id="neck">loading</span><a href="/api/neck/status">/api/neck/status</a></div>
+      <div class="card"><div class="label">Voice</div><span class="metric" id="voice">loading</span><a href="/api/voice/realtime">/api/voice/realtime</a></div>
+      <div class="card"><div class="label">Status JSON</div><span class="metric">ready</span><a href="/status.json">/status.json</a></div>
+    </section>
+    <h2>Latest JSON</h2>
+    <pre id="json">loading...</pre>
+  </main>
+  <script>
+    const timeoutSignal = (ms) => {{
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(), ms);
+      return controller.signal;
+    }};
+    async function loadJson(path) {{
+      const response = await fetch(path, {{ cache: 'no-store', signal: timeoutSignal(3500) }});
+      return await response.json();
+    }}
+    function setText(id, text) {{
+      document.getElementById(id).textContent = text || 'unknown';
+    }}
+    Promise.allSettled([
+      loadJson('/health'),
+      loadJson('/api/vision/realtime'),
+      loadJson('/api/neck/status'),
+      loadJson('/api/voice/realtime'),
+    ]).then((results) => {{
+      const values = results.map((item) => item.status === 'fulfilled' ? item.value : {{ status: 'timeout' }});
+      const health = values[0];
+      const vision = values[1];
+      const neck = values[2];
+      const voice = values[3];
+      setText('health', `${{health.status || 'unknown'}}`);
+      setText('vision', `${{vision.status || 'unknown'}} · ${{vision.fps || 0}} fps`);
+      setText('neck', `${{neck.status || 'unknown'}} · ${{neck.current_angle ?? 'n/a'}} -> ${{neck.target_angle ?? 'n/a'}}`);
+      setText('voice', `${{voice.status || 'unknown'}}`);
+      document.getElementById('json').textContent = JSON.stringify({{ health, vision, neck, voice }}, null, 2);
+    }});
+  </script>
+</body>
+</html>
+"""
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _safe_payload(factory: Callable[[], JsonObject]) -> JsonObject:

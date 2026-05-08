@@ -134,6 +134,42 @@ def test_injected_neck_adapter_can_be_reported_as_wired_by_probe(tmp_path: Path)
     }
 
 
+def test_env_can_report_neck_wired_before_adapter_injection() -> None:
+    statuses = build_native_provider_statuses(
+        config=None,
+        environ={
+            "EIHEAD_NATIVE_NECK_STATUS": "wired",
+            "EIHEAD_NATIVE_NECK_PROVIDER": "raspbot-i2c",
+            "EIHEAD_NATIVE_NECK_REASON": "verified_i2c_bus",
+        },
+    )
+
+    assert statuses["neck"] == {
+        "status": "wired",
+        "provider": "raspbot-i2c",
+        "reason": "verified_i2c_bus",
+    }
+
+
+def test_normalize_keeps_explicit_neck_status_without_adapter() -> None:
+    runtime = HeadRuntimeApp(
+        body_runtime=FakeBodyRuntime(),
+        native_providers={
+            "neck": {
+                "status": "wired",
+                "provider": "raspbot-i2c",
+                "reason": "verified_i2c_bus",
+            }
+        },
+    )
+
+    assert runtime.status()["native_providers"]["neck"] == {
+        "status": "wired",
+        "provider": "raspbot-i2c",
+        "reason": "verified_i2c_bus",
+    }
+
+
 def test_direct_runtime_construction_marks_uninjected_neck_unavailable() -> None:
     runtime = HeadRuntimeApp(body_runtime=FakeBodyRuntime(), config_path="config/test.yaml")
 

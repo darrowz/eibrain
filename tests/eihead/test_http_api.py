@@ -167,12 +167,18 @@ def test_status_capabilities_and_health_return_json_objects() -> None:
 
     with running_server(app) as (base_url, _server, _thread):
         status_code, headers, status_payload = read_json(f"{base_url}/status?source=test")
+        status_json_code, _, status_json_payload = read_json(f"{base_url}/status.json")
+        api_status_code, _, api_status_payload = read_json(f"{base_url}/api/status")
         _, _, capabilities_payload = read_json(f"{base_url}/capabilities")
         health_code, _, health_payload = read_json(f"{base_url}/health")
 
     assert status_code == 200
+    assert status_json_code == 200
+    assert api_status_code == 200
     assert headers["Content-Type"].startswith("application/json")
     assert status_payload["runtime"] == "eihead"
+    assert status_json_payload["runtime"] == "eihead"
+    assert api_status_payload["runtime"] == "eihead"
     assert capabilities_payload["capabilities"]["camera"]["status"] == "online"
     assert health_code == 200
     assert health_payload == {"ok": True, "status": "ok", "node_id": "honjia-test"}

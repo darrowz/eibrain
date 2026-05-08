@@ -229,7 +229,7 @@ def test_snapshot_and_verify_report_degraded_when_native_provider_is_unknown() -
     assert verify_payload["checks"]["native_provider_boundaries"] == "degraded"
 
 
-def test_verify_reports_degraded_while_legacy_body_delegate_is_still_active() -> None:
+def test_verify_reports_ok_when_only_legacy_body_delegate_is_active() -> None:
     runtime = HeadRuntimeApp(
         body_runtime=FakeBodyRuntime(),
         config_path="config/test.yaml",
@@ -239,10 +239,11 @@ def test_verify_reports_degraded_while_legacy_body_delegate_is_still_active() ->
 
     verify_payload = runtime.verify()
 
-    assert verify_payload["ok"] is False
-    assert verify_payload["status"] == "degraded"
-    assert verify_payload["checks"]["body_runtime_delegate"] == "degraded"
+    assert verify_payload["ok"] is True
+    assert verify_payload["status"] == "ok"
+    assert verify_payload["checks"]["body_runtime_delegate"] == "ok"
     assert verify_payload["check_details"]["body_runtime_delegate"]["reason"] == "legacy_body_runtime_delegate_active"
+    assert verify_payload["check_details"]["body_runtime_delegate"]["compatibility_mode"] is True
 
 
 def test_snapshot_and_verify_block_when_body_snapshot_raises() -> None:

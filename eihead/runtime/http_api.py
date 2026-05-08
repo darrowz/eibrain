@@ -151,7 +151,7 @@ def create_handler(
             if method == "GET":
                 if path == "/health":
                     return self._handle_health()
-                if path == "/status":
+                if path in {"/status", "/status.json", "/api/status"}:
                     return HTTPStatus.OK, self._call_mapping("status")
                 if path == "/capabilities":
                     return HTTPStatus.OK, self._call_mapping("capabilities")
@@ -173,6 +173,8 @@ def create_handler(
                 if path in {
                     "/health",
                     "/status",
+                    "/status.json",
+                    "/api/status",
                     "/capabilities",
                     "/api/vision/realtime",
                     "/api/eye/realtime",

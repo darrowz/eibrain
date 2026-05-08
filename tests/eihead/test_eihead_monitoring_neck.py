@@ -116,6 +116,47 @@ class DirectTiltPlanApp(BaseMonitorApp):
     }
 
 
+class BodyRuntimeOrganNeckApp(BaseMonitorApp):
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "runtime": "eihead",
+            "node_id": "honjia-test",
+            "body_runtime": {
+                "organs": {
+                    "neck": {
+                        "organ": "neck",
+                        "health": "healthy",
+                        "subfunctions": {
+                            "motor": {
+                                "health": "healthy",
+                                "details": {
+                                    "status": "healthy",
+                                    "details": {
+                                        "device": "/dev/i2c-1",
+                                        "device_exists": True,
+                                    },
+                                },
+                            },
+                            "tracking": {
+                                "health": "healthy",
+                                "details": {
+                                    "status": "tracking_ready",
+                                    "neck_control": {
+                                        "state": "idle",
+                                        "last_angle": 90,
+                                        "desired_angle": 92,
+                                        "last_commanded_angle": None,
+                                        "last_suppression_reason": "none",
+                                    },
+                                },
+                            },
+                        },
+                    }
+                }
+            },
+        }
+
+
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
@@ -198,6 +239,31 @@ def test_neck_api_reports_tilt_unsupported_from_direct_neck_plan() -> None:
     assert payload["tilt"]["reason"] == "tilt_not_supported"
 
 
+def test_neck_api_extracts_body_runtime_organ_health_and_angles() -> None:
+    with running_server(BodyRuntimeOrganNeckApp(), clock=lambda: 1003.5) as (
+        base_url,
+        _server,
+        _thread,
+    ):
+        status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
+
+    assert status_code == 200
+    assert payload["source"] == "snapshot.body_runtime.organs.neck"
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["not_wired"] is False
+    assert payload["current_angle"] == 90
+    assert payload["target_angle"] == 92
+    assert payload["will_move"] is False
+    assert payload["suppressed"] is False
+    assert payload["suppression_reason"] == "none"
+    assert payload["servo_status"] == "healthy"
+    assert payload["servo"]["available"] is True
+    assert payload["servo"]["device"] == "/dev/i2c-1"
+    assert payload["axis_support"]["pan"]["supported"] is True
+    assert payload["axis_support"]["tilt"]["reason"] == "tilt_not_supported"
+
+
 def test_neck_api_reports_not_wired_without_native_neck_data() -> None:
     with running_server(BaseMonitorApp(), clock=lambda: 1004.0) as (base_url, _server, _thread):
         status_code, payload = read_json_or_error(f"{base_url}/api/neck/status")
@@ -237,6 +303,29 @@ def test_neck_html_renders_angles_suppression_servo_and_axis_support() -> None:
     assert "deadband" in body
     assert "suppressed" in body
     assert "tilt_not_supported" in body
+
+
+def test_monitor_exposes_status_json_and_healthz_aliases() -> None:
+    with running_server(BaseMonitorApp(), clock=lambda: 1006.0) as (base_url, _server, _thread):
+        status_code, status_payload = read_json_or_error(f"{base_url}/status.json")
+        health_code, health_payload = read_json_or_error(f"{base_url}/healthz")
+
+    assert status_code == 200
+    assert status_payload["runtime"] == "eihead"
+    assert health_code == 200
+    assert health_payload["status"] == "ok"
+
+
+def test_monitor_lightweight_root_avoids_synchronous_diagnostics(monkeypatch) -> None:
+    monkeypatch.setenv("EIHEAD_MONITOR_LIGHTWEIGHT_ROOT", "1")
+    with running_server(BaseMonitorApp(), clock=lambda: 1007.0) as (base_url, _server, _thread):
+        status_code, headers, body = read_text(f"{base_url}/")
+
+    assert status_code == 200
+    assert headers["Content-Type"].startswith("text/html")
+    assert "lightweight shell" in body
+    assert "/api/vision/realtime" in body
+    assert "Promise.allSettled" in body
 
 
 def _pan_plan(

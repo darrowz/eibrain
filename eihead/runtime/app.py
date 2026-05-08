@@ -46,7 +46,16 @@ APP_REALTIME_VISION_ATTRS = (
     "latest_vision_realtime",
     "latest_realtime_vision",
 )
-REALTIME_VISION_CONTAINER_KEYS = ("eye", "vision", "realtime_vision", "body_runtime")
+REALTIME_VISION_CONTAINER_KEYS = (
+    "eye",
+    "vision",
+    "realtime_vision",
+    "body_runtime",
+    "subfunctions",
+    "camera",
+    "detection",
+    "identity",
+)
 CAPABILITY_NATIVE_PROVIDER_MAP = {
     "camera": "eye",
     "hailo": "eye",
@@ -876,10 +885,11 @@ def _runtime_check_summary(
 def _delegate_check(delegate_name: str) -> tuple[str, dict[str, Any]]:
     if delegate_name == DEFAULT_BODY_RUNTIME_DELEGATE:
         return (
-            "degraded",
+            "ok",
             {
                 "delegate": delegate_name,
                 "reason": "legacy_body_runtime_delegate_active",
+                "compatibility_mode": True,
             },
         )
     if not delegate_name:
@@ -951,6 +961,10 @@ def _mapping_realtime_candidates(payload: Any) -> list[Any]:
         return []
     candidates: list[Any] = []
 
+    live_candidate = _live_vision_state_candidate(payload)
+    if live_candidate is not None:
+        candidates.append(live_candidate)
+
     simulator_candidate = _simulator_vision_state_candidate(payload.get("vision_state"))
     if simulator_candidate is not None:
         candidates.append(simulator_candidate)
@@ -982,6 +996,85 @@ def _mapping_realtime_candidates(payload: Any) -> list[Any]:
                 candidates.append(organ_payload)
                 candidates.extend(_mapping_realtime_candidates(organ_payload))
     return candidates
+
+
+def _live_vision_state_candidate(payload: Any) -> dict[str, Any] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    source = str(payload.get("source") or "").strip().lower()
+    driver = str(payload.get("driver") or "").strip().lower()
+    backend = str(payload.get("backend") or "").strip()
+    has_vision_fields = any(
+        key in payload
+        for key in (
+            "frame_captured_at_ts",
+            "frame_updated_at_ts",
+            "state_age_s",
+            "detections",
+            "objects",
+            "scene",
+            "events",
+        )
+    )
+    if not has_vision_fields:
+        return None
+    if source not in {"vision_state", "realtime_vision", "eye.realtime"} and driver != "vision_state" and not backend:
+        return None
+
+    raw_status = _normalized_payload_text(payload.get("status"))
+    if raw_status in {"not_wired", "offline", "missing", "placeholder", "unavailable", "sleeping"}:
+        return None
+    status = "tracking" if raw_status in {"", "ok", "live", "ready", "running"} else raw_status
+    captured_at = (
+        payload.get("frame_captured_at_ts")
+        or payload.get("state_updated_at_ts")
+        or payload.get("frame_updated_at_ts")
+        or payload.get("captured_at_ts")
+        or payload.get("timestamp")
+    )
+    frame_id = str(payload.get("frame_id") or "")
+    if not frame_id and captured_at not in (None, ""):
+        captured_at_number = _optional_float(captured_at)
+        if captured_at_number is not None:
+            frame_id = f"vision-state-{int(captured_at_number * 1000)}"
+    candidate = {
+        str(key): value
+        for key, value in payload.items()
+        if str(key)
+        not in {
+            "kind",
+            "mode",
+            "primary_mode",
+            "schema",
+            "source",
+            "driver",
+            "status",
+        }
+    }
+    if captured_at not in (None, ""):
+        candidate["captured_at_ts"] = captured_at
+        candidate["last_frame_captured_at_ts"] = captured_at
+    if payload.get("state_age_s") not in (None, ""):
+        candidate["last_frame_age_s"] = payload.get("state_age_s")
+    if frame_id:
+        candidate["frame_id"] = frame_id
+    if payload.get("frame_path"):
+        candidate["frame"] = {
+            "path": payload.get("frame_path"),
+            "captured_at_ts": captured_at,
+        }
+    return {
+        "schema": "eihead.eye.realtime_status.v1",
+        "kind": "realtime_vision_observation",
+        "mode": "realtime_stream",
+        "primary_mode": True,
+        "source": "vision_state_live",
+        "status": status,
+        "stream_ready": True,
+        "not_wired": False,
+        "backend": backend or source or "vision_state",
+        **candidate,
+    }
 
 
 def _simulator_vision_state_candidate(payload: Any) -> dict[str, Any] | None:

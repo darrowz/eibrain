@@ -152,6 +152,35 @@ class ReplaySimulatorVisionStateRuntime(FakeBodyRuntime):
         }
 
 
+class LiveVisionStateRuntime(FakeBodyRuntime):
+    def snapshot(self) -> dict[str, object]:
+        captured_at = time.time()
+        return {
+            "node_id": "honjia-test",
+            "organs": {
+                "eye": {
+                    "subfunctions": {
+                        "camera": {
+                            "details": {
+                                "driver": "vision_state",
+                                "source": "vision_state",
+                                "status": "live",
+                                "backend": "gstreamer_hailo",
+                                "frame_path": "/tmp/eibrain-vision/latest.jpg",
+                                "frame_captured_at_ts": captured_at,
+                                "state_age_s": 0.2,
+                                "fps": 10.0,
+                                "detections": [{"label": "person", "score": 0.91}],
+                                "scene": {"summary": "person in frame"},
+                                "events": [{"event_type": "track_started"}],
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+
 class StaticVisionObservationRuntime(FakeBodyRuntime):
     def vision_realtime(self) -> VisionObservation:
         return VisionObservation(ts=2.0, source="eihead.honjia.eye.compat", frame_id="still-1")
@@ -559,6 +588,37 @@ def test_head_runtime_promotes_replay_simulator_vision_state_to_realtime_monitor
     assert payload["frame_id"] == "sim-frame-7"
     assert payload["tracks"][0]["track_id"] == "person-1"
     assert payload["events"][0]["event_type"] == "track_started"
+
+
+def test_head_runtime_promotes_live_vision_state_to_realtime_monitoring() -> None:
+    runtime = HeadRuntimeApp(body_runtime=LiveVisionStateRuntime(), config_path="config/test.yaml")
+
+    payload = runtime.vision_realtime()
+
+    assert isinstance(payload, dict)
+    assert payload["kind"] == "realtime_vision_observation"
+    assert payload["mode"] == "realtime_stream"
+    assert payload["source"] == "vision_state_live"
+    assert payload["status"] == "tracking"
+    assert payload["stream_ready"] is True
+    assert payload["backend"] == "gstreamer_hailo"
+    assert payload["frame_id"].startswith("vision-state-")
+    assert payload["detections"] == [{"label": "person", "score": 0.91}]
+
+
+def test_head_runtime_http_realtime_endpoint_exposes_live_vision_state() -> None:
+    runtime = HeadRuntimeApp(body_runtime=LiveVisionStateRuntime(), config_path="config/test.yaml")
+
+    with _running_server(runtime, clock=time.time) as base_url:
+        status_code, payload = _read_json(f"{base_url}/api/vision/realtime")
+
+    assert status_code == 200
+    assert payload["status"] == "wired"
+    assert payload["wired"] is True
+    assert payload["backend"] == "gstreamer_hailo"
+    assert payload["fps"] == 10.0
+    assert payload["detections_summary"] == "person 0.91"
+    assert payload["source_freshness"]["state"] == "healthy"
 
 
 def test_head_runtime_http_realtime_endpoint_exposes_simulator_diagnostics() -> None:

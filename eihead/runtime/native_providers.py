@@ -57,16 +57,16 @@ def build_native_provider_statuses(
     statuses: dict[str, NativeProviderStatus] = {}
 
     for provider_name in NATIVE_PROVIDER_NAMES:
+        env_status = _status_from_env(provider_name, env)
+        if env_status is not None:
+            statuses[provider_name] = env_status
+            continue
+
         if provider_name == "neck" and neck_servo_adapter is None:
             statuses[provider_name] = NativeProviderStatus(
                 "unavailable",
                 reason="neck_servo_adapter_missing",
             )
-            continue
-
-        env_status = _status_from_env(provider_name, env)
-        if env_status is not None:
-            statuses[provider_name] = env_status
             continue
 
         probed_status = _status_from_probe(provider_name, config=config, environ=env, probe=probe)
@@ -87,13 +87,14 @@ def normalize_native_provider_statuses(
     normalized: dict[str, dict[str, Any]] = {}
     raw_statuses = statuses if isinstance(statuses, Mapping) else {}
     for provider_name in NATIVE_PROVIDER_NAMES:
-        if provider_name == "neck" and neck_servo_adapter is None:
+        raw_status = raw_statuses.get(provider_name)
+        if provider_name == "neck" and neck_servo_adapter is None and raw_status is None:
             normalized[provider_name] = NativeProviderStatus(
                 "unavailable",
                 reason="neck_servo_adapter_missing",
             ).to_dict()
             continue
-        normalized[provider_name] = _normalize_status(raw_statuses.get(provider_name)).to_dict()
+        normalized[provider_name] = _normalize_status(raw_status).to_dict()
     return normalized
 
 
