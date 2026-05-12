@@ -551,6 +551,46 @@ def test_body_runtime_ignores_non_preferred_visual_tracking_labels() -> None:
     assert runtime.visual_tracking_state["target"] is None
 
 
+def test_body_runtime_recenter_handles_empty_dispatch_outcomes() -> None:
+    from apps.body_runtime.app import BodyRuntimeApp
+    from eibrain.body.health.organ_health import OrganHealth, SubfunctionHealth
+
+    class _Runtime(BodyRuntimeApp):
+        def dispatch_actions(self, actions):
+            return []
+
+    runtime = _Runtime()
+
+    class _Eye:
+        name = "eye"
+
+        def supports_action(self, action) -> bool:
+            return False
+
+        def heartbeat(self):
+            return OrganHealth(
+                organ="eye",
+                health="healthy",
+                subfunctions={
+                    "detection": SubfunctionHealth(
+                        name="detection",
+                        health="healthy",
+                        details={"detections": [], "detection_count": 0, "top_detection": None},
+                    )
+                },
+            )
+
+    runtime.organs = [_Eye()]
+
+    outcome = runtime.track_visual_target_once(recenter_after_misses=1)
+
+    assert outcome is not None
+    assert outcome.status == "skipped"
+    assert outcome.details["reason"] == "recenter_dispatch_empty"
+    assert runtime.visual_tracking_state["status"] == "recentering"
+    assert runtime.visual_tracking_state["last_outcome_status"] == "skipped"
+
+
 def test_body_runtime_pause_visual_tracking_clears_stale_target_and_neck() -> None:
     from apps.body_runtime.app import BodyRuntimeApp
 

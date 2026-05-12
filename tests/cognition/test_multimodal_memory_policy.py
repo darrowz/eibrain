@@ -724,6 +724,40 @@ def test_write_proposal_evaluator_scores_buckets_conflicts_and_diagnostics() -> 
     }
 
 
+def test_write_proposal_evaluator_builds_conflict_ids_safely() -> None:
+    result = MultimodalMemoryPolicy().evaluate_write_proposals(
+        [
+            {
+                "id": "pref-confirmed",
+                "memory_type": "preference",
+                "subject": "user-1",
+                "key": "response.length",
+                "value": "short",
+                "user_confirmed": True,
+            }
+        ],
+        existing_memories=[
+            {
+                "id": 42,
+                "memory_type": "preference",
+                "subject": "user-1",
+                "key": "response.length",
+                "value": "long",
+            },
+            {
+                "memory_type": "preference",
+                "subject": "user-1",
+                "key": "response.length",
+                "value": "verbose",
+            },
+        ],
+    )
+
+    accepted = result["accepted"][0]
+    assert accepted["conflicts_with"] == ["42"]
+    assert accepted["supersedes"] == ["42"]
+
+
 def test_write_proposal_evaluator_blocks_persona_style_without_explicit_constraints() -> None:
     result = MultimodalMemoryPolicy().evaluate_write_proposals(
         [

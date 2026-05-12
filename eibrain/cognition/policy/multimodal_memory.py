@@ -599,9 +599,10 @@ class MultimodalMemoryPolicy:
 
             if conflicts:
                 conflict_count += len(conflicts)
-                assessed["conflicts_with"] = [str(item["id"]) for item in conflicts if item.get("id")]
+                conflict_ids = self._conflict_ids(conflicts)
+                assessed["conflicts_with"] = conflict_ids
                 if self._proposal_user_confirmed(assessed):
-                    supersedes = [str(item["id"]) for item in conflicts if item.get("id")]
+                    supersedes = conflict_ids
                     reason_codes.append("supersedes_confirmed_preference")
                 else:
                     requires_confirmation = True
@@ -1080,6 +1081,15 @@ class MultimodalMemoryPolicy:
             if existing_value and existing_value != value:
                 conflicts.append(memory)
         return conflicts
+
+    @staticmethod
+    def _conflict_ids(conflicts: list[dict[str, object]]) -> list[str]:
+        ids: list[str] = []
+        for item in conflicts:
+            conflict_id = item.get("id")
+            if conflict_id is not None:
+                ids.append(str(conflict_id))
+        return ids
 
     @staticmethod
     def _proposal_key(proposal: dict[str, object]) -> str:

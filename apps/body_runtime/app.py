@@ -32,6 +32,7 @@ from eibrain.infra.config import EIBrainConfig, load_config
 from eibrain.memory.visual_feedback import build_visual_feedback_record
 from eibrain.memory.visual_memory import VisualMemoryPolicy
 from eibrain.protocol.actions import Action, MoveHeadAction
+from eibrain.protocol.outcomes import ActionExecuted
 from eibrain.protocol.observations import AudioTranscriptFinal
 from eibrain.voice.readiness import build_voice_chain_readiness
 from apps.body_runtime.vision_soak import summarize_vision_soak
@@ -863,7 +864,7 @@ class BodyRuntimeApp:
             )
             self._visual_tracking_recentered_this_episode = True
             outcomes = self.dispatch_actions([action])
-            outcome = outcomes[0] if outcomes else None
+            outcome = outcomes[0] if outcomes else self._empty_action_outcome(action, reason="recenter_dispatch_empty")
             self._update_visual_tracking_state(
                 status="recentering",
                 target={"label": "recenter", "target_angle": self._neck_home_angle()},
@@ -1147,6 +1148,19 @@ class BodyRuntimeApp:
             details=profile,
         )
         return {"ok": True, "status": "registered", "identity": dict(profile)}
+
+    @staticmethod
+    def _empty_action_outcome(action: Action, *, reason: str) -> ActionExecuted:
+        return ActionExecuted(
+            ts=getattr(action, "ts", 0.0),
+            source="body_runtime.dispatch",
+            status="skipped",
+            session_id=str(getattr(action, "session_id", "") or ""),
+            actor_id=str(getattr(action, "actor_id", "") or ""),
+            target_id=str(getattr(action, "target_id", "") or ""),
+            action_kind=str(getattr(action, "kind", "") or ""),
+            details={"reason": reason},
+        )
 
     def dispatch_actions(self, actions: list[Action]) -> list:
         outcomes = []
