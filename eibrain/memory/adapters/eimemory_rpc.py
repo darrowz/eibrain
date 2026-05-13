@@ -746,10 +746,12 @@ class EIMemoryRPCAdapter:
                 continue
             record_id = str(record.get("record_id") or record.get("id") or "").strip()
             item_meta = dict(item_by_id.get(record_id, {}).get("meta", {})) if record_id else {}
-            scoring_meta = score_meta_from_recall_entry(scoring_by_id.get(record_id))
-            merged_meta = normalize_memory_metadata(
-                merge_memory_metadata(scoring_meta, item_meta, dict(record.get("meta", {})) if isinstance(record.get("meta"), dict) else {})
-            )
+            record_meta = dict(record.get("meta", {})) if isinstance(record.get("meta"), dict) else {}
+            upstream_meta = normalize_memory_metadata(merge_memory_metadata(item_meta, record_meta))
+            merged_meta = upstream_meta
+            if not _meta_has_memory_score(upstream_meta):
+                scoring_meta = score_meta_from_recall_entry(scoring_by_id.get(record_id))
+                merged_meta = normalize_memory_metadata(merge_memory_metadata(scoring_meta, item_meta, record_meta))
             payload = dict(record)
             if merged_meta:
                 payload["meta"] = merged_meta
@@ -764,8 +766,12 @@ class EIMemoryRPCAdapter:
             payload = dict(entry)
             compat_meta = score_meta_from_recall_entry(payload)
             if compat_meta:
-                payload["memory_score_v1"] = dict(compat_meta.get("scoring", {})).get("memory_score_v1", {})
-                payload["quality"] = compat_meta.get("quality", {})
+                score = dict(dict(compat_meta.get("scoring", {})).get("memory_score_v1", {}))
+                quality = dict(compat_meta.get("quality", {}))
+                if score and not isinstance(payload.get("memory_score_v1"), Mapping):
+                    payload["memory_score_v1"] = score
+                if quality and not isinstance(payload.get("quality"), Mapping):
+                    payload["quality"] = quality
             rows.append(payload)
         return rows
 
@@ -788,6 +794,14 @@ class EIMemoryRPCAdapter:
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         return headers
+
+
+def _meta_has_memory_score(meta: Mapping[str, object] | None) -> bool:
+    payload = dict(meta) if isinstance(meta, Mapping) else {}
+    scoring = payload.get("scoring")
+    if not isinstance(scoring, Mapping):
+        return False
+    return isinstance(scoring.get("memory_score_v1"), Mapping)
 
 
 class FakeEIMemoryRPCAdapter:

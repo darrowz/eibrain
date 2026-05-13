@@ -329,6 +329,117 @@ def test_eimemory_rpc_adapter_maps_scoring_contract_metadata_for_selected_record
     assert result.recall_diagnostics["scoring"][0]["memory_score_v1"]["tier"] == "core"
 
 
+def test_eimemory_rpc_adapter_preserves_upstream_memory_score_v1_on_recall(monkeypatch) -> None:
+    import json
+
+    from eibrain.infra.config import OpenClawConfig
+    from eibrain.memory.adapters.eimemory_rpc import EIMemoryRPCAdapter
+    from eibrain.memory.contracts import MemoryQuery
+
+    upstream_score = {
+        "schema_version": "memory_score.v1",
+        "final_score": 0.82,
+        "tier": "confirmed",
+        "components": {
+            "confidence": {
+                "name": "confidence",
+                "value": 0.93,
+                "weight": 0.4,
+                "evidence": {"source": "upstream.confidence"},
+            },
+            "salience": {
+                "name": "salience",
+                "value": 0.71,
+                "weight": 0.6,
+                "evidence": {"source": "upstream.salience"},
+            },
+        },
+        "labels": [" lifecycle_confirmed ", "Reuse_High"],
+        "provenance": {
+            "agent": "upstream.agent",
+            "activity": "memory.rank",
+            "source": "eimemory.recall",
+        },
+    }
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "ok": True,
+                    "result": {
+                        "items": [
+                            {
+                                "record_id": "mem_1",
+                                "title": "Reply Style",
+                                "summary": "Prefer concise spoken replies.",
+                                "meta": {
+                                    "scoring": {"memory_score_v1": upstream_score},
+                                },
+                            },
+                            {
+                                "record_id": "mem_2",
+                                "title": "Greeting Memory",
+                                "summary": "User greeted the robot.",
+                            },
+                        ],
+                        "rules": [],
+                        "explanation": {
+                            "selected_count": 2,
+                            "selected_records": [
+                                {"record_id": "mem_1", "title": "Reply Style", "source": "eibrain.preference"},
+                                {"record_id": "mem_2", "title": "Greeting Memory", "source": "eibrain.audio_dialogue"},
+                            ],
+                            "scoring": [
+                                {
+                                    "record_id": "mem_1",
+                                    "memory_score_v1": upstream_score,
+                                    "quality_score": 0.82,
+                                    "quality_tier": "core",
+                                    "final_score": 0.91,
+                                },
+                                {
+                                    "record_id": "mem_2",
+                                    "quality_score": 0.41,
+                                    "quality_tier": "candidate",
+                                    "final_score": 0.44,
+                                },
+                            ],
+                        },
+                    },
+                }
+            ).encode("utf-8")
+
+    monkeypatch.setattr(
+        "eibrain.memory.adapters.eimemory_rpc.request.urlopen",
+        lambda req, timeout=0: _Response(),
+    )
+
+    adapter = EIMemoryRPCAdapter(OpenClawConfig(provider="eimemory_rpc", endpoint="http://127.0.0.1:8091/"))
+    result = adapter.retrieve_context(MemoryQuery(query="reply style"))
+
+    selected = result.recall_diagnostics["selected_records"]
+    first_score = selected[0]["meta"]["scoring"]["memory_score_v1"]
+    second_score = selected[1]["meta"]["scoring"]["memory_score_v1"]
+    first_row = result.recall_diagnostics["scoring"][0]
+
+    assert first_score["tier"] == "confirmed"
+    assert first_score["components"]["confidence"]["value"] == 0.93
+    assert first_score["provenance"]["agent"] == "upstream.agent"
+    assert {"lifecycle.confirmed", "reuse.high"} <= set(first_score["labels"])
+    assert first_row["memory_score_v1"]["tier"] == "confirmed"
+    assert first_row["memory_score_v1"]["components"]["confidence"]["value"] == 0.93
+    assert first_row["memory_score_v1"]["provenance"]["agent"] == "upstream.agent"
+    assert second_score["tier"] == "candidate"
+    assert second_score["components"]["salience"]["value"] == 0.41
+
+
 def test_eimemory_rpc_adapter_posts_memory_ingest_for_episode(monkeypatch) -> None:
     import json
 

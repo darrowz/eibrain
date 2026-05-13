@@ -71,6 +71,17 @@ def score_meta_from_recall_entry(entry: Mapping[str, object] | None) -> dict[str
     payload = _mapping(entry)
     if not payload:
         return {}
+    direct_meta = merge_memory_metadata(
+        _mapping(payload.get("meta")),
+        _mapping(payload.get("scoring")),
+        {"memory_score_v1": _mapping(payload.get("memory_score_v1"))},
+        {"quality": _mapping(payload.get("quality"))},
+    )
+    if direct_meta:
+        normalized = normalize_memory_metadata(direct_meta)
+        scoring = _mapping(normalized.get("scoring"))
+        if _mapping(scoring.get("memory_score_v1")) or _mapping(normalized.get("quality")):
+            return normalized
     final_score = _clamp_float(payload.get("final_score"))
     quality_score = _clamp_float(payload.get("quality_score"))
     if final_score is None and quality_score is None:
