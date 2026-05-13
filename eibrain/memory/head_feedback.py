@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, is_dataclass
 from time import time
 from typing import Any, Mapping
 
+from eibrain.memory.scoring_compat import merge_memory_metadata, normalize_memory_metadata
+
 
 ALLOWED_MEMORY_KINDS = {"working", "episodic", "procedural"}
 REQUIRED_FEEDBACK_FIELDS = (
@@ -198,6 +200,28 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
             "tracking_provenance": cleaned.get("tracking_provenance", {}),
         }
     )
+    meta = normalize_memory_metadata(
+        merge_memory_metadata(
+            {
+                "quality": cleaned.get("quality"),
+                "scoring": cleaned.get("scoring"),
+                "memory_score_v1": cleaned.get("memory_score_v1"),
+            },
+            {
+                "memory_kind": cleaned.get("memory_kind"),
+                "category": cleaned.get("category"),
+                "trace_id": cleaned.get("trace_id"),
+                "source_event_id": cleaned.get("source_event_id"),
+                "timestamp_ms": cleaned.get("timestamp_ms"),
+                "confidence": cleaned.get("confidence"),
+                "tracking_provenance": cleaned.get("tracking_provenance", {}),
+                "persona_memory": cleaned.get("persona_memory", False),
+                "retention": cleaned.get("retention"),
+                "promotion_status": cleaned.get("promotion_status"),
+                "writeback": cleaned.get("writeback", {}),
+            },
+        )
+    )
     return {
         "text": str(cleaned.get("summary") or summarize_head_feedback_record(cleaned)),
         "title": _title_for(cleaned),
@@ -213,19 +237,7 @@ def build_eimemory_ingest_params(record: Mapping[str, object]) -> dict[str, obje
             "trace_id": cleaned.get("trace_id"),
         },
         "content": content,
-        "meta": {
-            "memory_kind": cleaned.get("memory_kind"),
-            "category": cleaned.get("category"),
-            "trace_id": cleaned.get("trace_id"),
-            "source_event_id": cleaned.get("source_event_id"),
-            "timestamp_ms": cleaned.get("timestamp_ms"),
-            "confidence": cleaned.get("confidence"),
-            "tracking_provenance": cleaned.get("tracking_provenance", {}),
-            "persona_memory": cleaned.get("persona_memory", False),
-            "retention": cleaned.get("retention"),
-            "promotion_status": cleaned.get("promotion_status"),
-            "writeback": cleaned.get("writeback", {}),
-        },
+        "meta": meta,
         "tags": list(cleaned.get("tags", [])),
     }
 

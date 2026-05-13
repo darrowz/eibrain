@@ -176,3 +176,34 @@ def test_visual_feedback_skips_low_confidence_observed_memory_params() -> None:
 
     assert record["writeback"]["eligible"] is False
     assert build_eimemory_visual_feedback_params(record) is None
+
+
+def test_visual_feedback_payload_backfills_memory_score_from_legacy_quality() -> None:
+    from eibrain.memory.visual_feedback import (
+        build_eimemory_visual_feedback_params,
+        build_visual_feedback_record,
+    )
+
+    record = build_visual_feedback_record(
+        feedback_type="follow_result",
+        subject={"track_id": "person-2", "label": "person", "confidence": 0.61},
+        outcome={"success": True},
+        follow_score={"score": 0.64, "window_ms": 2_000},
+        round_id="rnd-compat",
+        session_id="sess-compat",
+        timestamp_ms=129000,
+    )
+    record["quality"] = {
+        "salience_score": 0.44,
+        "confidence": 0.61,
+        "quality_tier": "candidate",
+        "capture_decision": "accept",
+    }
+
+    memory_params = build_eimemory_visual_feedback_params(record)
+    memory_score = memory_params["meta"]["scoring"]["memory_score_v1"]
+
+    assert memory_score["tier"] == "candidate"
+    assert "lifecycle.candidate" in memory_score["labels"]
+    assert memory_params["meta"]["quality"]["quality_tier"] == "candidate"
+    assert memory_params["meta"]["quality"]["capture_decision"] == "accept"

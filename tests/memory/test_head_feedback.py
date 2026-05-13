@@ -147,6 +147,33 @@ def test_head_feedback_builds_eimemory_and_eitraining_payloads_without_network()
     json.dumps(training_payload)
 
 
+def test_head_feedback_ingest_payload_normalizes_memory_score_contract_metadata() -> None:
+    from eibrain.memory.head_feedback import build_eimemory_ingest_params, build_head_feedback_record
+
+    record = build_head_feedback_record(
+        action={"kind": "SpeakAction", "planned_by": "eibrain.dialogue", "modality": "audio_text", "organ": "mouth"},
+        outcome={"success": True, "latency_ms": 15, "executed_by": "eihead.mouth"},
+        trace_id="trace-score-1",
+        timestamp_ms=126500,
+    )
+    record["scoring"] = {
+        "memory_score_v1": {
+            "schema_version": "memory_score.v1",
+            "final_score": 0.78,
+            "tier": "confirmed",
+            "labels": [" confirmed ", "lifecycle_confirmed"],
+        }
+    }
+
+    ingest_params = build_eimemory_ingest_params(record)
+    memory_score = ingest_params["meta"]["scoring"]["memory_score_v1"]
+
+    assert memory_score["tier"] == "confirmed"
+    assert memory_score["labels"] == ["lifecycle.confirmed"]
+    assert ingest_params["meta"]["quality"]["quality_tier"] == "confirmed"
+    assert ingest_params["meta"]["quality"]["capture_decision"] == "accept"
+
+
 def test_head_feedback_rejects_unknown_memory_kind() -> None:
     import pytest
 

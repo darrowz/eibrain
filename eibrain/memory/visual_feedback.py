@@ -10,6 +10,8 @@ from dataclasses import asdict, is_dataclass
 from time import time
 from typing import Any, Mapping
 
+from eibrain.memory.scoring_compat import merge_memory_metadata, normalize_memory_metadata
+
 
 SOURCE = "eibrain.vision_feedback"
 
@@ -116,6 +118,27 @@ def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[
         if source_event_id
         else ""
     )
+    meta = normalize_memory_metadata(
+        merge_memory_metadata(
+            {
+                "quality": cleaned.get("quality"),
+                "scoring": cleaned.get("scoring"),
+                "memory_score_v1": cleaned.get("memory_score_v1"),
+            },
+            {
+                "importance": cleaned.get("importance"),
+                "confidence": cleaned.get("confidence"),
+                "timestamp_ms": cleaned.get("timestamp_ms"),
+                "privacy": cleaned.get("privacy", {}),
+                "record_type": "visual_feedback",
+                "source_event_id": source_event_id,
+                "idempotency_key": idempotency_key,
+                "tracking_provenance": cleaned.get("tracking_provenance", {}),
+                "scene_provenance": cleaned.get("scene_provenance", {}),
+                "writeback": cleaned.get("writeback", {}),
+            },
+        )
+    )
     return {
         "text": str(cleaned.get("summary") or ""),
         "title": _title(cleaned),
@@ -140,18 +163,7 @@ def build_eimemory_visual_feedback_params(record: Mapping[str, object]) -> dict[
             "tracking_provenance": cleaned.get("tracking_provenance", {}),
             "scene_provenance": cleaned.get("scene_provenance", {}),
         },
-        "meta": {
-            "importance": cleaned.get("importance"),
-            "confidence": cleaned.get("confidence"),
-            "timestamp_ms": cleaned.get("timestamp_ms"),
-            "privacy": cleaned.get("privacy", {}),
-            "record_type": "visual_feedback",
-            "source_event_id": source_event_id,
-            "idempotency_key": idempotency_key,
-            "tracking_provenance": cleaned.get("tracking_provenance", {}),
-            "scene_provenance": cleaned.get("scene_provenance", {}),
-            "writeback": cleaned.get("writeback", {}),
-        },
+        "meta": meta,
         "tags": list(cleaned.get("tags", [])),
     }
 

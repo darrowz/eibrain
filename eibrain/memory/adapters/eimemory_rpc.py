@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+from typing import Mapping
 from urllib import request
 from urllib.error import URLError
 
 from eibrain.infra.config import OpenClawConfig
 from eibrain.memory.contracts import MemoryQuery, MemoryResult
+from eibrain.memory.scoring_compat import merge_memory_metadata, normalize_memory_metadata, score_meta_from_recall_entry
 from eibrain.memory.subject import classify_memory_layer, normalize_hongtu_scope, subject_context
 
 
@@ -77,15 +79,16 @@ class EIMemoryRPCAdapter:
         if not cleaned_summary:
             return
         self._sessions[session_id] = cleaned_summary
+        normalized_meta = normalize_memory_metadata(meta)
         governance = self._governance_fields(
-            meta=meta,
+            meta=normalized_meta,
             idempotency_key=idempotency_key,
             source_event_id=source_event_id,
             conflict=conflict,
             persona_snapshot=persona_snapshot,
         )
         request_meta = self._meta_with_session(
-            meta=meta,
+            meta=normalized_meta,
             session_id=session_id,
             actor_id=actor_id,
             source=source,
@@ -702,6 +705,7 @@ class EIMemoryRPCAdapter:
         rule_hint = str(rules[0].get("title", "")).strip() if rules else ""
         if rule_hint:
             summary_parts.append(rule_hint)
+        scored_records = self._selected_records_with_scoring(items=items, explanation=explanation)
         return MemoryResult(
             summary=" | ".join(part for part in summary_parts if part),
             relevant_memories=relevant_memories,
@@ -712,11 +716,58 @@ class EIMemoryRPCAdapter:
                 "task_context": explanation.get("task_context", {}),
                 "recall_profile": explanation.get("recall_profile", ""),
                 "selected_count": explanation.get("selected_count", 0),
+                "quality_summary": explanation.get("quality_summary", {}),
                 "source_composition": explanation.get("source_composition", {}),
-                "selected_records": explanation.get("selected_records", []),
+                "selected_records": scored_records,
+                "scoring": self._scoring_rows(explanation),
                 "recall_filters": explanation.get("recall_filters", {}),
             },
         )
+
+    def _selected_records_with_scoring(
+        self,
+        *,
+        items: list[dict[str, object]],
+        explanation: Mapping[str, object],
+    ) -> list[dict[str, object]]:
+        item_by_id = {
+            str(item.get("record_id") or item.get("id") or "").strip(): item
+            for item in items
+            if str(item.get("record_id") or item.get("id") or "").strip()
+        }
+        scoring_by_id = {
+            str(entry.get("record_id") or "").strip(): entry
+            for entry in explanation.get("scoring", [])
+            if isinstance(entry, dict) and str(entry.get("record_id") or "").strip()
+        }
+        selected_records: list[dict[str, object]] = []
+        for record in explanation.get("selected_records", []):
+            if not isinstance(record, dict):
+                continue
+            record_id = str(record.get("record_id") or record.get("id") or "").strip()
+            item_meta = dict(item_by_id.get(record_id, {}).get("meta", {})) if record_id else {}
+            scoring_meta = score_meta_from_recall_entry(scoring_by_id.get(record_id))
+            merged_meta = normalize_memory_metadata(
+                merge_memory_metadata(scoring_meta, item_meta, dict(record.get("meta", {})) if isinstance(record.get("meta"), dict) else {})
+            )
+            payload = dict(record)
+            if merged_meta:
+                payload["meta"] = merged_meta
+            selected_records.append(payload)
+        return selected_records
+
+    def _scoring_rows(self, explanation: Mapping[str, object]) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        for entry in explanation.get("scoring", []):
+            if not isinstance(entry, dict):
+                continue
+            payload = dict(entry)
+            compat_meta = score_meta_from_recall_entry(payload)
+            if compat_meta:
+                payload["memory_score_v1"] = dict(compat_meta.get("scoring", {})).get("memory_score_v1", {})
+                payload["quality"] = compat_meta.get("quality", {})
+            rows.append(payload)
+        return rows
 
     def _fallback_result(self, query: MemoryQuery) -> MemoryResult:
         session_summary = self.summarize_session(query.session_id) if query.session_id else ""
