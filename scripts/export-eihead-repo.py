@@ -43,6 +43,7 @@ OPTIONAL_FILES = (
     # to prepare eimemory/eitraining payloads from eye feedback.
     "eibrain/memory/__init__.py",
     "eibrain/memory/contracts.py",
+    "eibrain/memory/scoring_compat.py",
     "eibrain/memory/visual_feedback.py",
     "eibrain/memory/visual_memory.py",
 )
