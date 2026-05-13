@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+type EIMemoryRPCRequest = dict[str, object]
+
 
 def test_eimemory_rpc_adapter_posts_recall_request(monkeypatch) -> None:
     import json
@@ -22,7 +24,8 @@ def test_eimemory_rpc_adapter_posts_recall_request(monkeypatch) -> None:
 
     def _fake_urlopen(req, timeout=0):
         captured["url"] = req.full_url
-        captured["body"] = json.loads(req.data.decode("utf-8"))
+        captured_request: EIMemoryRPCRequest = json.loads(req.data.decode("utf-8"))
+        captured["body"] = captured_request
         captured["auth"] = req.get_header("Authorization")
         return _Response()
 
