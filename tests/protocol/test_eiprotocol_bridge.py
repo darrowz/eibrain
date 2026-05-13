@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import json
 from typing import Any
 
@@ -514,6 +515,37 @@ def test_payload_to_eiprotocol_event_routes_realtime_vision_payload_kind() -> No
     assert payload["content"]["frameId"] == "frame-routed-1"
     assert payload["content"]["boxes"] == [[0.1, 0.2, 0.3, 0.4]]
     assert payload["content"]["scores"] == [0.88]
+
+
+def test_payload_to_eiprotocol_event_routes_known_aliases_case_insensitive() -> None:
+    from eibrain.protocol.eiprotocol_bridge import payload_to_eiprotocol_event
+
+    event = payload_to_eiprotocol_event(
+        {
+            "kind": "VISION_FRAME",
+            "source": "eihead.honjia",
+            "target": "eibrain.honxin",
+            "frame_id": "frame-aliased",
+        },
+        event_id="evt_bridge_alias",
+    )
+
+    payload = _assert_strict_round_trip_and_route(event, "realtime_vision_frame")
+    assert payload["name"] == "ei.observation.vision.frame"
+    assert payload["id"] == "evt_bridge_alias"
+
+
+def test_payload_to_eiprotocol_event_rejects_unknown_kind() -> None:
+    from eibrain.protocol.eiprotocol_bridge import payload_to_eiprotocol_event
+
+    with pytest.raises(TypeError, match="Unsupported eiprotocol bridge payload kind"):
+        payload_to_eiprotocol_event(
+            {
+                "name": "ei.unknown.event",
+                "source": "eihead.honjia",
+                "target": "eibrain.honxin",
+            }
+        )
 
 
 def test_payload_to_eiprotocol_event_routes_v011_generic_payload_kinds() -> None:

@@ -1,3 +1,11 @@
+"""Voice runtime worker orchestration and monitoring.
+
+This module coordinates capture -> encode -> transport -> decode -> playback flow.
+It is the canonical boundary for interruption/session-policy decisions and emits
+the diagnostics needed by monitoring. Mouth playback is treated as an output sink
+contract.
+"""
+
 from __future__ import annotations
 
 import base64

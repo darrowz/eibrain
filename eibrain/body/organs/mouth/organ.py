@@ -1,4 +1,11 @@
-"""Mouth organ implementation."""
+"""Mouth organ implementation.
+
+Boundary rule:
+- keep playback execution and runtime telemetry here;
+- keep conversation/session policy in `eibrain.eihead.eivoice_runtime`.
+
+This organ only reports mouth heartbeat and executes playback actions.
+"""
 
 from __future__ import annotations
 
@@ -37,25 +44,23 @@ class MouthOrgan(BaseOrgan):
         return OrganHealth(organ=self.name, health="healthy", subfunctions=subfunctions)
 
     def heartbeat(self) -> OrganHealth:
+        # Boundary: this health pass aggregates lower-level subfunction probes and
+        # cached playback telemetry; it does not make orchestration decisions.
         plan_state = self._tts_plan_health()
         playback_state = self._tts_playback_health()
         subfunctions = {
             "tts_plan": plan_state,
             "tts_playback": playback_state,
         }
-        statuses = [state.health for state in subfunctions.values()]
-        if statuses and all(status == "healthy" for status in statuses):
-            health = "healthy"
-        elif any(status == "healthy" for status in statuses) or any(status == "degraded" for status in statuses):
-            health = "degraded"
-        else:
-            health = "unavailable"
+        health = self._derive_health(state.health for state in subfunctions.values())
         return OrganHealth(organ=self.name, health=health, subfunctions=subfunctions)
 
     def supports_action(self, action) -> bool:
         return isinstance(action, (PlaySpeechAction, StopSpeechAction))
 
     def handle_action(self, action):
+        # Boundary: session policy (cancelability, interruption sequencing) is not
+        # owned by this organ; it only executes playback actions deterministically.
         if isinstance(action, PlaySpeechAction):
             started_at = time.time()
             base_details = {
@@ -209,12 +214,6 @@ class MouthOrgan(BaseOrgan):
             health=health,
             details=details,
         )
-
-    def _driver_kind(self, name: str) -> str:
-        config = self.config.subfunctions.get(name)
-        if config is None:
-            return "noop"
-        return str(config.driver.kind)
 
     def _voice_config_details(self) -> dict[str, object]:
         playback_cfg = self.config.subfunctions.get("tts_playback")

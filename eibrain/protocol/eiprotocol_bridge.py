@@ -1,4 +1,9 @@
-"""Adapters from legacy eibrain protocol objects to eiprotocol envelopes."""
+"""Adapters from legacy eibrain protocol objects to eiprotocol envelopes.
+
+This bridge owns protocol adaptation from legacy, mixed-shape payloads into the
+typed eiprotocol envelope model. Upstream runtime code should prefer these
+helpers and keep event construction policy in one place.
+"""
 
 from __future__ import annotations
 
@@ -6,19 +11,22 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from eiprotocol import EventEnvelope, PolicyState, SourceRef, TargetRef
-from eiprotocol.builders import (
-    EventIdFactory,
-    build_event,
+from eiprotocol import (
+    EventEnvelope,
+    PolicyState,
+    SourceRef,
+    TargetRef,
     build_dialogue_cancellation_applied_event,
     build_dialogue_fast_hypothesis_event,
     build_dialogue_stable_decision_event,
     build_emotion_context_event,
+    build_event,
     build_head_status_report_event,
     build_memory_prefetch_requested_event,
     build_proactive_activity_proposed_event,
     build_speech_action_plan_event,
     build_vision_frame_event,
+    EventIdFactory,
 )
 
 from .capabilities import (
@@ -111,65 +119,18 @@ def payload_to_eiprotocol_event(
     time: str | None = None,
 ) -> EventEnvelope:
     """Convert an explicit internal payload kind/name into an eiprotocol event."""
-
     kind = _first_text(payload.get("name"), payload.get("event_name"), payload.get("kind"), payload.get("type"))
-    if kind in {"ei.observation.head.status.report", "head_status_report", "head_status"}:
-        return head_status_report_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.observation.vision.frame", "realtime_vision_frame", "vision_frame", "vision_observation"}:
-        return realtime_vision_payload_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.dialogue.fast_hypothesis", "dialogue_fast_hypothesis", "fast_hypothesis"}:
-        return dialogue_fast_hypothesis_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.dialogue.decision.stable", "dialogue_decision_stable", "stable_decision"}:
-        return dialogue_stable_decision_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.observation.vision.scene", "vision_scene"}:
-        return generic_vision_scene_payload_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.observation.vision.event", "vision_event"}:
-        return generic_vision_event_payload_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    if kind in {"ei.memory.policy.report", "memory_policy_report"}:
-        return generic_memory_policy_report_payload_to_eiprotocol_event(
-            payload,
-            event_id=event_id,
-            request_id=request_id,
-            sequence=sequence,
-            time=time,
-        )
-    raise TypeError(f"Unsupported eiprotocol bridge payload kind: {kind or 'unknown'}")
+    normalized_kind = str(kind).strip().lower()
+    handler = _EVENT_KIND_ROUTING.get(normalized_kind)
+    if handler is None:
+        raise TypeError(f"Unsupported eiprotocol bridge payload kind: {kind or 'unknown'}")
+    return handler(
+        payload,
+        event_id=event_id,
+        request_id=request_id,
+        sequence=sequence,
+        time=time,
+    )
 
 
 def head_status_report_to_eiprotocol_event(
@@ -1114,6 +1075,29 @@ def _resolve_time(message: object, explicit: str | None) -> str:
         return DEFAULT_EVENT_TIME
     instant = datetime.fromtimestamp(float(timestamp_ms) / 1000.0, tz=UTC)
     return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+_EVENT_KIND_ROUTING: dict[str, Any] = {
+    "ei.observation.head.status.report": head_status_report_to_eiprotocol_event,
+    "head_status_report": head_status_report_to_eiprotocol_event,
+    "head_status": head_status_report_to_eiprotocol_event,
+    "ei.observation.vision.frame": realtime_vision_payload_to_eiprotocol_event,
+    "realtime_vision_frame": realtime_vision_payload_to_eiprotocol_event,
+    "vision_frame": realtime_vision_payload_to_eiprotocol_event,
+    "vision_observation": realtime_vision_payload_to_eiprotocol_event,
+    "ei.dialogue.fast_hypothesis": dialogue_fast_hypothesis_to_eiprotocol_event,
+    "dialogue_fast_hypothesis": dialogue_fast_hypothesis_to_eiprotocol_event,
+    "fast_hypothesis": dialogue_fast_hypothesis_to_eiprotocol_event,
+    "ei.dialogue.decision.stable": dialogue_stable_decision_to_eiprotocol_event,
+    "dialogue_decision_stable": dialogue_stable_decision_to_eiprotocol_event,
+    "stable_decision": dialogue_stable_decision_to_eiprotocol_event,
+    "ei.observation.vision.scene": generic_vision_scene_payload_to_eiprotocol_event,
+    "vision_scene": generic_vision_scene_payload_to_eiprotocol_event,
+    "ei.observation.vision.event": generic_vision_event_payload_to_eiprotocol_event,
+    "vision_event": generic_vision_event_payload_to_eiprotocol_event,
+    "ei.memory.policy.report": generic_memory_policy_report_payload_to_eiprotocol_event,
+    "memory_policy_report": generic_memory_policy_report_payload_to_eiprotocol_event,
+}
 
 
 def _resolve_round_id(message: object, event_id: str) -> str:

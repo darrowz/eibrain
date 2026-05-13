@@ -1,4 +1,9 @@
-"""Runtime fallback policy derived from embodied capabilities."""
+"""Fallback policy derived from embodied capability status.
+
+This module translates capability availability into a policy boundary:
+which actions remain safe, which must be disabled, and whether automatic
+execution requires operator confirmation.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +21,9 @@ _NORMAL_SAFE_ACTIONS = (
     "vision.track",
     "identity.recognize",
 )
+_SPEECH_INTERACTION_ACTIONS = ("dialogue.respond",)
+_LOW_CONFIDENT_ACTION = "dialogue.finalize"
+_CRITICAL_AUTORUN_ACTIONS = {"dialogue.listen", "dialogue.respond", "speech.play", "dialogue.finalize"}
 
 _OPERATOR_MESSAGES = {
     "normal": "All core embodied capabilities are available.",
@@ -42,49 +50,20 @@ class FallbackPolicy:
         *,
         degradation_mode: str | None = None,
     ) -> "FallbackPolicy":
+        # Boundary: policy derivation keeps routing control separate from organ
+        # runtime state collection.
         mode = degradation_mode or cls._infer_mode(capabilities)
         safe_actions: list[str] = []
         disabled_actions: list[str] = []
-
-        if capabilities.can_hear_voice:
-            safe_actions.append("dialogue.listen")
-        else:
-            disabled_actions.extend(("dialogue.listen", "dialogue.finalize"))
-
-        if capabilities.can_hear_voice and capabilities.can_transcribe_speech and capabilities.can_speak:
-            safe_actions.append("dialogue.respond")
-        else:
-            disabled_actions.append("dialogue.respond")
-
-        if capabilities.can_hear_voice and not capabilities.can_transcribe_speech:
-            disabled_actions.append("dialogue.finalize")
-
-        if capabilities.can_speak:
-            safe_actions.append("speech.play")
-        else:
-            disabled_actions.append("speech.play")
-        safe_actions.append("speech.stop")
-
-        if capabilities.can_orient_head:
-            safe_actions.append("head.move")
-        else:
-            disabled_actions.append("head.move")
-
-        if capabilities.can_see_people:
-            safe_actions.append("vision.track")
-        else:
-            disabled_actions.append("vision.track")
-
-        if capabilities.can_identify_person:
-            safe_actions.append("identity.recognize")
-        else:
-            disabled_actions.append("identity.recognize")
+        cls._collect_voice_actions(capabilities, safe_actions=safe_actions, disabled_actions=disabled_actions)
+        cls._collect_speech_actions(capabilities, safe_actions=safe_actions, disabled_actions=disabled_actions)
+        cls._collect_head_actions(capabilities, safe_actions=safe_actions, disabled_actions=disabled_actions)
+        cls._collect_visual_actions(capabilities, safe_actions=safe_actions, disabled_actions=disabled_actions)
 
         disabled = cls._dedupe(disabled_actions)
         safe = cls._dedupe(action for action in safe_actions if action not in disabled)
-        requires_confirmation = mode != "normal" or "dialogue.finalize" in disabled
-        critical_disabled = {"dialogue.listen", "dialogue.respond", "speech.play", "dialogue.finalize"}
-        can_autorun = not requires_confirmation and critical_disabled.isdisjoint(disabled)
+        requires_confirmation = mode != "normal" or _LOW_CONFIDENT_ACTION in disabled
+        can_autorun = not requires_confirmation and _CRITICAL_AUTORUN_ACTIONS.isdisjoint(disabled)
         reason = cls._reason_for(mode, capabilities)
 
         return cls(
@@ -96,6 +75,73 @@ class FallbackPolicy:
             disabled_actions=disabled,
             operator_message=cls._operator_message_for(mode, reason),
         )
+
+    @classmethod
+    def _collect_voice_actions(
+        cls,
+        capabilities: CapabilityMatrix,
+        *,
+        safe_actions: list[str],
+        disabled_actions: list[str],
+    ) -> None:
+        if capabilities.can_hear_voice:
+            safe_actions.append("dialogue.listen")
+        else:
+            disabled_actions.extend(("dialogue.listen", _LOW_CONFIDENT_ACTION))
+
+    @classmethod
+    def _collect_speech_actions(
+        cls,
+        capabilities: CapabilityMatrix,
+        *,
+        safe_actions: list[str],
+        disabled_actions: list[str],
+    ) -> None:
+        if (
+            capabilities.can_hear_voice
+            and capabilities.can_transcribe_speech
+            and capabilities.can_speak
+        ):
+            safe_actions.extend(_SPEECH_INTERACTION_ACTIONS)
+        else:
+            disabled_actions.extend(_SPEECH_INTERACTION_ACTIONS)
+        if capabilities.can_hear_voice and not capabilities.can_transcribe_speech:
+            disabled_actions.append(_LOW_CONFIDENT_ACTION)
+        if capabilities.can_speak:
+            safe_actions.append("speech.play")
+        else:
+            disabled_actions.append("speech.play")
+        safe_actions.append("speech.stop")
+
+    @classmethod
+    def _collect_head_actions(
+        cls,
+        capabilities: CapabilityMatrix,
+        *,
+        safe_actions: list[str],
+        disabled_actions: list[str],
+    ) -> None:
+        if capabilities.can_orient_head:
+            safe_actions.append("head.move")
+        else:
+            disabled_actions.append("head.move")
+
+    @classmethod
+    def _collect_visual_actions(
+        cls,
+        capabilities: CapabilityMatrix,
+        *,
+        safe_actions: list[str],
+        disabled_actions: list[str],
+    ) -> None:
+        if capabilities.can_see_people:
+            safe_actions.append("vision.track")
+        else:
+            disabled_actions.append("vision.track")
+        if capabilities.can_identify_person:
+            safe_actions.append("identity.recognize")
+        else:
+            disabled_actions.append("identity.recognize")
 
     def to_dict(self) -> dict[str, object]:
         return {

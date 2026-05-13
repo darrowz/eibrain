@@ -1,4 +1,13 @@
-"""Voice diagnostics helpers for the eihead native monitor."""
+"""Voice diagnostics helpers for the eihead native monitor.
+
+This module aggregates status for wired/unwired diagnostics, but it does not own
+business policy. It reads diagnostics from runtime and mouth components and
+normalizes them for monitoring output.
+
+Mouth diagnostics here are playback-focused only; session and policy decisions
+must be sourced from `eihead.eivoice_runtime` and not reconstructed from
+mouth planning payloads.
+"""
 
 from __future__ import annotations
 
@@ -241,34 +250,31 @@ def _normalize_mouth(raw: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if raw is None:
         return None
     playback = _subfunction(raw, "tts_playback")
+    # Mouth status is playback-oriented only. Planning/policy details in
+    # tts_plan are intentionally treated as non-authoritative diagnostic cargo.
     plan = _subfunction(raw, "tts_plan")
     backend = _first_text(
         raw.get("backend"),
         raw.get("provider"),
         _details_value(playback, "backend"),
         _details_value(playback, "provider"),
-        _details_value(plan, "backend"),
-        _details_value(plan, "provider"),
     )
-    status = _status_text(raw, fallback=playback or plan)
+    status = _status_text(raw, fallback=playback)
     readiness = _first_text(
         raw.get("readiness_message"),
         raw.get("message"),
         _details_value(playback, "reason"),
-        _details_value(plan, "reason"),
         _details_value(playback, "status"),
-        _details_value(plan, "status"),
     )
     return {
         "status": status,
         "health": _text_or_none(raw.get("health")),
         "state": _classify_component_state(raw, fallback_status=status, role="mouth"),
         "backend": backend,
-        "model": _first_text(raw.get("model"), _details_value(playback, "model"), _details_value(plan, "model")),
+        "model": _first_text(raw.get("model"), _details_value(playback, "model")),
         "voice_id": _first_text(
             raw.get("voice_id"),
             _details_value(playback, "voice_id"),
-            _details_value(plan, "voice_id"),
         ),
         "text_preview": _first_text(raw.get("text_preview"), _details_value(playback, "text_preview")),
         "readiness_message": readiness,

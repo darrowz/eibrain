@@ -1,3 +1,9 @@
+"""Voice stream transport adapters for runtime transport plumbing.
+
+This module owns transport state (queues, reconnect timing, heartbeat and errors),
+while session-level orchestration and playback policy remain the runtime boundary.
+"""
+
 from __future__ import annotations
 
 from collections import deque

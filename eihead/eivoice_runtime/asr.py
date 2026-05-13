@@ -1,3 +1,9 @@
+"""ASR provider/session stream wrappers for runtime orchestration.
+
+The ASR adapter layer normalizes provider results and transport artifacts. Runtime
+session lifecycle decisions and policy orchestration stay in `eivoice_runtime`.
+"""
+
 from __future__ import annotations
 
 from collections import deque

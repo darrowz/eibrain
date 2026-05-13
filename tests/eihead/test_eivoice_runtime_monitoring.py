@@ -7,6 +7,7 @@ from typing import Any, Iterator
 from urllib import request
 
 from eihead.monitoring.eivoice_runtime import build_eivoice_runtime_panel
+from eihead.monitoring.voice import build_voice_diagnostics_from_app
 from eihead.monitoring.web import create_server
 
 
@@ -212,6 +213,70 @@ def test_transport_status_is_exposed_and_degrades_on_reconnect_errors() -> None:
     assert panel["health"] == "degraded"
     assert "transport reconnect_wait" in panel["warnings"]
     assert "transport error: TimeoutError heartbeat" in panel["warnings"]
+
+
+def test_voice_diagnostics_uses_tts_playback_as_mouth_authority() -> None:
+    class App:
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "mouth": {
+                    "backend": "minimax",
+                    "model": "play-model",
+                    "voice_id": "play-voice",
+                    "text_preview": "playback preview",
+                    "tts_playback": {
+                        "status": "playing",
+                    },
+                    "tts_plan": {
+                        "status": "stopped",
+                        "provider": "minimax",
+                        "model": "plan-model",
+                        "voice_id": "plan-voice",
+                        "text_preview": "plan preview",
+                    },
+                }
+            }
+
+    payload = build_voice_diagnostics_from_app(App(), timestamp=1.0)
+    mouth = payload.get("mouth")
+
+    assert isinstance(mouth, dict)
+    assert mouth["status"] == "playing"
+    assert mouth["backend"] == "minimax"
+    assert mouth["model"] == "play-model"
+    assert mouth["voice_id"] == "play-voice"
+    assert mouth["text_preview"] == "playback preview"
+    assert "mouth: playing" in payload["readiness_message"]
+
+
+def test_voice_diagnostics_does_not_infer_mouth_status_from_tts_plan_alone() -> None:
+    class App:
+        def voice_status(self) -> dict[str, Any]:
+            return {
+                "mouth": {
+                    "backend": "noop",
+                    "tts_playback": {
+                        "provider": "noop",
+                    },
+                    "tts_plan": {
+                        "status": "playing",
+                        "model": "plan-model",
+                        "voice_id": "plan-voice",
+                        "text": "plan text",
+                        "provider": "minimax",
+                        "text_preview": "plan preview",
+                    },
+                }
+            }
+
+    payload = build_voice_diagnostics_from_app(App(), timestamp=2.0)
+    mouth = payload.get("mouth")
+
+    assert isinstance(mouth, dict)
+    assert mouth["status"] == ""
+    assert mouth["model"] == ""
+    assert mouth["voice_id"] == ""
+    assert mouth["text_preview"] == ""
 
 
 class RuntimePanelApp:

@@ -1,3 +1,11 @@
+"""Core primitives for voice runtime orchestration.
+
+This module owns conversation-state tracking, ASR/TTS session sequencing and
+runtime diagnostics data. It must not own playback policy or session-policy
+decisions; those belong to the runtime layer orchestration, while raw playback
+execution belongs to `eihead.mouth`.
+"""
+
 from __future__ import annotations
 
 from collections import deque

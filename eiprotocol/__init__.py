@@ -1,4 +1,9 @@
-"""Shared eiprotocol v0.1 MVP contracts for EI projects."""
+"""Shared eiprotocol v0.1 MVP contracts for EI projects.
+
+This module is the canonical public contract surface for EI events.
+Callers should import through this package instead of directly importing
+individual internal builder/helper modules whenever possible.
+"""
 
 from .builders import (
     EventIdFactory,

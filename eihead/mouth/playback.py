@@ -1,4 +1,8 @@
-"""Native eihead mouth playback status contracts.
+"""Native eihead mouth playback contracts and status helpers.
+
+Mouth playback is kept as the low-level audio output layer.
+Session state, interruption policy and event orchestration belong to
+`eihead.eivoice_runtime`; this module only reports playback actuator state.
 
 This module is intentionally standard-library only. It provides serializable
 config, action summary, stop summary, and playback status helpers without
