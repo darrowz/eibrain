@@ -24,7 +24,7 @@ project="${1:?project is required}"
 source_dir="${2:-/dev-project/${project}}"
 deploy_root="${3:-/opt/${project}}"
 
-if [[ ! -d "${source_dir}/.git" ]]; then
+if ! git -C "${source_dir}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "source_dir must be a git repository: ${source_dir}" >&2
   exit 2
 fi
