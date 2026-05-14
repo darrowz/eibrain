@@ -78,7 +78,12 @@ def test_export_creates_standalone_eiprotocol_layout(tmp_path: Path) -> None:
     for rel_path in _source_eiprotocol_test_files():
         assert (target / rel_path).is_file(), rel_path
         assert rel_path in result.copied
-    assert result.generated == ("pyproject.toml", "README.md", ".gitignore")
+    assert result.generated == (
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        "EXPORT_MANIFEST.json",
+    )
     assert not (target / "eibrain").exists()
     assert not (target / "eihead").exists()
     assert not (target / "eiprotocol/__pycache__").exists()
@@ -167,6 +172,22 @@ def test_exported_repo_imports_eiprotocol_from_target_and_round_trips_json(
     assert result.returncode == 0, result.stderr
 
 
+def test_exported_repo_includes_manifest_and_truth_fields(tmp_path: Path) -> None:
+    module = _load_export_module()
+    target = tmp_path / "eiprotocol-standalone"
+    module.export_eiprotocol_repo(target, repo_root=REPO_ROOT)
+
+    manifest_path = target / "EXPORT_MANIFEST.json"
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["schema_version"] == 1
+    assert manifest["package"]["name"] == "eiprotocol"
+    assert manifest["package"]["source_of_truth"] == str(REPO_ROOT)
+    assert manifest["package"]["embedded_copy_policy"] == "transitional_compatibility"
+    assert manifest["source"]["commit"] == _source_commit()
+    assert "eiprotocol" in manifest["notes"][0]
+
+
 def test_exported_repo_runs_all_exported_eiprotocol_tests(tmp_path: Path) -> None:
     module = _load_export_module()
     target = tmp_path / "eiprotocol-standalone"
@@ -216,4 +237,9 @@ def test_cli_prints_json_summary(tmp_path: Path, capsys: pytest.CaptureFixture[s
     assert output["target"] == str(target.resolve())
     assert output["force"] is False
     assert "eiprotocol/models.py" in output["copied"]
-    assert output["generated"] == ["pyproject.toml", "README.md", ".gitignore"]
+    assert output["generated"] == [
+        "pyproject.toml",
+        "README.md",
+        ".gitignore",
+        "EXPORT_MANIFEST.json",
+    ]

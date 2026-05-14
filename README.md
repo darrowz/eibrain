@@ -45,6 +45,19 @@ Keep these concerns separate:
 
 `eibrain` must not depend on the `eimemory` repository path at runtime.
 
+## Protocol Source Dependency (Development)
+
+When running `eibrain` against the standalone protocol package, install both repos
+in editable mode first:
+
+```bash
+python -m pip install -e D:/github/ei-workspace/repos/eiprotocol
+python -m pip install -e D:/github/ei-workspace/repos/eibrain
+```
+
+This ensures the runtime imports `eiprotocol` from the canonical source tree instead of
+fallbacking to compatibility copies.
+
 ## Default Deployment Layout
 
 The default deployment root is `/home/${USER}/eibrain`, shared by both `honjia` and `honxin`.

@@ -29,6 +29,7 @@ STANDALONE_TEST_EXCLUDES = frozenset(
 )
 SKIP_DIR_NAMES = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".git"}
 SKIP_SUFFIXES = {".pyc", ".pyo"}
+MANIFEST_FILENAME = "EXPORT_MANIFEST.json"
 
 PYPROJECT_TEMPLATE = """[build-system]
 requires = ["setuptools>=68"]
@@ -136,7 +137,7 @@ def export_eiprotocol_repo(
         copied.append(_copy_required_file(source_root, target, rel_file))
 
     source_state = _read_source_git_state(source_root)
-    generated = _write_templates(target, source_state=source_state)
+    generated = _write_templates(target, source_state=source_state, source_root=source_root)
     return ExportResult(
         target=target,
         copied=tuple(sorted(copied)),
@@ -252,7 +253,10 @@ def _copy_file(source_path: Path, target_path: Path, *, target_root: Path) -> st
     return _relative_output_path(target_path, target_root=target_root)
 
 
-def _write_templates(target_root: Path, *, source_state: dict[str, object]) -> tuple[str, ...]:
+def _write_templates(
+    target_root: Path, *, source_state: dict[str, object], source_root: Path
+) -> tuple[str, ...]:
+    generated: list[str] = []
     templates = {
         "pyproject.toml": PYPROJECT_TEMPLATE,
         "README.md": README_TEMPLATE.format(
@@ -261,12 +265,54 @@ def _write_templates(target_root: Path, *, source_state: dict[str, object]) -> t
         ),
         ".gitignore": GITIGNORE_TEMPLATE,
     }
-    generated: list[str] = []
     for rel_path, text in templates.items():
         path = target_root / rel_path
         path.write_text(text, encoding="utf-8", newline="\n")
         generated.append(rel_path)
+    generated.append(_write_manifest(
+        target_root=target_root,
+        source_root=source_root,
+        source_state=source_state,
+    ))
     return tuple(generated)
+
+
+def _write_manifest(
+    *,
+    target_root: Path,
+    source_root: Path,
+    source_state: dict[str, object],
+) -> str:
+    source_state = dict(source_state)
+    manifest = {
+        "schema_version": 1,
+        "package": {
+            "name": "eiprotocol",
+            "source_of_truth": str(source_root),
+            "embedded_copy_policy": "transitional_compatibility",
+        },
+        "source": {
+            "commit": source_state["commit"],
+            "dirty": bool(source_state["dirty"]),
+            "status_short": list(source_state.get("status_short", [])),
+        },
+        "exported_paths": {
+            "copied": [],
+            "generated": [],
+        },
+        "notes": [
+            "This repository is the eiprotocol source-of-truth package.",
+            "The eibrain copy is transitional compatibility until all consumers are cut-over.",
+        ],
+    }
+
+    manifest_path = target_root / MANIFEST_FILENAME
+    manifest_path.write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return MANIFEST_FILENAME
 
 
 def _read_source_git_state(source_root: Path) -> dict[str, object]:
@@ -275,6 +321,7 @@ def _read_source_git_state(source_root: Path) -> dict[str, object]:
     return {
         "commit": commit or "unknown",
         "dirty": bool(status_short),
+        "status_short": status_short,
     }
 
 

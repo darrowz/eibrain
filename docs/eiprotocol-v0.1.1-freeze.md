@@ -61,4 +61,5 @@ If a feature requires a server loop, device driver, model provider, media
 stream, policy engine, database, or JoyInside role runtime, it belongs outside
 the v0.1.1 protocol package unless it can be represented as a small,
 validated event contract with fixtures. The protocol may name the exchange; it
-must not absorb the product implementation.
+must not absorb the product implementation. The protocol package is transport-agnostic
+and should not own websocket/sse/mqtt or device transport implementations.

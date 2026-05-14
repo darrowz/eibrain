@@ -22,11 +22,14 @@ from .legacy_body import (
     BodyRuntimeFactory,
     LegacyBodyRuntimeAdapter,
 )
+from .status_projection import runtime_check_summary
+from .event_projection import event_outcome_common
 from .native_providers import (
     NativeProviderProbe,
     build_native_provider_statuses,
     normalize_native_provider_statuses,
 )
+from .composition import build_native_capability_probe
 
 DEFAULT_CONFIG_PATH = "config/eibrain.yaml"
 DEFAULT_REALTIME_VISION_MAX_AGE_SECONDS = 2.0
@@ -56,16 +59,6 @@ REALTIME_VISION_CONTAINER_KEYS = (
     "detection",
     "identity",
 )
-CAPABILITY_NATIVE_PROVIDER_MAP = {
-    "camera": "eye",
-    "hailo": "eye",
-    "vision_backend": "eye",
-    "microphone": "ear",
-    "asr": "ear",
-    "speaker": "mouth",
-    "tts": "mouth",
-    "neck": "neck",
-}
 
 
 @dataclass(slots=True)
@@ -136,7 +129,7 @@ class HeadRuntimeApp:
     def snapshot(self) -> dict[str, Any]:
         body_snapshot, body_snapshot_check = self._body_snapshot_or_error()
         native_providers = self._native_provider_statuses()
-        checks, check_details, status = _runtime_check_summary(
+        checks, check_details, status = runtime_check_summary(
             delegate_name=self.delegate_name,
             native_providers=native_providers,
             body_snapshot_check=body_snapshot_check,
@@ -183,7 +176,7 @@ class HeadRuntimeApp:
         node_id = _string_or_default(body_snapshot.get("node_id"), "honjia")
         manifest = CapabilityRegistry(
             {"node_id": node_id},
-            probe=_capability_live_probe_from_native_providers(self._native_provider_statuses()),
+            probe=build_native_capability_probe(self._native_provider_statuses()),
         ).manifest()
         status_snapshot = build_status_snapshot(manifest)
         return {
@@ -261,7 +254,7 @@ class HeadRuntimeApp:
     def handle_event(self, event: Mapping[str, Any] | Any, trace_id: str | None = None) -> dict[str, Any]:
         route = classify_event(event)
         effective_trace_id = trace_id or _event_trace_id(event)
-        common = _event_outcome_common(route, trace_id=effective_trace_id)
+        common = event_outcome_common(route, trace_id=effective_trace_id)
 
         if route.get("status") == "invalid":
             outcome = {
@@ -859,80 +852,6 @@ class HeadRuntimeApp:
         }
 
 
-def _runtime_check_summary(
-    *,
-    delegate_name: str,
-    native_providers: Mapping[str, Any],
-    body_snapshot_check: Mapping[str, Any],
-) -> tuple[dict[str, str], dict[str, Any], str]:
-    delegate_check, delegate_details = _delegate_check(delegate_name)
-    native_check, native_details = _native_provider_check(native_providers)
-    body_check = _string_or_default(body_snapshot_check.get("status"), "unknown")
-    checks = {
-        "head_runtime_import": "ok",
-        "body_runtime_delegate": delegate_check,
-        "body_runtime_snapshot": body_check,
-        "native_provider_boundaries": native_check,
-    }
-    check_details = {
-        "body_runtime_delegate": delegate_details,
-        "body_runtime_snapshot": dict(body_snapshot_check),
-        "native_provider_boundaries": native_details,
-    }
-    return checks, check_details, _overall_runtime_status(checks.values())
-
-
-def _delegate_check(delegate_name: str) -> tuple[str, dict[str, Any]]:
-    if delegate_name == DEFAULT_BODY_RUNTIME_DELEGATE:
-        return (
-            "ok",
-            {
-                "delegate": delegate_name,
-                "reason": "legacy_body_runtime_delegate_active",
-                "compatibility_mode": True,
-            },
-        )
-    if not delegate_name:
-        return "unknown", {"delegate": delegate_name, "reason": "delegate_unknown"}
-    return "ok", {"delegate": delegate_name}
-
-
-def _native_provider_check(native_providers: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
-    provider_states: dict[str, str] = {}
-    non_wired: dict[str, str] = {}
-    for provider_name, provider_payload in native_providers.items():
-        provider_state = _provider_status(provider_payload)
-        provider_states[str(provider_name)] = provider_state
-        if provider_state != "wired":
-            non_wired[str(provider_name)] = provider_state
-
-    if non_wired:
-        return (
-            "degraded",
-            {
-                "reason": "native_provider_not_wired",
-                "providers": provider_states,
-                "non_wired": non_wired,
-            },
-        )
-    return "ok", {"providers": provider_states}
-
-
-def _provider_status(provider_payload: Any) -> str:
-    if isinstance(provider_payload, Mapping):
-        return _string_or_default(provider_payload.get("status"), "unknown").strip().lower() or "unknown"
-    return "unknown"
-
-
-def _overall_runtime_status(checks: Any) -> str:
-    states = {_string_or_default(state, "unknown").strip().lower() for state in checks}
-    if states & {"blocked", "error", "failed"}:
-        return "blocked"
-    if states & {"degraded", "unknown", "unavailable"}:
-        return "degraded"
-    return "ok"
-
-
 def _attr_payload_candidates(source_object: Any, attr_names: tuple[str, ...]) -> list[Any]:
     candidates: list[Any] = []
     for attr_name in attr_names:
@@ -1101,48 +1020,6 @@ def _simulator_vision_state_candidate(payload: Any) -> dict[str, Any] | None:
     }
 
 
-def _capability_live_probe_from_native_providers(native_providers: Mapping[str, Any]):
-    providers = dict(native_providers or {})
-
-    def probe(name: str, *, config: dict[str, Any], static_status: dict[str, Any]) -> dict[str, Any] | None:
-        provider_name = CAPABILITY_NATIVE_PROVIDER_MAP.get(name)
-        if provider_name is None:
-            return None
-        provider_payload = providers.get(provider_name)
-        if not isinstance(provider_payload, Mapping):
-            return None
-
-        native_status = _provider_status(provider_payload)
-        hardware_verified = _bool_or_none(provider_payload.get("hardware_verified")) is True
-        capability_status = _capability_status_from_native_provider(native_status, hardware_verified=hardware_verified)
-        details: dict[str, Any] = {
-            "native_provider": provider_name,
-            "native_status": native_status,
-        }
-        native_details = provider_payload.get("details")
-        if isinstance(native_details, Mapping):
-            details.update({f"native_{key}": value for key, value in native_details.items()})
-
-        return {
-            "status": capability_status,
-            "source": _string_or_default(provider_payload.get("source"), "native_provider"),
-            "reason": _string_or_default(
-                provider_payload.get("reason"),
-                "native_provider_status",
-            ),
-            "checked_at": _optional_float(provider_payload.get("checked_at")),
-            "last_checked": _optional_float(provider_payload.get("last_checked")),
-            "hardware_verified": hardware_verified,
-            "provider": provider_payload.get("provider"),
-            "details": details,
-            "native_provider_status": native_status,
-            "static_status": static_status.get("status"),
-            "config_kind": config.get("kind"),
-        }
-
-    return probe
-
-
 def _is_native_provider_service(provider: Any) -> bool:
     if provider is None or isinstance(provider, Mapping):
         return False
@@ -1177,28 +1054,6 @@ def _native_provider_service_status(service: Any) -> Any | None:
     return None
 
 
-def _capability_status_from_native_provider(native_status: str, *, hardware_verified: bool) -> str:
-    if native_status == "wired":
-        return "live" if hardware_verified else "online"
-    if native_status in {"degraded", "unavailable", "unknown"}:
-        return native_status
-    return "unknown"
-
-
-def _bool_or_none(value: Any) -> bool | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return bool(value)
-
-
 def _load_optional_eihead_config(path: str) -> Any | None:
     filename = path.replace("\\", "/").rsplit("/", 1)[-1]
     if not filename.startswith("eihead"):
@@ -1209,16 +1064,6 @@ def _load_optional_eihead_config(path: str) -> Any | None:
         return load_eihead_config(path)
     except (EiheadConfigError, OSError):
         return None
-
-
-def _event_outcome_common(route: Mapping[str, Any], *, trace_id: str | None) -> dict[str, Any]:
-    return {
-        "runtime": "eihead",
-        "node_role": "head",
-        "trace_id": trace_id or "",
-        "event_name": _string_or_default(route.get("eventName"), ""),
-        "event_type": _string_or_default(route.get("eventType"), ""),
-    }
 
 
 def _event_trace_id(event: Mapping[str, Any] | Any) -> str | None:
