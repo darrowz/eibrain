@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import json
-from pathlib import Path
 import threading
 from typing import Any, Iterator
 from urllib import request
@@ -15,9 +14,6 @@ from eibrain.infra.head_client import HeadClient
 from eihead.protocol import ActionExecuted, MoveHeadAction
 from eihead.runtime.app import HeadRuntimeApp
 from eihead.runtime.http_api import create_handler, create_server
-
-
-FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "eiprotocol"
 
 
 class FakeHeadApp:
@@ -144,10 +140,6 @@ def wired_native_providers() -> dict[str, dict[str, str]]:
     }
 
 
-def load_fixture(name: str) -> dict[str, Any]:
-    return json.loads((FIXTURE_DIR / name).read_text(encoding="utf-8"))
-
-
 @contextmanager
 def running_server(app: Any, **kwargs: Any) -> Iterator[tuple[str, object, threading.Thread]]:
     server = create_server(app, host="127.0.0.1", port=0, **kwargs)
@@ -233,10 +225,68 @@ def test_post_events_calls_runtime_event_handler() -> None:
 def test_head_client_post_event_routes_eiprotocol_action_through_runtime_app() -> None:
     body_runtime = RecordingBodyRuntime()
     app = HeadRuntimeApp(body_runtime=body_runtime)
+    head_action_request = {
+        "specVersion": "eiprotocol/0.1",
+        "id": "evt_head_action_001",
+        "type": "action",
+        "name": "ei.action.request",
+        "time": "2026-05-04T10:32:01.700+08:00",
+        "sequence": 5,
+        "requestId": "req_action_001",
+        "sessionId": "ses_honjia_001",
+        "roundId": "rnd_voice_001",
+        "causationId": "evt_vision_frame_001",
+        "traceId": "trc_voice_001",
+        "source": {
+            "domain": "eibrain",
+            "instanceId": "honxin",
+            "botId": "bot_hongtu",
+            "metadata": {},
+        },
+        "priority": "high",
+        "ttlMs": 3000,
+        "mode": {
+            "conversationState": "responding",
+            "interactionMode": "free",
+        },
+        "content": {
+            "actionId": "act_move_head_001",
+            "actionType": "move_head",
+            "target": "neck.pan",
+            "params": {
+                "targetAngle": 92,
+                "durationMs": 240,
+                "reason": "center tracked person",
+            },
+            "riskLevel": "L1",
+            "timeline": [
+                {"atMs": 0, "operation": "move"},
+                {"atMs": 240, "operation": "hold"},
+            ],
+            "requiresPolicy": False,
+            "metadata": {"planner": "active_attention"},
+            "idempotencyKey": "act_move_head_001_once",
+        },
+        "policy": {
+            "decision": "not_required",
+            "riskLevel": "L1",
+            "decisionId": "",
+            "requiredAck": False,
+            "reason": "",
+            "expiresAt": "",
+            "extensions": {},
+        },
+        "extensions": {},
+        "target": {
+            "domain": "eihead",
+            "instanceId": "honjia",
+            "metadata": {},
+        },
+    }
 
     with running_server(app) as (base_url, _server, _thread):
         client = HeadClient(base_url, trace_id="trace-runtime-event")
-        payload = post_head_action_event(client, load_fixture("head_action_request.json"))
+        payload = post_head_action_event(client, head_action_request)
 
     assert payload["ok"] is True
     assert payload["accepted"] is True
