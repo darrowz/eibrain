@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_DIR="${REPO_DIR:-/dev-project/eibrain}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/eibrain}"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
+EIPROTOCOL_DIR="${EIPROTOCOL_DIR:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse --short HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
@@ -40,6 +41,17 @@ if [ ! -x "$RELEASE_DIR/.venv/bin/python" ]; then
 fi
 
 "$RELEASE_DIR/.venv/bin/python" -m pip install --upgrade pip
+if [ -z "$EIPROTOCOL_DIR" ]; then
+  for candidate in /dev-project/eiprotocol /dev-project/ei-workspace/repos/eiprotocol; do
+    if [ -f "$candidate/pyproject.toml" ]; then
+      EIPROTOCOL_DIR="$candidate"
+      break
+    fi
+  done
+fi
+if [ -n "$EIPROTOCOL_DIR" ]; then
+  "$RELEASE_DIR/.venv/bin/python" -m pip install "$EIPROTOCOL_DIR"
+fi
 "$RELEASE_DIR/.venv/bin/python" -m pip install "$RELEASE_DIR"
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
