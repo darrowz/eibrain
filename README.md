@@ -59,6 +59,16 @@ python -m pip install -e D:/github/ei-workspace/repos/eibrain
 This ensures runtime imports resolve from canonical standalone source trees:
 `eiprotocol` first, then `eihead`, then `eibrain`.
 
+## Retired Exporters
+
+`scripts/export-eiprotocol-repo.py` and `scripts/export-eihead-repo.py` are
+retired and no longer generate standalone repositories.
+
+Use canonical standalone repositories directly:
+
+- `D:/github/ei-workspace/repos/eiprotocol`
+- `D:/github/ei-workspace/repos/eihead`
+
 ## Default Deployment Layout
 
 The default deployment root is `/home/${USER}/eibrain`, shared by both `honjia` and `honxin`.
