@@ -45,18 +45,19 @@ Keep these concerns separate:
 
 `eibrain` must not depend on the `eimemory` repository path at runtime.
 
-## Protocol Source Dependency (Development)
+## Standalone Package Install Order (Development)
 
-When running `eibrain` against the standalone protocol package, install both repos
-in editable mode first:
+When running `eibrain` with standalone shared packages, install in this order
+in editable mode:
 
 ```bash
 python -m pip install -e D:/github/ei-workspace/repos/eiprotocol
+python -m pip install -e D:/github/ei-workspace/repos/eihead
 python -m pip install -e D:/github/ei-workspace/repos/eibrain
 ```
 
-This ensures the runtime imports `eiprotocol` from the canonical source tree instead of
-fallbacking to compatibility copies.
+This ensures runtime imports resolve from canonical standalone source trees:
+`eiprotocol` first, then `eihead`, then `eibrain`.
 
 ## Default Deployment Layout
 
