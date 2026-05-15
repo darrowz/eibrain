@@ -18,7 +18,7 @@ from typing import Any
 
 from apps.body_runtime.voice_chain_benchmark import DEFAULT_THRESHOLDS, summarize_voice_chain
 from apps.body_runtime.voice_streaming_adapter import VoiceStreamingAdapter
-from apps.head_runtime.eivoice_gateway import EiVoiceGateway
+from eihead.eivoice_runtime.gateway import EiVoiceGateway
 from eibrain.body.realtime_voice import RealtimeVoiceSession
 from eibrain.voice.readiness import build_voice_chain_readiness
 

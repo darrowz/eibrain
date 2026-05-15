@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_RELATIVE_DIR = Path("tests") / "fixtures" / "eiprotocol"
+WORKSPACE_PROTOCOL_FIXTURE_DIR = Path("..") / "eiprotocol" / "tests" / "fixtures" / "eiprotocol"
 RUNTIME_IMPORT_ROOTS = {"eibrain", "eihead"}
 ROUND_SCOPED_TYPES = {"dialogue", "action", "memory", "outcome", "training"}
 
@@ -24,7 +25,8 @@ def build_report(repo_root: Path | str = REPO_ROOT) -> dict[str, Any]:
 
     catalog_events = sorted(list_event_names())
     catalog_event_set = set(catalog_events)
-    fixtures = load_fixture_payloads(repo_root / FIXTURE_RELATIVE_DIR)
+    fixture_dir = _fixture_dir(repo_root)
+    fixtures = load_fixture_payloads(fixture_dir)
 
     fixture_event_names = {
         str(payload.get("name"))
@@ -68,7 +70,7 @@ def build_report(repo_root: Path | str = REPO_ROOT) -> dict[str, Any]:
                 }
             )
 
-    dependency_violations = scan_dependency_violations(repo_root / "eiprotocol", repo_root)
+    dependency_violations = scan_dependency_violations(_protocol_package_dir(repo_root), repo_root)
 
     status = "fail" if any(
         (
@@ -102,6 +104,20 @@ def load_fixture_payloads(fixture_dir: Path) -> list[tuple[str, dict[str, Any]]]
             payload = json.load(handle)
         fixtures.append((fixture_path.name, payload if isinstance(payload, dict) else {}))
     return fixtures
+
+
+def _fixture_dir(repo_root: Path) -> Path:
+    local_dir = repo_root / FIXTURE_RELATIVE_DIR
+    if local_dir.exists():
+        return local_dir
+    return (repo_root / WORKSPACE_PROTOCOL_FIXTURE_DIR).resolve()
+
+
+def _protocol_package_dir(repo_root: Path) -> Path:
+    local_package = repo_root / "eiprotocol"
+    if local_package.exists():
+        return local_package
+    return (repo_root / ".." / "eiprotocol" / "eiprotocol").resolve()
 
 
 def scan_dependency_violations(package_dir: Path, repo_root: Path) -> list[dict[str, str]]:

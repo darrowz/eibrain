@@ -9,7 +9,7 @@ import pytest
 from eibrain.infra.head_events import event_idempotency_key, post_head_action_event
 
 
-FIXTURE_DIR = Path(__file__).parents[1] / "fixtures" / "eiprotocol"
+FIXTURE_DIR = (Path(__file__).resolve().parents[3] / "eiprotocol" / "tests" / "fixtures" / "eiprotocol").resolve()
 
 
 class FakeHeadClient:

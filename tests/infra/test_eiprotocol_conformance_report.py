@@ -11,7 +11,7 @@ from eiprotocol.catalog import list_event_names
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "eiprotocol_conformance_report.py"
-FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "eiprotocol"
+FIXTURE_DIR = (REPO_ROOT / ".." / "eiprotocol" / "tests" / "fixtures" / "eiprotocol").resolve()
 
 
 def _load_report_module():
