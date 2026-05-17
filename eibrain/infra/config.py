@@ -54,6 +54,7 @@ class LLMConfig:
     command: list[str] = field(default_factory=list)
     agent_id: str = ""
     session_id: str = ""
+    thinking: str = ""
     temperature: float = 0.2
     max_tokens: int = 256
     timeout_s: float = 30.0
@@ -206,6 +207,8 @@ def _parse_command(value: Any) -> list[str]:
 def _parse_llm(raw: dict[str, Any] | None) -> LLMConfig:
     payload = dict(raw or {})
     payload["command"] = _parse_command(payload.pop("command", []))
+    if "thinking" in payload:
+        payload["thinking"] = str(payload["thinking"])
     return LLMConfig(**payload)
 
 

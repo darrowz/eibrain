@@ -154,20 +154,22 @@ class LLMRouter:
         command = list(self.config.command)
         timeout_s = float(self.config.timeout_s or 30.0)
         cli_timeout = str(int(timeout_s)) if timeout_s.is_integer() else str(timeout_s)
+        agent_args = [
+            "agent",
+            "--agent",
+            self.config.agent_id or "main",
+            "--session-id",
+            self.config.session_id or "eibrain-honjia-voice",
+            "--message",
+            prompt,
+            "--json",
+        ]
+        if self.config.thinking:
+            agent_args.extend(["--thinking", self.config.thinking])
+        agent_args.extend(["--timeout", cli_timeout])
         full_command = self._build_openclaw_command(
             command,
-            [
-                "agent",
-                "--agent",
-                self.config.agent_id or "main",
-                "--session-id",
-                self.config.session_id or "eibrain-honjia-voice",
-                "--message",
-                prompt,
-                "--json",
-                "--timeout",
-                cli_timeout,
-            ],
+            agent_args,
         )
         completed = subprocess.run(
             full_command,

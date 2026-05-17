@@ -112,6 +112,7 @@ def test_load_config_reads_openclaw_hontu_llm_command(tmp_path) -> None:
                 "      - /home/darrow/n/bin/openclaw",
                 "    agent_id: main",
                 "    session_id: eibrain-honjia-voice",
+                "    thinking: minimal",
                 "    timeout_s: 45",
             ]
         ),
@@ -124,6 +125,7 @@ def test_load_config_reads_openclaw_hontu_llm_command(tmp_path) -> None:
     assert config.cognition.llm.command == ["ssh", "honxin", "/home/darrow/n/bin/openclaw"]
     assert config.cognition.llm.agent_id == "main"
     assert config.cognition.llm.session_id == "eibrain-honjia-voice"
+    assert config.cognition.llm.thinking == "minimal"
     assert config.cognition.llm.timeout_s == 45.0
 
 
@@ -216,9 +218,9 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
         "honxin",
         "env",
         "PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin",
-        "/home/darrow/n/bin/openclaw",
+        "/home/darrow/.local/bin/openclaw-hontu-voice",
     ]
-    assert config.cognition.llm.agent_id == "main"
+    assert config.cognition.llm.agent_id == "hontu-voice"
     assert config.cognition.llm.session_id == "eibrain-honjia-voice"
 
 

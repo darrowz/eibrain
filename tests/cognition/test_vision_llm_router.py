@@ -254,6 +254,38 @@ def test_llm_router_calls_openclaw_hontu_agent_command(monkeypatch) -> None:
     assert router.last_text == "语音链路正常"
 
 
+def test_llm_router_passes_openclaw_hontu_thinking_when_configured(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, input=None, text=None, capture_output=None, timeout=None, encoding=None):
+        captured["command"] = command
+        payload = {"status": "ok", "result": {"payloads": [{"text": "好"}]}}
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload, ensure_ascii=False), stderr="")
+
+    monkeypatch.setattr("eibrain.cognition.dialogue.llm_router.subprocess.run", _fake_run)
+
+    router = LLMRouter(
+        LLMConfig(
+            provider="openclaw_hontu",
+            command=["ssh", "honxin", "/home/darrow/.local/bin/openclaw-hontu-voice"],
+            agent_id="hontu-voice",
+            session_id="eibrain-honjia-voice",
+            thinking="minimal",
+            timeout_s=45.0,
+        )
+    )
+
+    assert router.generate("测试") == "好"
+    remote_command = captured["command"][-1]
+    assert "--thinking minimal" in remote_command
+    assert "--timeout 45" in remote_command
+
+
 def test_llm_router_records_openclaw_hontu_command_failure(monkeypatch) -> None:
     from types import SimpleNamespace
 
