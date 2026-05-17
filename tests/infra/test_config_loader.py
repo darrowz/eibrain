@@ -129,6 +129,37 @@ def test_load_config_reads_openclaw_hontu_llm_command(tmp_path) -> None:
     assert config.cognition.llm.timeout_s == 45.0
 
 
+def test_load_config_reads_openclaw_gateway_ws_llm(monkeypatch, tmp_path) -> None:
+    from eibrain.infra.config import load_config
+
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "test-token")
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "cognition:",
+                "  llm:",
+                "    provider: openclaw_gateway_ws",
+                "    endpoint: ws://honxin:18789",
+                "    api_key: ${OPENCLAW_GATEWAY_TOKEN}",
+                "    agent_id: hontu-voice",
+                "    session_id: eibrain-honjia-voice",
+                "    thinking: off",
+                "    timeout_s: 45",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.cognition.llm.provider == "openclaw_gateway_ws"
+    assert config.cognition.llm.endpoint == "ws://honxin:18789"
+    assert config.cognition.llm.api_key == "test-token"
+    assert config.cognition.llm.agent_id == "hontu-voice"
+    assert config.cognition.llm.thinking == "off"
+
+
 def test_load_config_normalizes_cli_command_string(tmp_path) -> None:
     from eibrain.infra.config import load_config
 
@@ -204,6 +235,7 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
     from eibrain.infra.config import load_config
 
     monkeypatch.setenv("EIMEMORY_ENDPOINT", "http://honxin:8091/")
+    monkeypatch.setenv("OPENCLAW_GATEWAY_TOKEN", "test-token")
     monkeypatch.delenv("EIBRAIN_MEMORY_ENDPOINT", raising=False)
     config_path = Path(__file__).resolve().parents[2] / "config" / "eibrain.honjia.yaml"
 
@@ -213,15 +245,13 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
     assert config.memory.openclaw.endpoint == "http://honxin:8091/"
     assert config.memory.openclaw.agent_id == "honxin"
     assert config.memory.openclaw.workspace_id == "honjia"
-    assert config.cognition.llm.provider == "openclaw_hontu"
-    assert config.cognition.llm.command[-4:] == [
-        "honxin",
-        "env",
-        "PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin",
-        "/home/darrow/.local/bin/openclaw-hontu-voice",
-    ]
+    assert config.cognition.llm.provider == "openclaw_gateway_ws"
+    assert config.cognition.llm.endpoint == "ws://honxin:18789"
+    assert config.cognition.llm.api_key == "test-token"
+    assert config.cognition.llm.command == []
     assert config.cognition.llm.agent_id == "hontu-voice"
     assert config.cognition.llm.session_id == "eibrain-honjia-voice"
+    assert config.cognition.llm.thinking == "off"
 
 
 def test_honjia_config_normalizes_field_wake_word_confusions(monkeypatch) -> None:

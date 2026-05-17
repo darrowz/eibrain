@@ -286,6 +286,115 @@ def test_llm_router_passes_openclaw_hontu_thinking_when_configured(monkeypatch) 
     assert "--timeout 45" in remote_command
 
 
+def test_llm_router_calls_openclaw_gateway_ws_agent(monkeypatch) -> None:
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+            self.closed = False
+            self._accepted_sent = False
+
+        def settimeout(self, timeout: float) -> None:
+            self.timeout = timeout
+
+        def send(self, raw: str) -> None:
+            self.sent.append(json.loads(raw))
+
+        def recv(self) -> str:
+            if not self.sent:
+                return json.dumps({"type": "event", "event": "connect.challenge", "payload": {"nonce": "nonce-1"}})
+            frame = self.sent[-1]
+            if frame["method"] == "connect":
+                return json.dumps(
+                    {
+                        "type": "res",
+                        "id": frame["id"],
+                        "ok": True,
+                        "payload": {
+                            "type": "hello-ok",
+                            "protocol": 3,
+                            "auth": {"role": "operator", "scopes": ["operator.write"]},
+                        },
+                    }
+                )
+            if not self._accepted_sent:
+                self._accepted_sent = True
+                return json.dumps({"type": "res", "id": frame["id"], "ok": True, "payload": {"status": "accepted"}})
+            return json.dumps(
+                {
+                    "type": "res",
+                    "id": frame["id"],
+                    "ok": True,
+                    "payload": {"status": "ok", "result": {"payloads": [{"text": "语音链路正常"}]}},
+                }
+            )
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_ws = FakeWebSocket()
+    monkeypatch.setattr(LLMRouter, "_open_gateway_websocket", staticmethod(lambda url, timeout_s: fake_ws))
+    monkeypatch.setattr(
+        LLMRouter,
+        "_build_gateway_device",
+        lambda self, *, nonce, scopes: {"id": "device-1", "publicKey": "pub", "signature": "sig", "signedAt": 1, "nonce": nonce},
+    )
+
+    router = LLMRouter(
+        LLMConfig(
+            provider="openclaw_gateway_ws",
+            endpoint="ws://honxin:18789",
+            api_key="test-token",
+            agent_id="hontu-voice",
+            session_id="eibrain-honjia-voice",
+            thinking="off",
+            timeout_s=45.0,
+        )
+    )
+
+    assert router.generate("测试语音链路") == "语音链路正常"
+    connect_frame = fake_ws.sent[0]
+    assert connect_frame["method"] == "connect"
+    assert connect_frame["params"]["auth"]["token"] == "test-token"
+    assert connect_frame["params"]["role"] == "operator"
+    assert connect_frame["params"]["scopes"] == ["operator.write"]
+    assert connect_frame["params"]["device"]["id"] == "device-1"
+    assert connect_frame["params"]["device"]["nonce"] == "nonce-1"
+    agent_frame = fake_ws.sent[1]
+    assert agent_frame["method"] == "agent"
+    assert agent_frame["params"]["agentId"] == "hontu-voice"
+    assert agent_frame["params"]["sessionId"] == "eibrain-honjia-voice"
+    assert agent_frame["params"]["thinking"] == "off"
+    assert agent_frame["params"]["message"] == "测试语音链路"
+    assert fake_ws.closed is True
+
+
+def test_llm_router_suppresses_gateway_websocket_origin(monkeypatch) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+
+    captured: dict[str, object] = {}
+
+    def _fake_create_connection(url, timeout=None, suppress_origin=False):
+        captured["url"] = url
+        captured["timeout"] = timeout
+        captured["suppress_origin"] = suppress_origin
+        return "websocket"
+
+    monkeypatch.setitem(sys.modules, "websocket", SimpleNamespace(create_connection=_fake_create_connection))
+
+    assert LLMRouter._open_gateway_websocket("ws://honxin:18789", 45.0) == "websocket"
+    assert captured == {
+        "url": "ws://honxin:18789",
+        "timeout": 45.0,
+        "suppress_origin": True,
+    }
+
+
 def test_llm_router_records_openclaw_hontu_command_failure(monkeypatch) -> None:
     from types import SimpleNamespace
 

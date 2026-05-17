@@ -398,17 +398,9 @@ body:
 cognition:
   node_id: honxin
   llm:
-    provider: openclaw_hontu
-    command:
-      - ssh
-      - -o
-      - BatchMode=yes
-      - -o
-      - StrictHostKeyChecking=accept-new
-      - honxin
-      - env
-      - PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin
-      - /home/darrow/.local/bin/openclaw-hontu-voice
+    provider: openclaw_gateway_ws
+    endpoint: ${OPENCLAW_GATEWAY_URL:-ws://honxin:18789}
+    api_key: ${OPENCLAW_GATEWAY_TOKEN}
     agent_id: hontu-voice
     session_id: eibrain-honjia-voice
     thinking: "off"

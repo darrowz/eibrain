@@ -208,7 +208,10 @@ def _parse_llm(raw: dict[str, Any] | None) -> LLMConfig:
     payload = dict(raw or {})
     payload["command"] = _parse_command(payload.pop("command", []))
     if "thinking" in payload:
-        payload["thinking"] = str(payload["thinking"])
+        if isinstance(payload["thinking"], bool):
+            payload["thinking"] = "on" if payload["thinking"] else "off"
+        else:
+            payload["thinking"] = str(payload["thinking"])
     return LLMConfig(**payload)
 
 
