@@ -51,8 +51,12 @@ class LLMConfig:
     model: str = ""
     endpoint: str = ""
     api_key: str = ""
+    command: list[str] = field(default_factory=list)
+    agent_id: str = ""
+    session_id: str = ""
     temperature: float = 0.2
     max_tokens: int = 256
+    timeout_s: float = 30.0
     supports_vision: bool = False
     experimental: bool = False
 
@@ -199,6 +203,12 @@ def _parse_command(value: Any) -> list[str]:
     return []
 
 
+def _parse_llm(raw: dict[str, Any] | None) -> LLMConfig:
+    payload = dict(raw or {})
+    payload["command"] = _parse_command(payload.pop("command", []))
+    return LLMConfig(**payload)
+
+
 def load_config(path: str | Path | None = None) -> EIBrainConfig:
     config_path = Path(path) if path is not None else _default_config_path()
     raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -218,8 +228,8 @@ def load_config(path: str | Path | None = None) -> EIBrainConfig:
     )
     cognition = CognitionConfig(
         node_id=str(cognition_payload.pop("node_id", "honxin")),
-        llm=LLMConfig(**dict(cognition_payload.pop("llm", {}))),
-        vision_llm=LLMConfig(**dict(cognition_payload.pop("vision_llm", {}))),
+        llm=_parse_llm(cognition_payload.pop("llm", {})),
+        vision_llm=_parse_llm(cognition_payload.pop("vision_llm", {})),
     )
     vision = VisionConfig(
         provider=str(vision_payload.pop("provider", "disabled")),

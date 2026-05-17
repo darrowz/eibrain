@@ -355,12 +355,22 @@ body:
 cognition:
   node_id: honxin
   llm:
-    provider: openai_compatible
-    model: ${LLM_MODEL:-qwen3-max-2026-01-23}
-    endpoint: ${LLM_BASE_URL:-https://coding.dashscope.aliyuncs.com/v1/chat/completions}
-    api_key: ${LLM_API_KEY}
+    provider: openclaw_hontu
+    command:
+      - ssh
+      - -o
+      - BatchMode=yes
+      - -o
+      - StrictHostKeyChecking=accept-new
+      - honxin
+      - env
+      - PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin
+      - /home/darrow/n/bin/openclaw
+    agent_id: main
+    session_id: eibrain-honjia-voice
     temperature: 0.2
-    max_tokens: 80
+    max_tokens: 128
+    timeout_s: 45
     supports_vision: false
     experimental: false
   vision_llm:

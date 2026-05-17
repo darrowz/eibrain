@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import subprocess
 import time
 from urllib.error import URLError
 from urllib import request
@@ -32,6 +34,14 @@ class LLMRouter:
                 self.last_status = "ok"
                 self.last_text = f"reply: {prompt.splitlines()[-1]}"
                 return self.last_text
+            if self._uses_openclaw_hontu():
+                try:
+                    self.last_text = self._generate_openclaw_hontu(prompt)
+                    self.last_status = "ok" if self.last_text else "empty_response"
+                    return self.last_text
+                except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                    self.last_status = "error"
+                    self.last_error = f"{type(exc).__name__}: {exc}"
             if self._uses_anthropic_api():
                 try:
                     self.last_text = self._generate_anthropic_compatible(prompt)
@@ -74,6 +84,9 @@ class LLMRouter:
 
     def _uses_chat_api(self) -> bool:
         return self.config.provider in {"openai_compatible", "minimax", "qwen"} and bool(self.config.endpoint)
+
+    def _uses_openclaw_hontu(self) -> bool:
+        return self.config.provider == "openclaw_hontu" and bool(self.config.command)
 
     def _uses_anthropic_api(self) -> bool:
         return self.config.provider == "anthropic_compatible" and bool(self.config.endpoint)
@@ -133,6 +146,81 @@ class LLMRouter:
             for item in parts:
                 if isinstance(item, dict) and item.get("text"):
                     return str(item.get("text", ""))
+        if isinstance(payload.get("text"), str):
+            return str(payload["text"]).strip()
+        return ""
+
+    def _generate_openclaw_hontu(self, prompt: str) -> str:
+        command = list(self.config.command)
+        timeout_s = float(self.config.timeout_s or 30.0)
+        cli_timeout = str(int(timeout_s)) if timeout_s.is_integer() else str(timeout_s)
+        full_command = self._build_openclaw_command(
+            command,
+            [
+                "agent",
+                "--agent",
+                self.config.agent_id or "main",
+                "--session-id",
+                self.config.session_id or "eibrain-honjia-voice",
+                "--message",
+                prompt,
+                "--json",
+                "--timeout",
+                cli_timeout,
+            ],
+        )
+        completed = subprocess.run(
+            full_command,
+            text=True,
+            capture_output=True,
+            timeout=timeout_s + 5.0,
+            encoding="utf-8",
+        )
+        if completed.returncode != 0:
+            stderr = (completed.stderr or "").strip()
+            raise ValueError(f"openclaw command failed ({completed.returncode}): {stderr}")
+        payload = self._parse_openclaw_json(completed.stdout)
+        return self._extract_openclaw_text(payload)
+
+    @staticmethod
+    def _build_openclaw_command(command: list[str], agent_args: list[str]) -> list[str]:
+        if command and command[0] == "ssh":
+            remote_start = len(command) - 1
+            if "env" in command[1:]:
+                remote_start = command.index("env")
+            remote_command = [*command[remote_start:], *agent_args]
+            quoted_remote = " ".join(shlex.quote(part) for part in remote_command)
+            return [*command[:remote_start], quoted_remote]
+        return [*command, *agent_args]
+
+    @staticmethod
+    def _parse_openclaw_json(output: str) -> dict[str, object]:
+        text = output.strip()
+        if not text:
+            raise ValueError("openclaw command returned empty stdout")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            start = text.find("{")
+            end = text.rfind("}")
+            if start < 0 or end < start:
+                raise ValueError("openclaw command returned non-json stdout") from None
+            parsed = json.loads(text[start : end + 1])
+        if not isinstance(parsed, dict):
+            raise ValueError("openclaw command returned non-object json")
+        return parsed
+
+    @staticmethod
+    def _extract_openclaw_text(payload: dict[str, object]) -> str:
+        result = payload.get("result")
+        if isinstance(result, dict):
+            payloads = result.get("payloads")
+            if isinstance(payloads, list):
+                for item in payloads:
+                    if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                        return item["text"].strip()
+            if isinstance(result.get("text"), str):
+                return str(result["text"]).strip()
         if isinstance(payload.get("text"), str):
             return str(payload["text"]).strip()
         return ""

@@ -96,6 +96,37 @@ def test_load_config_supports_env_defaults(tmp_path) -> None:
     assert config.cognition.llm.model == "MiniMax-M2.7-highspeed"
 
 
+def test_load_config_reads_openclaw_hontu_llm_command(tmp_path) -> None:
+    from eibrain.infra.config import load_config
+
+    config_path = tmp_path / "eibrain.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "cognition:",
+                "  llm:",
+                "    provider: openclaw_hontu",
+                "    command:",
+                "      - ssh",
+                "      - honxin",
+                "      - /home/darrow/n/bin/openclaw",
+                "    agent_id: main",
+                "    session_id: eibrain-honjia-voice",
+                "    timeout_s: 45",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path)
+
+    assert config.cognition.llm.provider == "openclaw_hontu"
+    assert config.cognition.llm.command == ["ssh", "honxin", "/home/darrow/n/bin/openclaw"]
+    assert config.cognition.llm.agent_id == "main"
+    assert config.cognition.llm.session_id == "eibrain-honjia-voice"
+    assert config.cognition.llm.timeout_s == 45.0
+
+
 def test_load_config_normalizes_cli_command_string(tmp_path) -> None:
     from eibrain.infra.config import load_config
 
@@ -180,6 +211,15 @@ def test_honjia_config_uses_eimemory_endpoint_and_scope(monkeypatch) -> None:
     assert config.memory.openclaw.endpoint == "http://honxin:8091/"
     assert config.memory.openclaw.agent_id == "honxin"
     assert config.memory.openclaw.workspace_id == "honjia"
+    assert config.cognition.llm.provider == "openclaw_hontu"
+    assert config.cognition.llm.command[-4:] == [
+        "honxin",
+        "env",
+        "PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin",
+        "/home/darrow/n/bin/openclaw",
+    ]
+    assert config.cognition.llm.agent_id == "main"
+    assert config.cognition.llm.session_id == "eibrain-honjia-voice"
 
 
 def test_honjia_config_normalizes_field_wake_word_confusions(monkeypatch) -> None:

@@ -186,3 +186,93 @@ def test_llm_router_uses_openai_compatible_image_url_shape(monkeypatch) -> None:
     content = captured["body"]["messages"][0]["content"]
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"] == "https://example.com/frame.jpg"
+
+
+def test_llm_router_calls_openclaw_hontu_agent_command(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    captured: dict[str, object] = {}
+
+    def _fake_run(command, input=None, text=None, capture_output=None, timeout=None, encoding=None):
+        captured["command"] = command
+        captured["input"] = input
+        captured["text"] = text
+        captured["capture_output"] = capture_output
+        captured["timeout"] = timeout
+        captured["encoding"] = encoding
+        payload = {
+            "status": "ok",
+            "result": {
+                "payloads": [
+                    {
+                        "text": "语音链路正常",
+                    }
+                ]
+            },
+        }
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload, ensure_ascii=False), stderr="")
+
+    monkeypatch.setattr("eibrain.cognition.dialogue.llm_router.subprocess.run", _fake_run)
+
+    router = LLMRouter(
+        LLMConfig(
+            provider="openclaw_hontu",
+            command=[
+                "ssh",
+                "honxin",
+                "env",
+                "PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin",
+                "/home/darrow/n/bin/openclaw",
+            ],
+            agent_id="main",
+            session_id="eibrain-honjia-voice",
+            timeout_s=45.0,
+        )
+    )
+
+    result = router.generate("你是鸿途。\n[user] 测试语音链路")
+
+    assert result == "语音链路正常"
+    command = captured["command"]
+    assert command[:2] == ["ssh", "honxin"]
+    assert len(command) == 3
+    remote_command = command[-1]
+    assert "env PATH=/home/darrow/n/bin:/usr/local/bin:/usr/bin:/bin /home/darrow/n/bin/openclaw agent" in remote_command
+    assert "--agent main" in remote_command
+    assert "--session-id eibrain-honjia-voice" in remote_command
+    assert "'你是鸿途。\n[user] 测试语音链路'" in remote_command
+    assert "--json --timeout 45" in remote_command
+    assert captured["text"] is True
+    assert captured["capture_output"] is True
+    assert captured["timeout"] == 50.0
+    assert captured["encoding"] == "utf-8"
+    assert router.last_status == "ok"
+    assert router.last_provider == "openclaw_hontu"
+    assert router.last_text == "语音链路正常"
+
+
+def test_llm_router_records_openclaw_hontu_command_failure(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from eibrain.cognition.dialogue.llm_router import LLMRouter
+    from eibrain.infra.config import LLMConfig
+
+    def _fake_run(command, input=None, text=None, capture_output=None, timeout=None, encoding=None):
+        return SimpleNamespace(returncode=255, stdout="", stderr="ssh: connect failed")
+
+    monkeypatch.setattr("eibrain.cognition.dialogue.llm_router.subprocess.run", _fake_run)
+
+    router = LLMRouter(
+        LLMConfig(
+            provider="openclaw_hontu",
+            command=["ssh", "honxin", "/home/darrow/n/bin/openclaw"],
+            timeout_s=3.0,
+        )
+    )
+
+    assert router.generate("hello") == ""
+    assert router.last_status == "error"
+    assert "openclaw command failed" in router.last_error
