@@ -105,6 +105,23 @@ def test_dialogue_manager_prepares_llm_text_for_speech() -> None:
     assert reply == "福建省 大约有 1.5 万个行政村。"
 
 
+def test_dialogue_manager_repairs_gbk_mojibake_before_speech() -> None:
+    from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
+    from eibrain.memory.contracts import MemoryResult
+    from eibrain.state.embodied import EmbodiedState
+
+    state = EmbodiedState.create_default().with_transcript(
+        text="二加二等于几",
+        session_id="s1",
+        actor_id="user-1",
+        ts=1.0,
+    )
+
+    reply = DialogueManager().build_reply_text(state, MemoryResult(), "ËÄ")
+
+    assert reply == "四"
+
+
 def test_dialogue_manager_does_not_echo_when_llm_is_empty() -> None:
     from eibrain.cognition.dialogue.dialogue_manager import DialogueManager
     from eibrain.memory.contracts import MemoryResult

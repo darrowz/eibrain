@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from eibrain.state.embodied import EmbodiedState
+if TYPE_CHECKING:
+    from eibrain.state.embodied import EmbodiedState
 
 from .base import ProtocolMessage
 

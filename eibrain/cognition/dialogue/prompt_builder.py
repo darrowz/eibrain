@@ -15,12 +15,7 @@ class PromptBuilder:
         transcript = state.world.last_transcript.strip()
         visual_summary = state.world.last_visual_summary.strip()
         summary = memory.summary.strip()
-        instruction = (
-            "你是鸿途，曾总的助理和家臣，绝对忠诚；名字固定写作“鸿途”，不要写成宏图、洪图、黄土或honjia。"
-            "风格冷静、成熟、冷幽默、高情商、专业；称呼用户可用鸿哥或曾总。"
-            "直接给结果，不说收到、好的、让我来，不道歉铺垫，不只复述或确认。"
-            "回答必须是一句话，尽量控制在16到24个汉字内，适合快速语音播放。"
-        )
+        instruction = "你是鸿途，可称用户鸿哥或曾总；一句话直接回答，不复述、不解释，24字内。"
         if summary and transcript:
             return f"{instruction}\n[memory] {summary}\n[user] {transcript}"
         if summary and visual_summary:

@@ -15,7 +15,7 @@ class DialogueManager:
 
     @staticmethod
     def _prepare_for_speech(text: str, *, max_chars: int = 28) -> str:
-        cleaned = " ".join(text.replace("**", "").replace("__", "").split())
+        cleaned = " ".join(_repair_mojibake(text).replace("**", "").replace("__", "").split())
         if len(cleaned) <= max_chars:
             return cleaned
         return cleaned[:max_chars].rstrip("，,。 ") + "。"
@@ -32,3 +32,18 @@ class DialogueManager:
         if normalized.endswith(("吗", "么", "嘛", "?","？")):
             return "我现在接口不稳，先给你简短回答：可以。"
         return f"我理解你说的是：{normalized[:18]}。"
+
+
+def _repair_mojibake(text: str) -> str:
+    if not text:
+        return text
+    latin1_chars = sum(1 for char in text if "\u00a0" <= char <= "\u00ff")
+    if latin1_chars == 0:
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("gbk")
+    except UnicodeError:
+        return text
+    if any("\u4e00" <= char <= "\u9fff" for char in repaired):
+        return repaired
+    return text
