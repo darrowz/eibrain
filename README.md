@@ -8,6 +8,52 @@
 Phase 1 targets a stable voice interaction loop with orient-to-speaker behavior,
 modular body organs, and OpenClaw-ready memory boundaries.
 
+![eibrain cognitive/body split](docs/assets/eibrain-overview.svg)
+
+## EI Series Role
+
+`eibrain` is the decision and coordination layer of the EI series. It receives
+operator input, body observations, memory context, and skill affordances, then
+turns them into bounded plans for text, voice, attention, orientation, and
+tool-use behavior.
+
+It is intentionally split from the other EI modules:
+
+- `eimemory` stores durable memory, recall context, and learning evidence.
+- `eiskills` owns skill semantics, routing, promotion, and rollback policy.
+- `eitraining` evaluates replay outcomes and emits training/candidate assets.
+- `eiprotocol` defines typed event contracts shared across EI services.
+- `eihead` owns the honjia head runtime, including eye, ear, mouth, and neck IO.
+- `eidocs` indexes complex documents and only exports redacted memory events.
+
+`eibrain` does not vendor these systems. It calls them through explicit
+configuration, RPC endpoints, protocol events, and release contracts.
+
+## What It Is For
+
+`eibrain` is built for long-running personal or operational agents that need a
+clear boundary between cognition and execution. It coordinates what should
+happen next, but the actual authority remains in the configured adapters,
+hardware runtimes, and OpenClaw policies.
+
+Typical workflows:
+
+- convert a user request into a cognitive plan
+- read memory context from `eimemory`
+- choose a skill route from `eiskills`
+- react to head/body observations from `eihead`
+- produce text, speech, orientation, or interrupt decisions
+- record traceable outcomes for later `eitraining` replay
+
+## Design Boundaries
+
+- Runtime paths are not repository paths. Deployment should use released code
+  under `/opt` and configured RPC endpoints.
+- The body runtime on honjia and cognitive runtime on honxin are separate.
+- Missing hardware wiring must be reported as degraded, blocked, or unknown.
+- External sends, spending, credentials, and destructive operations remain
+  governed by OpenClaw/user policy rather than `eibrain` alone.
+
 ## Deployable Configuration
 
 All runtime configuration lives in a single YAML file:
